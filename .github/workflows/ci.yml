@@ -27,9 +27,25 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            mkosi systemd-repart reprepro debian-archive-keyring \
+            systemd-repart debian-archive-keyring dosfstools e2fsprogs \
             qemu-system-x86 qemu-utils ovmf openssh-client \
             debhelper build-essential devscripts shellcheck
+          # Ubuntu's mkosi lags, and the image config uses behaviour (the
+          # .chroot postinst extension, mkosi.repart handling) that differs
+          # between versions. Pin to the version this was developed and tested
+          # against rather than taking whatever the runner happens to ship.
+          pipx install "mkosi==25.3"
+          mkosi --version
+
+      - name: Allow unprivileged user namespaces
+        # mkosi builds unprivileged, via a user namespace. Ubuntu's AppArmor
+        # blocks those for unconfined binaries by default, and mkosi fails at
+        # become_root() with EPERM. Relaxing the restriction is preferable to
+        # running the whole build as root, which would leave root-owned output
+        # that the gate then cannot read.
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || \
+            echo "sysctl not present; assuming user namespaces are already allowed"
 
       - name: Report accelerator
         # GitHub's Linux runners expose /dev/kvm on larger images only. The gate
