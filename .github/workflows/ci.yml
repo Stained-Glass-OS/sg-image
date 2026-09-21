@@ -28,7 +28,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             systemd-repart systemd-boot-efi \
-            debian-archive-keyring dosfstools e2fsprogs \
+            debian-archive-keyring dosfstools e2fsprogs mtools \
             qemu-system-x86 qemu-utils ovmf openssh-client \
             debhelper build-essential devscripts shellcheck
           # Ubuntu's mkosi lags, and the image config uses behaviour (the
