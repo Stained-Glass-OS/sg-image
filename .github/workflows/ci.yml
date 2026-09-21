@@ -27,7 +27,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            systemd-repart systemd-boot-efi systemd-boot-tools \
+            systemd-repart systemd-boot-efi \
             debian-archive-keyring dosfstools e2fsprogs \
             qemu-system-x86 qemu-utils ovmf openssh-client \
             debhelper build-essential devscripts shellcheck
@@ -38,6 +38,21 @@ jobs:
           # mkosi is not published to PyPI; it installs from its git tag.
           pipx install "git+https://github.com/systemd/mkosi.git@v25.3"
           mkosi --version
+
+          # mkosi needs bootctl on the host to produce an EFI-bootable image.
+          # Which package ships it depends on the distribution -- Debian splits
+          # it into systemd-boot-tools, Ubuntu does not have that package at
+          # all -- so try the candidates and check for the binary rather than
+          # hardcoding a name that is right on one distro and absent on the
+          # other.
+          if ! command -v bootctl >/dev/null; then
+            for pkg in systemd-boot-tools systemd-boot systemd; do
+              sudo apt-get install -y --no-install-recommends "$pkg" 2>/dev/null || continue
+              command -v bootctl >/dev/null && break
+            done
+          fi
+          command -v bootctl || { echo "bootctl still missing; the image cannot be made bootable"; exit 1; }
+          bootctl --version | head -1
 
       - name: Allow unprivileged user namespaces
         # mkosi builds unprivileged, via a user namespace. Ubuntu's AppArmor
