@@ -30,7 +30,16 @@ else
     CHECK_TIMEOUT="${SG_CHECK_TIMEOUT:-900}"
 fi
 
-QMP_SOCK="$BUILD/qmp.sock"
+# The QMP socket lives in a short-lived temp directory rather than under
+# build/, because a UNIX socket path cannot exceed 108 bytes and a checkout a
+# few directories deep blows past that. QEMU's error for it is
+# "UNIX socket path is too long", which does not obviously point at the gate.
+# Honour TMPDIR when it is short enough, and fall back to /tmp when it is not,
+# since TMPDIR itself is often the deep path that causes the problem.
+qmp_base="${TMPDIR:-/tmp}"
+[[ ${#qmp_base} -gt 60 ]] && qmp_base=/tmp
+QMP_DIR=$(mktemp -d "$qmp_base/sg-boot-test.XXXXXX")
+QMP_SOCK="$QMP_DIR/qmp.sock"
 SERIAL_LOG="$ARTIFACTS/serial.log"
 QEMU_PID=""
 
@@ -49,7 +58,7 @@ cleanup() {
         done
         kill -9 "$QEMU_PID" 2>/dev/null || true
     fi
-    rm -f "$QMP_SOCK"
+    rm -rf "$QMP_DIR"
     exit $rc
 }
 trap cleanup EXIT INT TERM
