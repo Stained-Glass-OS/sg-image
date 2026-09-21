@@ -34,7 +34,8 @@ jobs:
           # .chroot postinst extension, mkosi.repart handling) that differs
           # between versions. Pin to the version this was developed and tested
           # against rather than taking whatever the runner happens to ship.
-          pipx install "mkosi==25.3"
+          # mkosi is not published to PyPI; it installs from its git tag.
+          pipx install "git+https://github.com/systemd/mkosi.git@v25.3"
           mkosi --version
 
       - name: Allow unprivileged user namespaces
