@@ -1,0 +1,40 @@
+#!/bin/sh
+# Runs inside the image after packages are installed and extra trees are in.
+#
+# The .chroot extension is load bearing: it makes mkosi chroot into the image
+# before running this. Without it the script executes in mkosi's sandbox, where
+# /usr is the *host's* -- systemctl then reports that greetd.service does not
+# exist, and every absolute path below silently refers to the wrong system.
+set -eu
+
+# --- sg-session -----------------------------------------------------------
+# Staged into an extra tree by the Makefile. Its dependencies came from apt, so
+# dpkg has nothing to resolve here. See the ExtraTrees note in mkosi.conf for
+# why this is not done through mkosi's local package repository.
+if [ -d /opt/sg-packages ]; then
+    echo "[sg-image] installing staged packages"
+    dpkg -i /opt/sg-packages/*.deb
+    rm -rf /opt/sg-packages
+else
+    echo "[sg-image] ERROR: /opt/sg-packages missing; run 'make image', not bare mkosi" >&2
+    exit 1
+fi
+
+echo "[sg-image] configuring services"
+systemctl enable greetd.service
+systemctl enable sg-prefix-init.service
+systemctl enable ssh.service
+systemctl enable systemd-networkd.service
+systemctl enable systemd-resolved.service
+systemctl set-default graphical.target
+
+# --- the Wine prefix is NOT baked here ------------------------------------
+# It would be nice to bake it: a prefix build costs tens of seconds on every
+# first boot. But the image build's /var is not the image's /var, so anything
+# written to /var/lib/stained-glass here is liable to be discarded, and a
+# "baked" prefix that silently is not there is worse than no bake at all.
+#
+# sg-prefix-init.service builds it on first boot instead, ordered before
+# greetd. The boot gate's timeouts account for it.
+
+echo "[sg-image] done"

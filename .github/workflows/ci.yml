@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  boot-gate:
+    name: build image + boot gate
+    runs-on: ubuntu-latest
+    # A Debian image build plus a Wine session boot under TCG is not quick.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: sg-image
+
+      - name: Check out sg-session
+        uses: actions/checkout@v4
+        with:
+          repository: Stained-Glass-OS/sg-session
+          path: sg-session
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            mkosi systemd-repart reprepro debian-archive-keyring \
+            qemu-system-x86 qemu-utils ovmf openssh-client \
+            debhelper build-essential devscripts shellcheck
+
+      - name: Report accelerator
+        # GitHub's Linux runners expose /dev/kvm on larger images only. The gate
+        # falls back to TCG with a longer budget; this step just makes the log
+        # say which one happened, so a slow run is not a mystery.
+        run: |
+          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            echo "KVM available"
+          else
+            echo "No KVM: the gate will run under TCG (slow)"
+          fi
+
+      - name: Build image
+        working-directory: sg-image
+        run: make image
+
+      - name: Boot gate
+        working-directory: sg-image
+        run: make boot-test
+
+      - name: Upload gate artifacts
+        # The screenshot is the point. Upload it whether or not the gate passed.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-gate-artifacts
+          path: |
+            sg-image/build/artifacts/
+          if-no-files-found: warn

@@ -1,0 +1,5 @@
+# Build output. Contains the generated lab ssh key -- never commit this tree.
+/build/
+/mkosi.packages/*.deb
+/mkosi.output/
+/.mkosi-*
