@@ -58,6 +58,7 @@ test: image boot-test
 
 deps:
 	sudo apt-get install -y mkosi systemd-repart qemu-system-x86 qemu-utils \
+	                        systemd-boot-efi systemd-boot-tools \
 	                        ovmf debian-archive-keyring openssh-client
 
 clean:
