@@ -88,4 +88,4 @@ disposable lab machine, reachable only with that generated key.
 
 ## License
 
-LGPL-2.1+ (the brief's default for this repo — pending David's confirmation).
+**AGPL-3.0-or-later.** See [ADR 0004](https://github.com/Stained-Glass-OS/stained-glass/blob/main/docs/decisions/0004-licensing.md).
