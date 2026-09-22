@@ -91,6 +91,7 @@ cp "$OVMF_VARS_SRC" "$RUN_VARS"
 log "booting: accel=$ACCEL mem=${MEM}M cpus=$CPUS ssh=localhost:$SSH_PORT"
 rm -f "$QMP_SOCK"
 
+# shellcheck disable=SC2054  # the commas are inside quoted QEMU arguments
 qemu_args=(
     -machine "q35,accel=$ACCEL"
     -m "$MEM"
@@ -141,11 +142,30 @@ done
 log "ssh is up after $(( BOOT_TIMEOUT - (deadline - SECONDS) ))s"
 
 # --- the actual check ------------------------------------------------------
-# sg-session-check must run as the session user: it talks to that session's
-# X display and inspects that user's Wine processes.
-log "running sg-session-check in the guest"
+# Which guest-side check to run is selectable so the same QEMU, ssh and QMP
+# machinery can drive more than one gate. The default is the Phase 0 session
+# check; SG_GUEST_CHECK=multiuser runs the S2 gate instead.
+case "${SG_GUEST_CHECK:-session}" in
+    session)
+        # sg-session-check runs as the session user: it talks to that session's
+        # X display and inspects that user's Wine processes.
+        CHECK_CMD="SG_CHECK_TIMEOUT=$CHECK_TIMEOUT runuser -u sguser -- /usr/bin/sg-session-check"
+        CHECK_NAME="sg-session-check"
+        ;;
+    multiuser)
+        # The S2 gate runs as root: it creates test users and runs Wine as each.
+        CHECK_CMD="/usr/bin/sg-multiuser-check"
+        CHECK_NAME="sg-multiuser-check (S2 gate)"
+        ;;
+    *)
+        fail "unknown SG_GUEST_CHECK: ${SG_GUEST_CHECK}"
+        exit 2
+        ;;
+esac
+
+log "running $CHECK_NAME in the guest"
 set +e
-ssh_guest "SG_CHECK_TIMEOUT=$CHECK_TIMEOUT runuser -u sguser -- /usr/bin/sg-session-check" 2>&1 | tee "$ARTIFACTS/session-check.log"
+ssh_guest "$CHECK_CMD" 2>&1 | tee "$ARTIFACTS/${SG_GUEST_CHECK:-session}-check.log"
 RC=${PIPESTATUS[0]}
 set -e
 

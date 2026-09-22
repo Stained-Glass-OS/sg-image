@@ -30,6 +30,16 @@ jobs:
           repository: Stained-Glass-OS/wine-sg
           path: wine-sg
 
+      # Same cache as wine-sg's own CI, and the same reasoning: 'make image'
+      # builds Wine from source, and that dominates the job. Keyed on the
+      # upstream version and the patch series so a change anywhere else in
+      # wine-sg still hits it.
+      - name: Cache the Wine build tree
+        uses: actions/cache@v4
+        with:
+          path: wine-sg/build
+          key: wine-build-${{ runner.os }}-${{ hashFiles('wine-sg/wine-version', 'wine-sg/patches/**') }}
+
       - name: Install dependencies
         run: |
           sudo apt-get update

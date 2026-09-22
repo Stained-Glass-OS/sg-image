@@ -42,7 +42,18 @@ It uses KVM when `/dev/kvm` is usable and falls back to TCG with a 6x longer
 budget, so it works in CI runners without nested virt.
 
 Knobs: `SG_BOOT_TIMEOUT`, `SG_CHECK_TIMEOUT`, `SG_SSH_PORT`, `SG_VM_MEM`,
-`SG_VM_CPUS`, `SG_IMAGE`.
+`SG_VM_CPUS`, `SG_IMAGE`, `SG_GUEST_CHECK`.
+
+## The S2 gate
+
+`make multiuser-test` boots the image and runs `sg-multiuser-check` in the
+guest, reusing the same QEMU, ssh and QMP machinery (`SG_GUEST_CHECK=multiuser`).
+
+**It is expected to fail — 0 of 5 clauses today — and that is its job.** It is
+deliberately excluded from `make test` and from CI, because a known-red gate
+sitting in CI would mask real regressions. Run it on purpose.
+
+See [`stained-glass/docs/s2-wineserver-analysis.md`](https://github.com/Stained-Glass-OS/stained-glass/blob/main/docs/s2-wineserver-analysis.md).
 
 ## Things that will bite you
 

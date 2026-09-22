@@ -15,7 +15,7 @@ EXTRA_TREE  := $(BUILD)/extra-tree
 SG_SESSION  ?= ../sg-session
 SG_WINE     ?= ../wine-sg
 
-.PHONY: all image boot-test test deps sshkey staged-debs session-deb wine-deb clean distclean
+.PHONY: all image boot-test multiuser-test test deps sshkey staged-debs session-deb wine-deb clean distclean
 
 all: image
 
@@ -73,6 +73,12 @@ image: staged-debs
 
 boot-test:
 	test/boot-test.sh
+
+# The S2 gate, driven against a real booted image. Expected to fail until S2
+# lands -- see sg-session/bin/sg-multiuser-check. Deliberately not part of
+# 'make test': a known-red gate wired into CI would mask real regressions.
+multiuser-test:
+	SG_GUEST_CHECK=multiuser test/boot-test.sh
 
 test: image boot-test
 
