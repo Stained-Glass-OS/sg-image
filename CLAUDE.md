@@ -42,6 +42,8 @@ It uses KVM when `/dev/kvm` is usable and falls back to TCG with a 6x longer
 budget, so it works in CI runners without nested virt.
 
 Knobs: `SG_BOOT_TIMEOUT`, `SG_CHECK_TIMEOUT`, `SG_SSH_PORT`, `SG_VM_MEM`,
+`SG_KEEP_VM` (leave the guest up to inspect a failure over ssh -- the gate
+prints the command),
 `SG_VM_CPUS`, `SG_IMAGE`, `SG_GUEST_CHECK`.
 
 ## The S2 gate

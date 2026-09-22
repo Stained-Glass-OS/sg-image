@@ -48,6 +48,16 @@ fail() { echo "[boot-test] FAIL: $*" >&2; }
 
 cleanup() {
     local rc=$?
+    # SG_KEEP_VM=1 leaves the guest running so a failure can be inspected live.
+    # Diagnosing a broken session from artifacts alone means a full rebuild per
+    # hypothesis; with the guest up it is an ssh away. The command to reach it
+    # is printed rather than remembered.
+    if [[ "${SG_KEEP_VM:-0}" == "1" && -n "$QEMU_PID" ]] && kill -0 "$QEMU_PID" 2>/dev/null; then
+        log "SG_KEEP_VM=1 -- leaving the guest running (qemu pid $QEMU_PID)"
+        log "  ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $SSH_PORT root@127.0.0.1"
+        log "  kill $QEMU_PID   # when done"
+        exit "$rc"
+    fi
     if [[ -n "$QEMU_PID" ]] && kill -0 "$QEMU_PID" 2>/dev/null; then
         log "shutting down the VM"
         python3 "$HERE/test/qmp.py" "$QMP_SOCK" quit >/dev/null 2>&1 || true
