@@ -13,8 +13,9 @@ IMAGE       := $(BUILD)/sg-image.raw
 SSH_KEY     := $(BUILD)/ssh/id_ed25519
 EXTRA_TREE  := $(BUILD)/extra-tree
 SG_SESSION  ?= ../sg-session
+SG_WINE     ?= ../wine-sg
 
-.PHONY: all image boot-test test deps sshkey session-deb clean distclean
+.PHONY: all image boot-test test deps sshkey staged-debs session-deb wine-deb clean distclean
 
 all: image
 
@@ -30,22 +31,41 @@ $(SSH_KEY):
 	@install -m 0600 $@.pub $(EXTRA_TREE)/root/.ssh/authorized_keys
 	@echo "ssh key ready: $@"
 
-# sg-session ships as a .deb, like everything else in this project. Build it
-# from the sibling checkout and drop it where mkosi will find it.
-session-deb: $(SSH_KEY)
+# Everything ships as a .deb. Build them from the sibling checkouts and drop
+# them where the image build will pick them up.
+#
+# staged-debs is what image depends on; it clears the staging directory once,
+# then each package target adds to it.
+staged-debs: $(SSH_KEY)
+	@mkdir -p $(EXTRA_TREE)/opt/sg-packages
+	@rm -f $(EXTRA_TREE)/opt/sg-packages/*.deb
+	$(MAKE) wine-deb session-deb
+	@echo "staged for the image:"; ls -1 $(EXTRA_TREE)/opt/sg-packages/
+
+# wine-sg is the reason this image can run 32-bit Windows applications without
+# i386 multiarch. The first build takes about 12 minutes; later ones are
+# incremental, since wine-sg keeps its object tree.
+wine-deb:
+	@test -d $(SG_WINE) || { \
+		echo "wine-sg checkout not found at $(SG_WINE)."; \
+		echo "clone it beside this repo, or set SG_WINE=/path/to/wine-sg"; \
+		exit 1; }
+	$(MAKE) -C $(SG_WINE) deb
+	@mkdir -p $(EXTRA_TREE)/opt/sg-packages
+	@cp $(SG_WINE)/../wine-sg_*_amd64.deb $(EXTRA_TREE)/opt/sg-packages/
+
+session-deb:
 	@test -d $(SG_SESSION) || { \
 		echo "sg-session checkout not found at $(SG_SESSION)."; \
 		echo "clone it beside this repo, or set SG_SESSION=/path/to/sg-session"; \
 		exit 1; }
 	$(MAKE) -C $(SG_SESSION) deb
 	@mkdir -p $(EXTRA_TREE)/opt/sg-packages
-	@rm -f $(EXTRA_TREE)/opt/sg-packages/*.deb
 	@cp $(SG_SESSION)/../sg-session_*_all.deb $(EXTRA_TREE)/opt/sg-packages/
-	@echo "sg-session packages staged:"; ls -1 $(EXTRA_TREE)/opt/sg-packages/
 
 # --- image -----------------------------------------------------------------
 
-image: session-deb
+image: staged-debs
 	mkosi --force
 	@ls -lh $(IMAGE)
 

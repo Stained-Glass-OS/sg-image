@@ -7,16 +7,33 @@
 # exist, and every absolute path below silently refers to the wrong system.
 set -eu
 
-# --- sg-session -----------------------------------------------------------
-# Staged into an extra tree by the Makefile. Its dependencies came from apt, so
-# dpkg has nothing to resolve here. See the ExtraTrees note in mkosi.conf for
-# why this is not done through mkosi's local package repository.
+# --- wine-sg and sg-session -----------------------------------------------
+# Staged into an extra tree by the Makefile. Their library dependencies came
+# from apt, so dpkg has nothing to resolve here. Both are passed to one dpkg
+# invocation so it can order them itself -- sg-session depends on wine-sg.
+# See the ExtraTrees note in mkosi.conf for why this is not done through
+# mkosi's local package repository.
 if [ -d /opt/sg-packages ]; then
     echo "[sg-image] installing staged packages"
     dpkg -i /opt/sg-packages/*.deb
     rm -rf /opt/sg-packages
 else
     echo "[sg-image] ERROR: /opt/sg-packages missing; run 'make image', not bare mkosi" >&2
+    exit 1
+fi
+
+# Fail the build rather than the boot if the Wine we depend on is not actually
+# here. Without this the image builds happily and the session dies later for a
+# reason that takes a boot gate and a screenshot to diagnose.
+if [ ! -x /opt/wine-sg/bin/wine ]; then
+    echo "[sg-image] ERROR: /opt/wine-sg/bin/wine missing after install" >&2
+    exit 1
+fi
+echo "[sg-image] wine: $(/opt/wine-sg/bin/wine --version 2>/dev/null || echo unknown)"
+if [ -d /opt/wine-sg/lib/wine/i386-windows ]; then
+    echo "[sg-image] 32-bit PE support present ($(ls /opt/wine-sg/lib/wine/i386-windows | wc -l) files)"
+else
+    echo "[sg-image] ERROR: no i386-windows tree -- this Wine cannot run 32-bit apps" >&2
     exit 1
 fi
 

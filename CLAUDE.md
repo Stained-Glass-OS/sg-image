@@ -14,10 +14,14 @@ make boot-test   # boot it headless in QEMU and run the gate
 make test        # both
 ```
 
-Expects `sg-session` checked out beside this repo; override with
-`SG_SESSION=/path/to/sg-session`. `make image` builds that repo's `.deb` and
-stages it into `build/extra-tree/opt/sg-packages/`, and `mkosi.postinst.chroot`
-installs it with `dpkg`.
+Expects **`wine-sg` and `sg-session`** checked out beside this repo; override
+with `SG_WINE=` and `SG_SESSION=`. `make image` builds both repos' `.deb`s,
+stages them into `build/extra-tree/opt/sg-packages/`, and
+`mkosi.postinst.chroot` installs them with `dpkg` in one invocation so it can
+order them itself.
+
+The first `wine-sg` build takes about 12 minutes; later ones are incremental,
+because `wine-sg` keeps its object tree.
 
 That is deliberately *not* mkosi's `PackageDirectories` mechanism, which only
 regenerates its local apt repository when the repository directory's mtime
@@ -61,19 +65,21 @@ Knobs: `SG_BOOT_TIMEOUT`, `SG_CHECK_TIMEOUT`, `SG_SSH_PORT`, `SG_VM_MEM`,
 
 ## Deliberate choices
 
-- **Pure amd64, no i386 multiarch.** Which means **32-bit Windows applications
-  do not run on this image.** Neither Debian's nor WineHQ's packaged Wine is
-  built for new WoW64 — they ship the thunk DLLs but not the i386 PE set. See
-  ADR 0002; this one needs David's decision before anything depends on 32-bit.
-- **Debian's Wine 10.0**, not WineHQ's 11.18. See ADR 0001.
+- **Pure amd64, no i386 multiarch — and 32-bit Windows applications still
+  run**, because the image ships `wine-sg` built with
+  `--enable-archs=i386,x86_64` rather than a distribution Wine. See ADR 0005.
+  The gate proves it by launching `syswow64\notepad.exe` into the shell.
+- **`wine-sg`, not Debian's Wine.** This also made the image *smaller*: 454 MB
+  for both architectures against Debian's 717 MB + 601 MB. See `docs/packages.md`.
 - **cage + XWayland + winex11**, not winewayland. See ADR 0003.
 - **No backports yet**, despite the brief asking for a backports kernel and
   Mesa. QEMU's virtio-gpu is served fine by trixie's Mesa, and adding a second
   suite adds risk to the gate for no Phase 0 benefit. Revisit when real hardware
   needs it — that is what backports are actually for here.
-- **VKD3D-Proton is not in the image.** It is not packaged in Debian at all;
-  Debian's `vkd3d` packages are Wine's own vkd3d, a different project. DXVK
-  *is* packaged and is installed. Sourcing VKD3D-Proton needs a decision.
+- **Neither DXVK nor VKD3D-Proton is in the image.** Debian's DXVK ships
+  `.dll.so` ELF builtins, whose 32-bit half would need the i386 multiarch we
+  just removed; upstream DXVK ships PE DLLs, which are the right shape for new
+  WoW64. VKD3D-Proton was never packaged. See `docs/packages.md` and issue #6.
 - **No `debian/` in this repo.** The artifact here is a disk image, not a
   package. The brief's "packaging from day one" rule is about code repos.
 

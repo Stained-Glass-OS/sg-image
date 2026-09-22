@@ -5,33 +5,63 @@ gaps between what the brief asked for and what Debian actually ships.
 
 ## Wine
 
-`wine` plus `wine64`. On amd64 the `wine` metapackage is satisfied by `wine64`
-alone (`Depends: wine64 (>= …) | wine32 (>= …)`), and it provides
-`/usr/bin/wine` through Debian's alternatives system, pointing at
-`/usr/bin/wine-stable`.
+**Not Debian's Wine.** The image installs
+[`wine-sg`](https://github.com/Stained-Glass-OS/wine-sg) from its `.deb`, built
+with `--enable-archs=i386,x86_64`, into `/opt/wine-sg`. That is what lets this
+pure amd64 image run **32-bit** Windows applications with no multiarch — see
+[ADR 0005](https://github.com/Stained-Glass-OS/stained-glass/blob/main/docs/decisions/0005-building-wine-ourselves.md).
+The boot gate proves it end to end by launching `syswow64\notepad.exe` and
+requiring it to appear inside the shell.
 
-Version 10.0 (`10.0~repack-6`), not WineHQ's 11.18. See ADR 0001.
+The package list carries the ~25 libraries `wine-sg` links against **directly**;
+apt resolves the rest. Keep that list in step with `wine-sg`'s own `Depends`,
+because the image installs the `.deb` with `dpkg`, which does not resolve
+anything itself.
 
-**No i386 multiarch**, so no 32-bit Windows applications. See ADR 0002 — this is
-the most consequential limitation of the Phase 0 image, and it needs David's
-decision before anything is built that assumes 32-bit support.
+### It also made the image smaller
+
+Counter-intuitively, building our own Wine *reduced* the image:
+
+| | installed size |
+|---|---|
+| Debian `wine` (amd64 tree) | 717 MB |
+| Debian `wine` (i386 tree, needed for 32-bit) | 601 MB |
+| **`wine-sg`, both architectures** | **454 MB** |
+
+Debian does not strip its Wine; we do, with the matching mingw `strip` per
+architecture. Unstripped, `wine-sg` is 1.5 GB — about 1.1 GB of that is DWARF.
+The cost is symbolised `winedbg` backtraces; rebuild `wine-sg` with `STRIP=0`
+when chasing a crash inside Wine.
 
 ## Direct3D translation layers
 
+**Neither DXVK nor VKD3D-Proton is currently in the image.**
+
 | Component | Status |
 |---|---|
-| DXVK | Packaged in Debian (`dxvk` 2.6, plus `dxvk-wine64`). Installed. |
-| VKD3D-Proton | **Not packaged in Debian. Not in the image.** |
+| DXVK | Packaged in Debian, but **unusable with `wine-sg`** — see below. |
+| VKD3D-Proton | Not packaged in Debian at all. |
 
-The brief lists VKD3D-Proton among the image's packages. It is not available
-from Debian, and the similarly named Debian packages are a different project:
-`libvkd3d1`, `vkd3d-compiler` and friends are **Wine's own vkd3d**, not
-VKD3D-Proton. They are not a substitute.
+DXVK *was* installed while the image used Debian's Wine. Moving to `wine-sg`
+made Debian's DXVK packages inapplicable, for a reason worth understanding
+rather than working around:
 
-Getting VKD3D-Proton in means one of: packaging it ourselves, vendoring a
-release tarball, or deciding Phase 0 does not need Direct3D 12. Nothing in the
-Phase 0 gate exercises D3D12, so this is deferred rather than solved —
-**flagged for David**.
+`dxvk-wine64` ships **`.dll.so` files** — old-style Wine builtins, which are
+ELF shared objects, laid out for Debian's Wine directory. Under new WoW64 the
+32-bit side has no 32-bit ELF loader at all, so a 32-bit `d3d9.dll.so` could
+only work by reintroducing i386 multiarch, which is precisely what we removed.
+
+Upstream DXVK ships **PE** DLLs (`x32/` and `x64/`), which is the right shape
+for new WoW64: they are copied into the prefix like any Windows DLL. So the fix
+is to consume upstream DXVK rather than Debian's packaging, and to install it
+into the system prefix at `sg-prefix-init` time.
+
+The same applies to VKD3D-Proton, which was never packaged anyway. Note again
+the name collision: Debian's `libvkd3d1` and `vkd3d-compiler` are **Wine's own
+vkd3d**, a different project, and not a substitute.
+
+Nothing in the Phase 0 gate exercises Direct3D, so this is deferred rather than
+solved. Tracked as [#6](https://github.com/Stained-Glass-OS/stained-glass/issues/6).
 
 ## Kernel and Mesa: no backports
 
