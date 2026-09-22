@@ -76,6 +76,10 @@ done
 OVMF_VARS_SRC="${OVMF_CODE/CODE/VARS}"
 [[ -f "$OVMF_VARS_SRC" ]] || { fail "no OVMF vars template beside $OVMF_CODE"; exit 2; }
 
+# Clear the artifacts directory each run. Leaving it means a failed run's
+# journal or screenshot survives into the next one, and reading a stale journal
+# while diagnosing a live failure sends you somewhere there is nothing to find.
+rm -rf "$ARTIFACTS"
 mkdir -p "$ARTIFACTS"
 : > "$SERIAL_LOG"
 
@@ -184,6 +188,16 @@ else
 fi
 
 ssh_guest "journalctl -b --no-pager" > "$ARTIFACTS/journal.log" 2>/dev/null || true
+
+# The session's own output does not reach the journal -- greetd's child writes
+# to its stdout, and sg-session logs to /var/log/stained-glass. Without these,
+# a session that comes up broken leaves no trace of why, which has cost real
+# time more than once.
+ssh_guest "tail -n 200 /var/log/stained-glass/* 2>/dev/null" > "$ARTIFACTS/session-logs.txt" 2>/dev/null || true
+ssh_guest "systemctl status sg-wineserver sg-prefix-init greetd --no-pager -l 2>&1 | head -60" \
+    > "$ARTIFACTS/unit-status.txt" 2>/dev/null || true
+ssh_guest "ps -eo user,pid,comm 2>/dev/null | grep -iE 'wine|explorer|cage' || true" \
+    > "$ARTIFACTS/processes.txt" 2>/dev/null || true
 
 echo
 if [[ $RC -eq 0 ]]; then
