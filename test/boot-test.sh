@@ -169,7 +169,18 @@ case "${SG_GUEST_CHECK:-session}" in
     d3d)
         # The D3D gate runs as the session user: it creates Direct3D devices,
         # which needs that user's prefix and their session.
-        CHECK_CMD="runuser -u sguser -- /usr/bin/sg-d3d-check"
+        #
+        # Waits for the prefix first. sg-prefix-init takes a couple of minutes
+        # on first boot, and the DLLs are copied several seconds before the
+        # overrides are written -- so a gate that starts too early sees every
+        # file in place and not one override, and reports a convincing failure
+        # about something that is merely unfinished. The session gate has the
+        # same need and waits for session.env; this waits for the stamp.
+        CHECK_CMD="for i in \$(seq 1 $CHECK_TIMEOUT); do \
+            [ -e /var/lib/stained-glass/prefix/.sg-initialized ] && break; sleep 1; done; \
+            [ -e /var/lib/stained-glass/prefix/.sg-initialized ] \
+              || { echo 'FAIL  prefix was still initializing after ${CHECK_TIMEOUT}s'; exit 1; }; \
+            runuser -u sguser -- /usr/bin/sg-d3d-check"
         CHECK_NAME="sg-d3d-check (Direct3D)"
         ;;
     multiuser)
