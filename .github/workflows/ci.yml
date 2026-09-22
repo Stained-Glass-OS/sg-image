@@ -10,8 +10,9 @@ jobs:
   boot-gate:
     name: build image + boot gate
     runs-on: ubuntu-latest
-    # A Debian image build plus a Wine session boot under TCG is not quick.
-    timeout-minutes: 120
+    # This job now builds Wine from source as well as the image, then boots it
+    # under TCG. On a 4-core runner that is slow; budget accordingly.
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,6 +24,12 @@ jobs:
           repository: Stained-Glass-OS/sg-session
           path: sg-session
 
+      - name: Check out wine-sg
+        uses: actions/checkout@v4
+        with:
+          repository: Stained-Glass-OS/wine-sg
+          path: wine-sg
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -30,7 +37,15 @@ jobs:
             systemd-repart systemd-boot-efi \
             debian-archive-keyring dosfstools e2fsprogs mtools \
             qemu-system-x86 qemu-utils ovmf openssh-client \
-            debhelper build-essential devscripts shellcheck
+            debhelper build-essential devscripts shellcheck \
+            gcc-mingw-w64-i686 gcc-mingw-w64-x86-64 mingw-w64-tools \
+            patch xz-utils file
+          # wine-sg is built from source as part of 'make image', so the image
+          # job needs Wine's build dependencies too.
+          sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          sudo apt-get update
+          sudo apt-get build-dep -y --no-install-recommends wine || true
+          sudo apt-get install -y --no-install-recommends libsane-dev
           # Ubuntu's mkosi lags, and the image config uses behaviour (the
           # .chroot postinst extension, mkosi.repart handling) that differs
           # between versions. Pin to the version this was developed and tested
