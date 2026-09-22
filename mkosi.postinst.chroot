@@ -40,6 +40,11 @@ fi
 echo "[sg-image] configuring services"
 systemctl enable greetd.service
 systemctl enable sg-prefix-init.service
+# The machine-level wineserver: the Windows system itself, running before any
+# login. Enabled explicitly rather than relying on the package's own enable --
+# the units this image depends on are listed here so a missing one is a build
+# error rather than a machine that boots without its Windows side.
+systemctl enable sg-wineserver.service
 systemctl enable ssh.service
 systemctl enable systemd-networkd.service
 systemctl enable systemd-resolved.service
