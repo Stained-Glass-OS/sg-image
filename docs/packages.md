@@ -35,12 +35,12 @@ when chasing a crash inside Wine.
 
 ## Direct3D translation layers
 
-**Neither DXVK nor VKD3D-Proton is currently in the image.**
+**DXVK and VKD3D-Proton are in the image, from upstream rather than Debian.**
 
 | Component | Status |
 |---|---|
-| DXVK | Packaged in Debian, but **unusable with `wine-sg`** — see below. |
-| VKD3D-Proton | Not packaged in Debian at all. |
+| DXVK | Upstream PE build, 3.1.1. Debian's packages are **unusable with `wine-sg`** — see below. |
+| VKD3D-Proton | Upstream PE build, 3.0.1. Not packaged in Debian at all. |
 
 DXVK *was* installed while the image used Debian's Wine. Moving to `wine-sg`
 made Debian's DXVK packages inapplicable, for a reason worth understanding
@@ -60,8 +60,33 @@ The same applies to VKD3D-Proton, which was never packaged anyway. Note again
 the name collision: Debian's `libvkd3d1` and `vkd3d-compiler` are **Wine's own
 vkd3d**, a different project, and not a substitute.
 
-Nothing in the Phase 0 gate exercises Direct3D, so this is deferred rather than
-solved. Tracked as [#6](https://github.com/Stained-Glass-OS/stained-glass/issues/6).
+**Both are now in the image**, as upstream PE DLLs.
+
+`make d3d` fetches the upstream releases with pinned sha256 hashes and stages
+them into `/opt/sg-d3d/{dxvk,vkd3d-proton}/{x64,x32,x86}`. `sg-install-d3d`
+copies them into the prefix at `sg-prefix-init` time — 64-bit into `system32`
+and 32-bit into `syswow64`, which is the Windows layout rather than the
+intuitive one — and sets the DLL overrides.
+
+Two things that were not obvious:
+
+- **Wine reads `DllOverrides` from HKCU only.** In a shared system prefix HKCU
+  is per user, so an administrator has nowhere to put a machine-wide override:
+  the DLLs sit in `system32` looking installed while Wine loads its own
+  builtins, with no error anywhere. `wine-sg` patch 0009 makes HKLM a
+  machine-wide default, consulted after HKCU so a user can still override it.
+- **File checks prove almost nothing here.** An installation that is doing
+  nothing looks identical to one that works. `sg-d3d-check` therefore creates
+  a real D3D11 and D3D12 device, on both architectures, using a probe built as
+  a Windows PE (`sg-session`'s `test/d3d-probe.c`).
+
+A Vulkan driver has to exist underneath: the image ships `mesa-vulkan-drivers`,
+whose lavapipe is a software ICD, so Direct3D works — slowly — on a machine
+with no GPU, including the QEMU guest. Run it with `make d3d-test`.
+
+Licences are carried in `licenses/`: DXVK is zlib, VKD3D-Proton is LGPL-2.1.
+
+Tracked as [#6](https://github.com/Stained-Glass-OS/stained-glass/issues/6).
 
 ## Kernel and Mesa: no backports
 

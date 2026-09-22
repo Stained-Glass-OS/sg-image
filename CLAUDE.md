@@ -89,10 +89,12 @@ See [`stained-glass/docs/s2-wineserver-analysis.md`](https://github.com/Stained-
   Mesa. QEMU's virtio-gpu is served fine by trixie's Mesa, and adding a second
   suite adds risk to the gate for no Phase 0 benefit. Revisit when real hardware
   needs it — that is what backports are actually for here.
-- **Neither DXVK nor VKD3D-Proton is in the image.** Debian's DXVK ships
+- **DXVK and VKD3D-Proton come from upstream, not Debian.** Debian's DXVK ships
   `.dll.so` ELF builtins, whose 32-bit half would need the i386 multiarch we
-  just removed; upstream DXVK ships PE DLLs, which are the right shape for new
-  WoW64. VKD3D-Proton was never packaged. See `docs/packages.md` and issue #6.
+  removed; upstream ships PE DLLs, the right shape for new WoW64. VKD3D-Proton
+  was never packaged. `make d3d` fetches both with pinned hashes into
+  `/opt/sg-d3d`; `make d3d-test` proves a D3D11 and D3D12 device can actually
+  be created in the guest, on both architectures. See `docs/packages.md`.
 - **No `debian/` in this repo.** The artifact here is a disk image, not a
   package. The brief's "packaging from day one" rule is about code repos.
 
