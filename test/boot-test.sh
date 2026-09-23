@@ -219,6 +219,10 @@ if [[ "${SG_SKIP_LOGIN:-0}" != "1" ]]; then
     sleep 2   # the window exists; give the compositor a moment to focus it
     python3 "$HERE/test/qmp.py" "$QMP_SOCK" screendump "$ARTIFACTS/screenshot-login.ppm" >/dev/null || true
     log "login screen is up; signing in as sguser"
+    # Warm up the greeter's keymap; the first keys are otherwise lost.
+    python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "x" >/dev/null
+    python3 "$HERE/test/qmp.py" "$QMP_SOCK" key backspace >/dev/null
+    sleep 1
     python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "sguser" >/dev/null
     python3 "$HERE/test/qmp.py" "$QMP_SOCK" key ret >/dev/null
     sleep 4
@@ -251,7 +255,7 @@ fi
 # lock screen must come up as the machine account (sgsystem), and the lab
 # password typed through the keyboard must unlock. Only after a good session.
 if [[ "${SG_GUEST_CHECK:-session}" == session && $RC -eq 0 && "${SG_TEST_LOCK:-1}" == 1 ]]; then
-    ctl="SG_LOCK_CONTROL=/run/stained-glass/seat0/\$(id -u sguser)/control.sock /usr/libexec/stained-glass/sg-lockctl"
+    ctl="SG_LOCK_CONTROL=/run/stained-glass-seat/seat0/\$(id -u sguser)/control.sock /usr/libexec/stained-glass/sg-lockctl"
     lock_status() { ssh_guest "$ctl STATUS" 2>/dev/null | tr -d '\r'; }
     python3 "$HERE/test/qmp.py" "$QMP_SOCK" key meta_l+l >/dev/null
     sleep 3
@@ -266,9 +270,20 @@ if [[ "${SG_GUEST_CHECK:-session}" == session && $RC -eq 0 && "${SG_TEST_LOCK:-1
     else echo "FAIL  no lock screen appeared"; RC=1; fi
     sleep 6
     python3 "$HERE/test/qmp.py" "$QMP_SOCK" screendump "$ARTIFACTS/screenshot-locked.ppm" >/dev/null || true
-    python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "$(cat "$LAB_PASSWORD_FILE")" >/dev/null
-    python3 "$HERE/test/qmp.py" "$QMP_SOCK" key ret >/dev/null
-    sleep 6
+    # The lock screen's X server is freshly started, and its first keystrokes
+    # are lost while XWayland loads the keymap -- which would corrupt the
+    # password's first characters. Warm up with a throwaway key and clear it,
+    # then type the password. Retry the whole exchange a few times: a dropped
+    # key means a wrong password, and the greeter simply re-prompts.
+    for _try in 1 2 3; do
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "x" >/dev/null
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" key backspace >/dev/null
+        sleep 1
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "$(cat "$LAB_PASSWORD_FILE")" >/dev/null
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" key ret >/dev/null
+        sleep 5
+        [[ "$(lock_status)" == "OK unlocked" ]] && break
+    done
     if [[ "$(lock_status)" == "OK unlocked" ]]; then echo "PASS  the password typed at the lock screen unlocks"
     else echo "FAIL  still locked after typing the password: $(lock_status)"; RC=1; fi
 fi
