@@ -232,7 +232,7 @@ $(ADDONS_DIR)/.sg-addons:
 	echo "$(MONO_SHA256)  $$m" | sha256sum -c - ; \
 	echo "$(GECKO_X86_SHA256)  $$g32" | sha256sum -c - ; \
 	echo "$(GECKO_X64_SHA256)  $$g64" | sha256sum -c - ; \
-	cp $$m $(ADDONS_DIR)/mono/; cp $$g32 $$g64 $(ADDONS_DIR)/gecko/
+	cp $$m $(CURDIR)/$(ADDONS_DIR)/mono/; cp $$g32 $$g64 $(CURDIR)/$(ADDONS_DIR)/gecko/
 	@echo "wine-mono $(MONO_VERSION), wine-gecko $(GECKO_VERSION)" > $@
 	@echo "staged addons: $$(cat $@)"
 
