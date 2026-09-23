@@ -1,0 +1,13 @@
+# Stained Glass OS packages: wine-sg, sg-session, sg-shell, sg-compositor.
+#
+# Signed with the archive key 397C 84B2 1F74 F300 CD55 660E 02F2 3791 65C3 F0FB,
+# whose public half is the keyring below. Signed-By pins that key to this
+# source alone: it can vouch for our repository and nothing else -- never for
+# a package claiming to come from Debian. See stained-glass
+# docs/package-repository.md.
+
+Types: deb
+URIs: https://stained-glass-os.github.io/apt
+Suites: trixie
+Components: main
+Signed-By: /usr/share/keyrings/stained-glass-archive-keyring.gpg

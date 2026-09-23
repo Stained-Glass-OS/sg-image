@@ -17,7 +17,7 @@ SG_WINE     ?= ../wine-sg
 SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 
-.PHONY: addons apps apps-test update-test lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
+.PHONY: addons apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
 
 all: image
 
@@ -247,6 +247,27 @@ $(ADDONS_DIR)/.sg-addons: Makefile
 	chmod -R u=rwX,go=rX $$d/mono $$d/gecko
 	@echo "wine-mono $(MONO_VERSION), wine-gecko $(GECKO_VERSION)" > $@
 	@echo "staged addons: $$(cat $@)"
+
+# --- package repository --------------------------------------------------------
+
+# The signed apt repository, https://stained-glass-os.github.io/apt (stained-glass
+# docs/package-repository.md). Signed here with the key in ~/.sgkeys; no CI
+# system holds it.
+#
+#   make repo         build and sign it into build/apt
+#   make repo-check   verify it with apt, as a machine would (and that a
+#                     tampered index is rejected)
+#   make publish      fetch what is live, rebuild, verify, replace the live site
+REPO_DEBS = $(wildcard $(EXTRA_TREE)/opt/sg-packages/*.deb)
+
+repo: staged-debs
+	repo/build-repo.sh $(BUILD)/apt $(REPO_DEBS)
+
+repo-check: repo
+	repo/check-repo.sh $(BUILD)/apt
+
+publish: staged-debs
+	repo/publish.sh $(REPO_DEBS)
 
 # --- image -----------------------------------------------------------------
 

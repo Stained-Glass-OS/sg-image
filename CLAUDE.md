@@ -126,6 +126,13 @@ See [`stained-glass/docs/s2-wineserver-analysis.md`](https://github.com/Stained-
 - **The image carries Debian's apt sources** (`mkosi.extra/etc/apt`). mkosi's
   own build-time apt configuration is not left in the image, so before this an
   installed machine had no package sources at all.
+- **The package repository is published from here**: `make publish` builds
+  `https://stained-glass-os.github.io/apt` from the staged `.deb`s, signs it with
+  the key in `~/.sgkeys` (never in a repository), checks it with apt (and that a
+  tampered index is rejected), and replaces the live site with one orphan
+  commit. The image trusts only that key, pinned to that source. **apt upgrades
+  only to a higher version**: publishing refuses a changed package whose version
+  did not change -- bump the package's `debian/changelog`.
 - **Staged updates are gated by `make update-test`**: it reboots the guest
   twice (no `-no-reboot`), so never run it alongside another boot test -- they
   share the ssh port.
