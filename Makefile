@@ -17,7 +17,7 @@ SG_WINE     ?= ../wine-sg
 SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 
-.PHONY: fileaccess-test token-test procagent-test elevate-test privilege-test addons apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
+.PHONY: fileaccess-test token-test procagent-test elevate-test policy-test privilege-test addons apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
 
 all: image
 
@@ -311,6 +311,10 @@ procagent-test:
 # "Run as administrator" runs as the SYSTEM account, only after consent (ADR 0012).
 elevate-test:
 	SG_SKIP_LOGIN=1 SG_GUEST_CHECK=elevate test/boot-test.sh
+
+# Machine Group Policy: an admin's policy binds every user, a user cannot override.
+policy-test:
+	SG_SKIP_LOGIN=1 SG_GUEST_CHECK=policy test/boot-test.sh
 
 # Both privilege-boundary gates in one boot.
 privilege-test:

@@ -223,6 +223,15 @@ case "${SG_GUEST_CHECK:-session}" in
             /usr/bin/sg-elevate-check"
         CHECK_NAME="sg-elevate-check (ADR 0012 elevation)"
         ;;
+    policy)
+        # Machine Group Policy: an administrator's policy binds every user and a
+        # user cannot override it (both Windows programs and the shell honour
+        # it). Root: acts as SYSTEM and as the session user.
+        CHECK_CMD="for i in \$(seq 1 $CHECK_TIMEOUT); do \
+            [ -e /var/lib/stained-glass/prefix/.sg-initialized ] && break; sleep 1; done; \
+            /usr/bin/sg-policy-check"
+        CHECK_NAME="sg-policy-check (Group Policy)"
+        ;;
     token)
         # Debt D17's gate: can an ordinary user's program make itself an
         # administrator? Root, like fileaccess: it runs the probe as both.
