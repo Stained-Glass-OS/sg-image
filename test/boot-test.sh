@@ -193,8 +193,53 @@ case "${SG_GUEST_CHECK:-session}" in
             [ -e /var/lib/stained-glass/prefix/.sg-initialized ] && break; sleep 1; done; \
             [ -e /var/lib/stained-glass/prefix/.sg-initialized ] \
               || { echo 'FAIL  prefix was still initializing after ${CHECK_TIMEOUT}s'; exit 1; }; \
+            PAM_TYPE=open_session PAM_USER=sguser /usr/libexec/stained-glass/sg-profile-create; \
             runuser -u sguser -- /usr/bin/sg-apps-check"
         CHECK_NAME="sg-apps-check (PowerShell, Python)"
+        ;;
+    fileaccess)
+        # ADR 0013's gate runs as root: it acts as the session user and as
+        # SYSTEM, comparing what Unix allows each with what Wine lets them do.
+        CHECK_CMD="for i in \$(seq 1 $CHECK_TIMEOUT); do \
+            [ -e /var/lib/stained-glass/prefix/.sg-initialized ] && break; sleep 1; done; \
+            /usr/bin/sg-file-access-check"
+        CHECK_NAME="sg-file-access-check (ADR 0013)"
+        ;;
+    procagent)
+        # Debt D16/D19 (ADR 0014): can a user's program read/write another of
+        # the user's processes? Runs as the session user; the check starts and
+        # stops its own agent, proving the positive and the mutant.
+        CHECK_CMD="for i in \$(seq 1 $CHECK_TIMEOUT); do \
+            [ -e /var/lib/stained-glass/prefix/.sg-initialized ] && break; sleep 1; done; \
+            runuser -u sguser -- /usr/bin/sg-procagent-check"
+        CHECK_NAME="sg-procagent-check (D16/D19)"
+        ;;
+    elevate)
+        # ADR 0012: does "Run as administrator" run a program as the SYSTEM
+        # account, and only after consent? Root: the check starts a test-mode
+        # broker and acts as the session user (an administrator in the lab).
+        CHECK_CMD="for i in \$(seq 1 $CHECK_TIMEOUT); do \
+            [ -e /var/lib/stained-glass/prefix/.sg-initialized ] && break; sleep 1; done; \
+            /usr/bin/sg-elevate-check"
+        CHECK_NAME="sg-elevate-check (ADR 0012 elevation)"
+        ;;
+    token)
+        # Debt D17's gate: can an ordinary user's program make itself an
+        # administrator? Root, like fileaccess: it runs the probe as both.
+        CHECK_CMD="for i in \$(seq 1 $CHECK_TIMEOUT); do \
+            [ -e /var/lib/stained-glass/prefix/.sg-initialized ] && break; sleep 1; done; \
+            PAM_TYPE=open_session PAM_USER=sguser /usr/libexec/stained-glass/sg-profile-create; \
+            /usr/bin/sg-token-check"
+        CHECK_NAME="sg-token-check (D17)"
+        ;;
+    privilege)
+        # Both privilege-boundary gates in one boot: files (ADR 0013) and
+        # tokens (D17).
+        CHECK_CMD="for i in \$(seq 1 $CHECK_TIMEOUT); do \
+            [ -e /var/lib/stained-glass/prefix/.sg-initialized ] && break; sleep 1; done; \
+            PAM_TYPE=open_session PAM_USER=sguser /usr/libexec/stained-glass/sg-profile-create; \
+            rc=0; /usr/bin/sg-file-access-check || rc=1; /usr/bin/sg-token-check || rc=1; exit \$rc"
+        CHECK_NAME="sg-file-access-check + sg-token-check"
         ;;
     multiuser)
         # The S2 gate runs as root: it creates test users and runs Wine as each.

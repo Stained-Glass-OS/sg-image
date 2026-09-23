@@ -17,7 +17,7 @@ SG_WINE     ?= ../wine-sg
 SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 
-.PHONY: addons apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
+.PHONY: fileaccess-test token-test procagent-test elevate-test privilege-test addons apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
 
 all: image
 
@@ -295,6 +295,26 @@ d3d-test:
 # The bundled Windows applications (PowerShell 7, Python), in the guest.
 apps-test:
 	SG_GUEST_CHECK=apps test/boot-test.sh
+
+# Users' file access against Unix's verdict (ADR 0013).
+fileaccess-test:
+	SG_GUEST_CHECK=fileaccess test/boot-test.sh
+
+# Whether an ordinary user's program can obtain an administrator's token (D17).
+token-test:
+	SG_GUEST_CHECK=token test/boot-test.sh
+
+# Cross-process memory/debug for a user's own processes (D16/D19, ADR 0014).
+procagent-test:
+	SG_SKIP_LOGIN=1 SG_GUEST_CHECK=procagent test/boot-test.sh
+
+# "Run as administrator" runs as the SYSTEM account, only after consent (ADR 0012).
+elevate-test:
+	SG_SKIP_LOGIN=1 SG_GUEST_CHECK=elevate test/boot-test.sh
+
+# Both privilege-boundary gates in one boot.
+privilege-test:
+	SG_GUEST_CHECK=privilege test/boot-test.sh
 
 # Staged updates: download while running, install on the next reboot (F3).
 # Reboots the guest twice; uses the same ssh port, so never run it alongside

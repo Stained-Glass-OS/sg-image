@@ -43,6 +43,10 @@ fi
 # "test credentials only" rule.
 if [ -f /root/.sg-lab-password-hash ]; then
     usermod -p "$(cat /root/.sg-lab-password-hash)" sguser
+    # The lab's session user is an administrator, so elevation (ADR 0012) can be
+    # exercised. sg-admins is created by the sg-session package; add the user to
+    # it and to the Windows-side prefix group is already handled there.
+    getent group sg-admins >/dev/null && adduser sguser sg-admins >/dev/null 2>&1 || true
     rm -f /root/.sg-lab-password-hash
     echo "[sg-image] lab password set for sguser"
 else
