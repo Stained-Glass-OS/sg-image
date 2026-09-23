@@ -15,8 +15,9 @@ EXTRA_TREE  := $(BUILD)/extra-tree
 SG_SESSION  ?= ../sg-session
 SG_WINE     ?= ../wine-sg
 SG_COMPOSITOR ?= ../sg-compositor
+SG_SHELL    ?= ../sg-shell
 
-.PHONY: lab-password compositor-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
+.PHONY: lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
 
 all: image
 
@@ -40,7 +41,7 @@ $(SSH_KEY):
 staged-debs: $(SSH_KEY) lab-password
 	@mkdir -p $(EXTRA_TREE)/opt/sg-packages
 	@rm -f $(EXTRA_TREE)/opt/sg-packages/*.deb
-	$(MAKE) wine-deb compositor-deb session-deb
+	$(MAKE) wine-deb compositor-deb shell-deb session-deb
 	@echo "staged for the image:"; ls -1 $(EXTRA_TREE)/opt/sg-packages/
 
 # wine-sg is the reason this image can run 32-bit Windows applications without
@@ -66,6 +67,15 @@ session-deb:
 	@# Architecture: any; a glob for the old _all package would silently ship a
 	@# stale build left in the parent directory.
 	@cp "$$(ls -t $(SG_SESSION)/../sg-session_*_amd64.deb | head -1)" $(EXTRA_TREE)/opt/sg-packages/
+
+shell-deb:
+	@test -d $(SG_SHELL) || { \
+		echo "sg-shell checkout not found at $(SG_SHELL)."; \
+		echo "clone it beside this repo, or set SG_SHELL=/path/to/sg-shell"; \
+		exit 1; }
+	$(MAKE) -C $(SG_SHELL) deb
+	@mkdir -p $(EXTRA_TREE)/opt/sg-packages
+	@cp "$$(ls -t $(SG_SHELL)/../sg-shell_*_all.deb | head -1)" $(EXTRA_TREE)/opt/sg-packages/
 
 compositor-deb:
 	@test -d $(SG_COMPOSITOR) || { \
