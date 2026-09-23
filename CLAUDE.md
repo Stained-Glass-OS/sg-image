@@ -116,6 +116,10 @@ See [`stained-glass/docs/s2-wineserver-analysis.md`](https://github.com/Stained-
   was never packaged. `make d3d` fetches both with pinned hashes into
   `/opt/sg-d3d`; `make d3d-test` proves a D3D11 and D3D12 device can actually
   be created in the guest, on both architectures. See `docs/packages.md`.
+- **PowerShell 7 and Python come from upstream too**: `make apps` stages the
+  pinned Windows builds in `/opt/sg-apps`, sg-session installs them into the
+  prefix, and `make apps-test` proves both run from the user's PATH. See
+  `docs/packages.md`.
 - **No `debian/` in this repo.** The artifact here is a disk image, not a
   package. The brief's "packaging from day one" rule is about code repos.
 

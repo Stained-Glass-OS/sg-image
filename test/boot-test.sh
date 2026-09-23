@@ -158,7 +158,8 @@ log "ssh is up after $(( BOOT_TIMEOUT - (deadline - SECONDS) ))s"
 # --- the actual check ------------------------------------------------------
 # Which guest-side check to run is selectable so the same QEMU, ssh and QMP
 # machinery can drive more than one gate. The default is the Phase 0 session
-# check; SG_GUEST_CHECK=multiuser runs the S2 gate and =d3d the Direct3D one.
+# check; SG_GUEST_CHECK=multiuser runs the S2 gate, =d3d the Direct3D one
+# and =apps the bundled-applications one.
 case "${SG_GUEST_CHECK:-session}" in
     session)
         # sg-session-check runs as the session user: it talks to that session's
@@ -182,6 +183,18 @@ case "${SG_GUEST_CHECK:-session}" in
               || { echo 'FAIL  prefix was still initializing after ${CHECK_TIMEOUT}s'; exit 1; }; \
             runuser -u sguser -- /usr/bin/sg-d3d-check"
         CHECK_NAME="sg-d3d-check (Direct3D)"
+        ;;
+    apps)
+        # The bundled-applications gate runs as the session user, the way a
+        # person reaches PowerShell and Python: through their PATH. It waits for
+        # the prefix stamp for the same reason the D3D gate does -- the copies
+        # land before PATH and the registration are written.
+        CHECK_CMD="for i in \$(seq 1 $CHECK_TIMEOUT); do \
+            [ -e /var/lib/stained-glass/prefix/.sg-initialized ] && break; sleep 1; done; \
+            [ -e /var/lib/stained-glass/prefix/.sg-initialized ] \
+              || { echo 'FAIL  prefix was still initializing after ${CHECK_TIMEOUT}s'; exit 1; }; \
+            runuser -u sguser -- /usr/bin/sg-apps-check"
+        CHECK_NAME="sg-apps-check (PowerShell, Python)"
         ;;
     multiuser)
         # The S2 gate runs as root: it creates test users and runs Wine as each.

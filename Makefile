@@ -17,7 +17,7 @@ SG_WINE     ?= ../wine-sg
 SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 
-.PHONY: lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
+.PHONY: apps apps-test lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
 
 all: image
 
@@ -147,9 +147,56 @@ $(D3D_DIR)/VERSION:
 	@echo "vkd3d-proton $(VKD3D_VERSION), dxvk $(DXVK_VERSION)" > $@
 	@echo "staged D3D: $$(cat $@)"
 
+# --- bundled Windows applications -------------------------------------------
+
+# PowerShell 7 and CPython, as upstream's own Windows builds. sg-session's
+# sg-install-apps copies them into the prefix's Program Files, puts them on the
+# machine PATH and in the Start menu; sg-apps-check is the gate.
+#
+# PowerShell is MIT and ships its LICENSE.txt and ThirdPartyNotices.txt; Python
+# is the PSF licence and ships LICENSE.txt. Both stay with the payload.
+#
+# Python comes from python.org's NuGet package, not its installer: the
+# installer is a WiX bootstrapper that would have to run silently under Wine at
+# first boot, while the NuGet package is the complete install layout (stdlib,
+# pip, venv) meant for exactly this kind of installer-free deployment.
+#
+# Versions and hashes are pinned, and a mismatch fails the build -- as for D3D.
+PWSH_VERSION   := 7.6.6
+PWSH_SHA256    := 02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c860
+PYTHON_VERSION := 3.14.7
+PYTHON_SHA256  := 46a4da5529a92d18ff894911f6e6033a8253198d705b8161bf28c9123c87d46b
+
+APPS_DIR   := $(EXTRA_TREE)/opt/sg-apps
+APPS_CACHE := $(BUILD)/apps-cache
+
+apps: $(APPS_DIR)/VERSION
+
+$(APPS_DIR)/VERSION:
+	@mkdir -p $(APPS_CACHE) $(APPS_DIR)
+	@rm -rf $(APPS_DIR)/powershell $(APPS_DIR)/python
+	@set -e; \
+	p=$(APPS_CACHE)/PowerShell-$(PWSH_VERSION)-win-x64.zip; \
+	y=$(APPS_CACHE)/python-$(PYTHON_VERSION).nupkg; \
+	[ -f $$p ] || curl -sSL --retry 3 -o $$p \
+	  https://github.com/PowerShell/PowerShell/releases/download/v$(PWSH_VERSION)/PowerShell-$(PWSH_VERSION)-win-x64.zip; \
+	[ -f $$y ] || curl -sSL --retry 3 -o $$y \
+	  https://www.nuget.org/api/v2/package/python/$(PYTHON_VERSION); \
+	echo "$(PWSH_SHA256)  $$p" | sha256sum -c - ; \
+	echo "$(PYTHON_SHA256)  $$y" | sha256sum -c - ; \
+	tmp=$$(mktemp -d); \
+	unzip -q $$p -d $(APPS_DIR)/powershell; \
+	unzip -q $$y 'tools/*' -d $$tmp; \
+	mv $$tmp/tools $(APPS_DIR)/python; \
+	rm -rf $$tmp; \
+	chmod -R u=rwX,go=rX $(APPS_DIR)/powershell $(APPS_DIR)/python
+	@echo "$(PYTHON_VERSION)" > $(APPS_DIR)/python/SG_VERSION
+	@echo "powershell $(PWSH_VERSION), python $(PYTHON_VERSION)" > $@
+	@echo "staged apps: $$(cat $@)"
+
 # --- image -----------------------------------------------------------------
 
-image: staged-debs d3d
+image: staged-debs d3d apps
 	mkosi --force
 	@ls -lh $(IMAGE)
 
@@ -170,13 +217,17 @@ multiuser-test:
 d3d-test:
 	SG_GUEST_CHECK=d3d test/boot-test.sh
 
+# The bundled Windows applications (PowerShell 7, Python), in the guest.
+apps-test:
+	SG_GUEST_CHECK=apps test/boot-test.sh
+
 test: image boot-test
 
 deps:
 	sudo apt-get install -y mkosi systemd-repart qemu-system-x86 qemu-utils \
 	                        systemd-boot-efi systemd-boot-tools \
 	                        ovmf debian-archive-keyring openssh-client \
-	                        dosfstools e2fsprogs mtools
+	                        dosfstools e2fsprogs mtools unzip
 
 clean:
 	rm -rf $(BUILD)/run-disk.raw $(BUILD)/run-vars.fd $(BUILD)/artifacts $(BUILD)/qmp.sock

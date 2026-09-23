@@ -88,6 +88,33 @@ Licences are carried in `licenses/`: DXVK is zlib, VKD3D-Proton is LGPL-2.1.
 
 Tracked as [#6](https://github.com/Stained-Glass-OS/stained-glass/issues/6).
 
+## Bundled Windows applications: PowerShell 7 and Python
+
+**Both are in the image as upstream's own Windows builds**, staged by `make
+apps` into `/opt/sg-apps` with pinned versions and hashes, and installed into
+the prefix at first boot by sg-session's `sg-install-apps` -- Program Files,
+the machine PATH, PEP 514 registration for Python, Start-menu shortcuts.
+
+| Component | Source | Licence |
+|---|---|---|
+| PowerShell | 7.6.6, `PowerShell-7.6.6-win-x64.zip` from GitHub releases | MIT (`LICENSE.txt`, `ThirdPartyNotices.txt` in the payload) |
+| CPython | 3.14.7, python.org's NuGet package | PSF (`LICENSE.txt` in the payload) |
+
+Python is the NuGet package rather than the installer. The installer is a WiX
+bootstrapper that would have to run silently under Wine at first boot; the
+NuGet package is the complete install layout -- stdlib, pip, venv -- published
+for installer-free deployment. Verified on wine-sg: SSL and sqlite load, `pip`
+and `venv` work, and a package installs from PyPI over HTTPS.
+
+PowerShell 7 runs (version, filesystem, exit codes) with a console. **With no
+console and its output redirected it fails**: its ConsoleHost throws a
+NullReferenceException on Wine. Desktop use always has a console, so this is
+not user-visible; unattended PowerShell (login scripts, RMM) needs it fixed.
+
+The gate is `make apps-test`. About 300 MB is duplicated between the payload
+and the prefix's copies; staging upstream's archives and extracting straight
+into the prefix would remove that.
+
 ## Kernel and Mesa: no backports
 
 The brief asks for a backports kernel and Mesa. The image uses trixie's.
