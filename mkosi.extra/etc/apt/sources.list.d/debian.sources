@@ -1,0 +1,20 @@
+# Debian trixie, as the machine sees it after installation.
+#
+# The image build uses mkosi's own apt configuration, which it does not leave
+# in the image; without this file an installed machine had no package sources
+# at all -- no Debian security updates, and nothing for sg-update-prepare to
+# download. Stained Glass's own repository is added beside this once it is
+# published, with its key pinned to it alone (stained-glass
+# docs/package-repository.md).
+
+Types: deb
+URIs: http://deb.debian.org/debian
+Suites: trixie trixie-updates
+Components: main contrib non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+Types: deb
+URIs: http://deb.debian.org/debian-security
+Suites: trixie-security
+Components: main contrib non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg

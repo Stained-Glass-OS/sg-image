@@ -106,10 +106,20 @@ NuGet package is the complete install layout -- stdlib, pip, venv -- published
 for installer-free deployment. Verified on wine-sg: SSL and sqlite load, `pip`
 and `venv` work, and a package installs from PyPI over HTTPS.
 
-PowerShell 7 runs (version, filesystem, exit codes) with a console. **With no
-console and its output redirected it fails**: its ConsoleHost throws a
-NullReferenceException on Wine. Desktop use always has a console, so this is
-not user-visible; unattended PowerShell (login scripts, RMM) needs it fixed.
+PowerShell 7 runs (version, filesystem, exit codes) with a console. How
+unattended callers fare was measured by starting it from a console-less Windows
+process (Windows Python's `subprocess`, pipes captured):
+
+| Creation flags | Result |
+|---|---|
+| `CREATE_NO_WINDOW` -- how services and RMM agents run scripts invisibly | works: output captured, exit code propagated |
+| none | fails silently (exit 0, no output) |
+| `DETACHED_PROCESS` | fails silently |
+
+With no flags, Windows gives a console program started by a console-less
+parent a new console; Wine does not, and pwsh's ConsoleHost cannot start
+without one (a NullReferenceException in ConsoleHost.Start). The common RMM
+path works; the default-flags case is a Wine divergence worth a wine-sg fix.
 
 The gate is `make apps-test`. About 300 MB is duplicated between the payload
 and the prefix's copies; staging upstream's archives and extracting straight
@@ -117,24 +127,32 @@ into the prefix would remove that.
 
 ## Wine Mono and Wine Gecko: .NET Framework and the HTML engine
 
-**Both are staged in the image** by `make addons`, into
-`/usr/share/wine/{mono,gecko}`, where Wine looks for them before offering a
-download. The unattended prefix build then installs them silently.
+**Both are in the image, unpacked** into `/usr/share/wine/mono/wine-mono-9.4.0`
+and `/usr/share/wine/gecko/wine-gecko-2.47.4-{x86,x86_64}` by `make addons`.
+Wine looks there and runs them in place, as it does on Linux distributions:
+nothing is installed per prefix beyond Mono's small support files, and one
+root-owned, read-only copy serves every prefix and user.
 
 | Component | Version | Why | Licence |
 |---|---|---|---|
-| Wine Mono | 9.4.0 (one MSI, both architectures) | .NET Framework 4.x for Windows programs -- a large share of business software | MIT, with some components under their own free licences |
+| Wine Mono | 9.4.0 (both architectures) | .NET Framework 4.x for Windows programs -- a large share of business software | MIT, with some components under their own free licences |
 | Wine Gecko | 2.47.4, x86 and x86_64 | The engine behind mshtml: installers, help and sign-in pages that embed HTML | MPL-2.0 |
 
-The versions are exactly what wine-sg's Wine 10.0 expects, and the hashes are
-the ones pinned in its `dlls/appwiz.cpl/addons.c`, so a file Wine would reject
-fails the image build instead. Together about 185 MB.
+The versions are exactly what wine-sg's Wine 10.0 expects. The tarballs' hashes
+are pinned in the Makefile (Wine's own `addons.c` pins only the MSI forms).
+About 125 MB compressed.
+
+**Why unpacked, not MSIs.** The MSI route was tried first. Mono's MSI is
+installed while the prefix is built, but Gecko's installs lazily, the first
+time something uses mshtml -- so the image booted with Mono installed and Gecko
+not. The unpacked form cannot be half-installed, and no account in the prefix,
+SYSTEM included, can modify it.
 
 `sg-apps-check` proves .NET Framework end to end -- the Framework's own `csc.exe`
-compiles a C# program, which then runs and returns its exit code -- and checks
-Gecko is installed for both architectures. It does not claim the HTML engine
-renders: a functional check through the script host fails in Wine's JScript
-`ActiveXObject` layer, not in Gecko, and needs a better probe.
+compiles a C# program into the user's `%TEMP%`, which then runs and returns its
+exit code -- and asks mshtml whether it finds the engine (it reports "Wine Gecko
+2.47.4"). It does not claim HTML renders: creating a document through the
+script host fails in Wine's JScript `ActiveXObject` layer, not in Gecko.
 
 ## Kernel and Mesa: no backports
 

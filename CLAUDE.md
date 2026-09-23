@@ -120,9 +120,15 @@ See [`stained-glass/docs/s2-wineserver-analysis.md`](https://github.com/Stained-
   pinned Windows builds in `/opt/sg-apps`, sg-session installs them into the
   prefix, and `make apps-test` proves both run from the user's PATH. See
   `docs/packages.md`.
-- **Wine Mono and Gecko are staged too** (`make addons`, into
-  `/usr/share/wine`), so .NET Framework programs and HTML-based UI work and the
-  prefix build never prompts for a download.
+- **Wine Mono and Gecko are staged too** (`make addons`), unpacked into
+  `/usr/share/wine` where Wine runs them in place, so .NET Framework programs
+  and HTML-based UI work and the prefix build never prompts for a download.
+- **The image carries Debian's apt sources** (`mkosi.extra/etc/apt`). mkosi's
+  own build-time apt configuration is not left in the image, so before this an
+  installed machine had no package sources at all.
+- **Staged updates are gated by `make update-test`**: it reboots the guest
+  twice (no `-no-reboot`), so never run it alongside another boot test -- they
+  share the ssh port.
 - **No `debian/` in this repo.** The artifact here is a disk image, not a
   package. The brief's "packaging from day one" rule is about code repos.
 

@@ -17,7 +17,7 @@ SG_WINE     ?= ../wine-sg
 SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 
-.PHONY: addons apps apps-test lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
+.PHONY: addons apps apps-test update-test lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
 
 all: image
 
@@ -110,6 +110,10 @@ lab-password: $(LAB_PASSWORD)
 # packaged at all. Upstream ships exactly the right shape -- PE DLLs in x64 and
 # x32/x86 -- so they are fetched and staged rather than built.
 #
+# Each staged payload's stamp depends on this Makefile, so changing a pinned
+# version or hash re-stages it; without that, a version bump was silently
+# ignored and the old payload shipped.
+#
 # Versions and hashes are pinned. A release that does not match its hash is a
 # build failure, not a warning: this is third-party binary code going into an
 # image people log into.
@@ -123,7 +127,7 @@ D3D_CACHE := $(BUILD)/d3d-cache
 
 d3d: $(D3D_DIR)/VERSION
 
-$(D3D_DIR)/VERSION:
+$(D3D_DIR)/VERSION: Makefile
 	@mkdir -p $(D3D_CACHE) $(D3D_DIR)
 	@rm -rf $(D3D_DIR)/dxvk $(D3D_DIR)/vkd3d-proton
 	@set -e; \
@@ -172,7 +176,7 @@ APPS_CACHE := $(BUILD)/apps-cache
 
 apps: $(APPS_DIR)/VERSION
 
-$(APPS_DIR)/VERSION:
+$(APPS_DIR)/VERSION: Makefile
 	@mkdir -p $(APPS_CACHE) $(APPS_DIR)
 	@rm -rf $(APPS_DIR)/powershell $(APPS_DIR)/python
 	@set -e; \
@@ -199,40 +203,48 @@ $(APPS_DIR)/VERSION:
 # Wine Mono (a .NET Framework implementation) and Wine Gecko (the HTML engine
 # behind mshtml), at exactly the versions wine-sg's Wine expects. Without them
 # every .NET Framework program fails and anything that embeds HTML -- installers,
-# help, sign-in pages -- shows nothing; with them missing, Wine would also try
-# to prompt for a download during the unattended prefix build. Wine looks for
-# them in /usr/share/wine/{mono,gecko} before prompting, and installs from
-# there silently.
+# help, sign-in pages -- shows nothing.
 #
-# The hashes are the ones pinned in Wine 10.0's own dlls/appwiz.cpl/addons.c;
-# Wine rejects a file that does not match them, and so does this build. Both
-# architectures of Gecko: 32-bit programs use the 32-bit engine. Mono is one
-# MSI for both. Licences: Wine Mono is MIT with some components under their
-# own free licences; Wine Gecko is MPL-2.0.
+# Unpacked, as Linux distributions ship them, not as MSIs: Wine finds
+# /usr/share/wine/mono/wine-mono-<ver> and /usr/share/wine/gecko/wine-gecko-<ver>-<arch>
+# and runs them in place. Nothing is installed per prefix beyond Mono's small
+# support files, one root-owned read-only copy serves every prefix and user --
+# not even SYSTEM can modify it -- and nothing can be half-installed. (The MSI
+# route was tried first: Gecko installs lazily, on first use of mshtml, so the
+# image booted with Mono installed and Gecko not.)
+#
+# Both Gecko architectures: 32-bit programs use the 32-bit engine. Hashes are
+# pinned; Wine's own addons.c pins only the MSIs, so these are the tarballs'
+# measured on download from dl.winehq.org. Licences: Wine Mono is MIT, with some
+# components under their own free licences; Wine Gecko is MPL-2.0.
 MONO_VERSION       := 9.4.0
-MONO_SHA256        := cf6173ae94b79e9de13d9a74cdb2560a886fc3d271f9489acb1cfdbd961cacb2
+MONO_SHA256        := fd772219aacf46b825fa891a647af4a9ddf8439320101c231918b2037bf13858
 GECKO_VERSION      := 2.47.4
-GECKO_X86_SHA256   := 26cecc47706b091908f7f814bddb074c61beb8063318e9efc5a7f789857793d6
-GECKO_X64_SHA256   := e590b7d988a32d6aa4cf1d8aa3aa3d33766fdd4cf4c89c2dcc2095ecb28d066f
+GECKO_X86_SHA256   := 2cfc8d5c948602e21eff8a78613e1826f2d033df9672cace87fed56e8310afb6
+GECKO_X64_SHA256   := fd88fc7e537d058d7a8abf0c1ebc90c574892a466de86706a26d254710a82814
 
 ADDONS_DIR   := $(EXTRA_TREE)/usr/share/wine
 ADDONS_CACHE := $(BUILD)/addons-cache
 
 addons: $(ADDONS_DIR)/.sg-addons
 
-$(ADDONS_DIR)/.sg-addons:
+$(ADDONS_DIR)/.sg-addons: Makefile
+	@rm -rf $(ADDONS_DIR)/mono $(ADDONS_DIR)/gecko
 	@mkdir -p $(ADDONS_CACHE) $(ADDONS_DIR)/mono $(ADDONS_DIR)/gecko
-	@set -e; cd $(ADDONS_CACHE); \
-	m=wine-mono-$(MONO_VERSION)-x86.msi; \
-	g32=wine-gecko-$(GECKO_VERSION)-x86.msi; \
-	g64=wine-gecko-$(GECKO_VERSION)-x86_64.msi; \
-	[ -f $$m ]   || curl -sSL --retry 3 -o $$m   https://dl.winehq.org/wine/wine-mono/$(MONO_VERSION)/$$m; \
-	[ -f $$g32 ] || curl -sSL --retry 3 -o $$g32 https://dl.winehq.org/wine/wine-gecko/$(GECKO_VERSION)/$$g32; \
-	[ -f $$g64 ] || curl -sSL --retry 3 -o $$g64 https://dl.winehq.org/wine/wine-gecko/$(GECKO_VERSION)/$$g64; \
-	echo "$(MONO_SHA256)  $$m" | sha256sum -c - ; \
-	echo "$(GECKO_X86_SHA256)  $$g32" | sha256sum -c - ; \
-	echo "$(GECKO_X64_SHA256)  $$g64" | sha256sum -c - ; \
-	cp $$m $(CURDIR)/$(ADDONS_DIR)/mono/; cp $$g32 $$g64 $(CURDIR)/$(ADDONS_DIR)/gecko/
+	@set -e; c=$(CURDIR)/$(ADDONS_CACHE); d=$(CURDIR)/$(ADDONS_DIR); \
+	m=wine-mono-$(MONO_VERSION)-x86.tar.xz; \
+	g32=wine-gecko-$(GECKO_VERSION)-x86.tar.xz; \
+	g64=wine-gecko-$(GECKO_VERSION)-x86_64.tar.xz; \
+	[ -f $$c/$$m ]   || curl -sSL --retry 3 -o $$c/$$m   https://dl.winehq.org/wine/wine-mono/$(MONO_VERSION)/$$m; \
+	[ -f $$c/$$g32 ] || curl -sSL --retry 3 -o $$c/$$g32 https://dl.winehq.org/wine/wine-gecko/$(GECKO_VERSION)/$$g32; \
+	[ -f $$c/$$g64 ] || curl -sSL --retry 3 -o $$c/$$g64 https://dl.winehq.org/wine/wine-gecko/$(GECKO_VERSION)/$$g64; \
+	echo "$(MONO_SHA256)  $$c/$$m" | sha256sum -c - ; \
+	echo "$(GECKO_X86_SHA256)  $$c/$$g32" | sha256sum -c - ; \
+	echo "$(GECKO_X64_SHA256)  $$c/$$g64" | sha256sum -c - ; \
+	tar -C $$d/mono -xJf $$c/$$m; \
+	tar -C $$d/gecko -xJf $$c/$$g32; \
+	tar -C $$d/gecko -xJf $$c/$$g64; \
+	chmod -R u=rwX,go=rX $$d/mono $$d/gecko
 	@echo "wine-mono $(MONO_VERSION), wine-gecko $(GECKO_VERSION)" > $@
 	@echo "staged addons: $$(cat $@)"
 
@@ -262,6 +274,12 @@ d3d-test:
 # The bundled Windows applications (PowerShell 7, Python), in the guest.
 apps-test:
 	SG_GUEST_CHECK=apps test/boot-test.sh
+
+# Staged updates: download while running, install on the next reboot (F3).
+# Reboots the guest twice; uses the same ssh port, so never run it alongside
+# another boot test.
+update-test:
+	test/update-test.sh
 
 test: image boot-test
 
