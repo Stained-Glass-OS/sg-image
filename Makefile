@@ -17,7 +17,7 @@ SG_WINE     ?= ../wine-sg
 SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 
-.PHONY: apps apps-test lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
+.PHONY: addons apps apps-test lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
 
 all: image
 
@@ -194,9 +194,51 @@ $(APPS_DIR)/VERSION:
 	@echo "powershell $(PWSH_VERSION), python $(PYTHON_VERSION)" > $@
 	@echo "staged apps: $$(cat $@)"
 
+# --- Wine's .NET Framework and HTML engine ------------------------------------
+
+# Wine Mono (a .NET Framework implementation) and Wine Gecko (the HTML engine
+# behind mshtml), at exactly the versions wine-sg's Wine expects. Without them
+# every .NET Framework program fails and anything that embeds HTML -- installers,
+# help, sign-in pages -- shows nothing; with them missing, Wine would also try
+# to prompt for a download during the unattended prefix build. Wine looks for
+# them in /usr/share/wine/{mono,gecko} before prompting, and installs from
+# there silently.
+#
+# The hashes are the ones pinned in Wine 10.0's own dlls/appwiz.cpl/addons.c;
+# Wine rejects a file that does not match them, and so does this build. Both
+# architectures of Gecko: 32-bit programs use the 32-bit engine. Mono is one
+# MSI for both. Licences: Wine Mono is MIT with some components under their
+# own free licences; Wine Gecko is MPL-2.0.
+MONO_VERSION       := 9.4.0
+MONO_SHA256        := cf6173ae94b79e9de13d9a74cdb2560a886fc3d271f9489acb1cfdbd961cacb2
+GECKO_VERSION      := 2.47.4
+GECKO_X86_SHA256   := 26cecc47706b091908f7f814bddb074c61beb8063318e9efc5a7f789857793d6
+GECKO_X64_SHA256   := e590b7d988a32d6aa4cf1d8aa3aa3d33766fdd4cf4c89c2dcc2095ecb28d066f
+
+ADDONS_DIR   := $(EXTRA_TREE)/usr/share/wine
+ADDONS_CACHE := $(BUILD)/addons-cache
+
+addons: $(ADDONS_DIR)/.sg-addons
+
+$(ADDONS_DIR)/.sg-addons:
+	@mkdir -p $(ADDONS_CACHE) $(ADDONS_DIR)/mono $(ADDONS_DIR)/gecko
+	@set -e; cd $(ADDONS_CACHE); \
+	m=wine-mono-$(MONO_VERSION)-x86.msi; \
+	g32=wine-gecko-$(GECKO_VERSION)-x86.msi; \
+	g64=wine-gecko-$(GECKO_VERSION)-x86_64.msi; \
+	[ -f $$m ]   || curl -sSL --retry 3 -o $$m   https://dl.winehq.org/wine/wine-mono/$(MONO_VERSION)/$$m; \
+	[ -f $$g32 ] || curl -sSL --retry 3 -o $$g32 https://dl.winehq.org/wine/wine-gecko/$(GECKO_VERSION)/$$g32; \
+	[ -f $$g64 ] || curl -sSL --retry 3 -o $$g64 https://dl.winehq.org/wine/wine-gecko/$(GECKO_VERSION)/$$g64; \
+	echo "$(MONO_SHA256)  $$m" | sha256sum -c - ; \
+	echo "$(GECKO_X86_SHA256)  $$g32" | sha256sum -c - ; \
+	echo "$(GECKO_X64_SHA256)  $$g64" | sha256sum -c - ; \
+	cp $$m $(ADDONS_DIR)/mono/; cp $$g32 $$g64 $(ADDONS_DIR)/gecko/
+	@echo "wine-mono $(MONO_VERSION), wine-gecko $(GECKO_VERSION)" > $@
+	@echo "staged addons: $$(cat $@)"
+
 # --- image -----------------------------------------------------------------
 
-image: staged-debs d3d apps
+image: staged-debs d3d apps addons
 	mkosi --force
 	@ls -lh $(IMAGE)
 

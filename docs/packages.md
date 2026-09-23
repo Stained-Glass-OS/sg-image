@@ -115,6 +115,27 @@ The gate is `make apps-test`. About 300 MB is duplicated between the payload
 and the prefix's copies; staging upstream's archives and extracting straight
 into the prefix would remove that.
 
+## Wine Mono and Wine Gecko: .NET Framework and the HTML engine
+
+**Both are staged in the image** by `make addons`, into
+`/usr/share/wine/{mono,gecko}`, where Wine looks for them before offering a
+download. The unattended prefix build then installs them silently.
+
+| Component | Version | Why | Licence |
+|---|---|---|---|
+| Wine Mono | 9.4.0 (one MSI, both architectures) | .NET Framework 4.x for Windows programs -- a large share of business software | MIT, with some components under their own free licences |
+| Wine Gecko | 2.47.4, x86 and x86_64 | The engine behind mshtml: installers, help and sign-in pages that embed HTML | MPL-2.0 |
+
+The versions are exactly what wine-sg's Wine 10.0 expects, and the hashes are
+the ones pinned in its `dlls/appwiz.cpl/addons.c`, so a file Wine would reject
+fails the image build instead. Together about 185 MB.
+
+`sg-apps-check` proves .NET Framework end to end -- the Framework's own `csc.exe`
+compiles a C# program, which then runs and returns its exit code -- and checks
+Gecko is installed for both architectures. It does not claim the HTML engine
+renders: a functional check through the script host fails in Wine's JScript
+`ActiveXObject` layer, not in Gecko, and needs a better probe.
+
 ## Kernel and Mesa: no backports
 
 The brief asks for a backports kernel and Mesa. The image uses trixie's.

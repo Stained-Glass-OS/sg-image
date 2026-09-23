@@ -120,6 +120,9 @@ See [`stained-glass/docs/s2-wineserver-analysis.md`](https://github.com/Stained-
   pinned Windows builds in `/opt/sg-apps`, sg-session installs them into the
   prefix, and `make apps-test` proves both run from the user's PATH. See
   `docs/packages.md`.
+- **Wine Mono and Gecko are staged too** (`make addons`, into
+  `/usr/share/wine`), so .NET Framework programs and HTML-based UI work and the
+  prefix build never prompts for a download.
 - **No `debian/` in this repo.** The artifact here is a disk image, not a
   package. The brief's "packaging from day one" rule is about code repos.
 
