@@ -14,8 +14,9 @@ SSH_KEY     := $(BUILD)/ssh/id_ed25519
 EXTRA_TREE  := $(BUILD)/extra-tree
 SG_SESSION  ?= ../sg-session
 SG_WINE     ?= ../wine-sg
+SG_COMPOSITOR ?= ../sg-compositor
 
-.PHONY: all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
+.PHONY: lab-password compositor-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
 
 all: image
 
@@ -36,10 +37,10 @@ $(SSH_KEY):
 #
 # staged-debs is what image depends on; it clears the staging directory once,
 # then each package target adds to it.
-staged-debs: $(SSH_KEY)
+staged-debs: $(SSH_KEY) lab-password
 	@mkdir -p $(EXTRA_TREE)/opt/sg-packages
 	@rm -f $(EXTRA_TREE)/opt/sg-packages/*.deb
-	$(MAKE) wine-deb session-deb
+	$(MAKE) wine-deb compositor-deb session-deb
 	@echo "staged for the image:"; ls -1 $(EXTRA_TREE)/opt/sg-packages/
 
 # wine-sg is the reason this image can run 32-bit Windows applications without
@@ -61,7 +62,34 @@ session-deb:
 		exit 1; }
 	$(MAKE) -C $(SG_SESSION) deb
 	@mkdir -p $(EXTRA_TREE)/opt/sg-packages
-	@cp $(SG_SESSION)/../sg-session_*_all.deb $(EXTRA_TREE)/opt/sg-packages/
+	@# The newest build, by name and architecture. sg-session became
+	@# Architecture: any; a glob for the old _all package would silently ship a
+	@# stale build left in the parent directory.
+	@cp "$$(ls -t $(SG_SESSION)/../sg-session_*_amd64.deb | head -1)" $(EXTRA_TREE)/opt/sg-packages/
+
+compositor-deb:
+	@test -d $(SG_COMPOSITOR) || { \
+		echo "sg-compositor checkout not found at $(SG_COMPOSITOR)."; \
+		echo "clone it beside this repo, or set SG_COMPOSITOR=/path/to/sg-compositor"; \
+		exit 1; }
+	$(MAKE) -C $(SG_COMPOSITOR) deb
+	@mkdir -p $(EXTRA_TREE)/opt/sg-packages
+	@cp "$$(ls -t $(SG_COMPOSITOR)/../sg-compositor_*_amd64.deb | head -1)" $(EXTRA_TREE)/opt/sg-packages/
+
+# The lab user's password. Generated per build into build/ (gitignored, like
+# the ssh key) and never committed; only its SHA-512 crypt hash enters the
+# image, and mkosi.postinst.chroot deletes that after applying it. The boot
+# gate reads the password from here to log in through the real login screen.
+# Lower-case letters and digits only, so the gate can type it as plain keys.
+LAB_PASSWORD := $(BUILD)/lab-password
+$(LAB_PASSWORD):
+	@mkdir -p $(dir $@)
+	@umask 077; head -c 64 /dev/urandom | tr -dc 'a-z0-9' | head -c 20 > $@
+	@echo "lab password generated: $@"
+
+lab-password: $(LAB_PASSWORD)
+	@mkdir -p $(EXTRA_TREE)/root
+	@umask 077; openssl passwd -6 -stdin < $(LAB_PASSWORD) > $(EXTRA_TREE)/root/.sg-lab-password-hash
 
 # --- Direct3D --------------------------------------------------------------
 

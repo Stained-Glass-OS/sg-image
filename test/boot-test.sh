@@ -194,10 +194,84 @@ case "${SG_GUEST_CHECK:-session}" in
         ;;
 esac
 
+# --- sign in through the real login screen -------------------------------
+# There is no autologin: greetd shows the Windows-style greeter (ADR 0008).
+# Sign in the way a person does -- key events through QEMU's keyboard, so they
+# travel the kernel, libinput, the compositor, Wine and PAM. The lab password
+# was generated into build/ by `make image` and never committed.
+LAB_PASSWORD_FILE="$BUILD/lab-password"
+if [[ "${SG_SKIP_LOGIN:-0}" != "1" ]]; then
+    [[ -s "$LAB_PASSWORD_FILE" ]] || { fail "no lab password at $LAB_PASSWORD_FILE -- run 'make image'"; exit 2; }
+    log "waiting for the login screen"
+    deadline=$(( SECONDS + CHECK_TIMEOUT ))
+    # Wait for the greeter to say it can take input -- the bridge logs
+    # "greeter ready" when the greeter's window exists. Waiting on the
+    # process instead was wrong: on first boot the process exists well before
+    # it draws, and keys typed into a black screen are lost.
+    until ssh_guest "journalctl -b -t sg-login --no-pager -o cat | grep -q 'greeter ready'" 2>/dev/null; do
+        if (( SECONDS > deadline )); then
+            fail "the login screen never appeared"
+            python3 "$HERE/test/qmp.py" "$QMP_SOCK" screendump "$ARTIFACTS/screenshot-no-greeter.ppm" || true
+            exit 1
+        fi
+        sleep 3
+    done
+    sleep 2   # the window exists; give the compositor a moment to focus it
+    python3 "$HERE/test/qmp.py" "$QMP_SOCK" screendump "$ARTIFACTS/screenshot-login.ppm" >/dev/null || true
+    log "login screen is up; signing in as sguser"
+    python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "sguser" >/dev/null
+    python3 "$HERE/test/qmp.py" "$QMP_SOCK" key ret >/dev/null
+    sleep 4
+    python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "$(cat "$LAB_PASSWORD_FILE")" >/dev/null
+    python3 "$HERE/test/qmp.py" "$QMP_SOCK" key ret >/dev/null
+    log "credentials typed; waiting for the session"
+fi
+
 log "running $CHECK_NAME in the guest"
 set +e
 ssh_guest "$CHECK_CMD" 2>&1 | tee "$ARTIFACTS/${SG_GUEST_CHECK:-session}-check.log"
 RC=${PIPESTATUS[0]}
+
+# The session user must not be able to read raw input devices. Membership of
+# `input` would let any program in the session read keystrokes straight from
+# the kernel -- including a password typed at the lock screen -- going round
+# the compositor (ADR 0009). logind grants the compositor its devices; the
+# user needs no group for it.
+if [[ "${SG_GUEST_CHECK:-session}" == session ]]; then
+    readable=$(ssh_guest "runuser -u sguser -- sh -c 'for f in /dev/input/event*; do [ -r \"\$f\" ] && echo \"\$f\"; done; true'" 2>/dev/null)
+    if [[ -z "$readable" ]]; then
+        echo "PASS  the session user cannot read raw input devices"
+    else
+        echo "FAIL  the session user can read raw input: $readable"
+        RC=1
+    fi
+fi
+# --- lock and unlock with the real keyboard --------------------------------
+# Win+L through QEMU's keyboard must lock (the compositor reserves it), the
+# lock screen must come up as the machine account (sgsystem), and the lab
+# password typed through the keyboard must unlock. Only after a good session.
+if [[ "${SG_GUEST_CHECK:-session}" == session && $RC -eq 0 && "${SG_TEST_LOCK:-1}" == 1 ]]; then
+    ctl="SG_LOCK_CONTROL=/run/stained-glass/seat0/\$(id -u sguser)/control.sock /usr/libexec/stained-glass/sg-lockctl"
+    lock_status() { ssh_guest "$ctl STATUS" 2>/dev/null | tr -d '\r'; }
+    python3 "$HERE/test/qmp.py" "$QMP_SOCK" key meta_l+l >/dev/null
+    sleep 3
+    if [[ "$(lock_status)" == "OK locked" ]]; then echo "PASS  Win+L on the keyboard locks the session"
+    else echo "FAIL  Win+L did not lock: $(lock_status)"; RC=1; fi
+    deadline=$(( SECONDS + 90 ))
+    until ssh_guest "pgrep -u sgsystem -f 'sg-greeter64.exe /lock' >/dev/null" 2>/dev/null; do
+        (( SECONDS > deadline )) && break; sleep 2
+    done
+    if ssh_guest "pgrep -u sgsystem -f 'sg-greeter64.exe /lock' >/dev/null" 2>/dev/null; then
+        echo "PASS  the lock screen is up, running as the machine account"
+    else echo "FAIL  no lock screen appeared"; RC=1; fi
+    sleep 6
+    python3 "$HERE/test/qmp.py" "$QMP_SOCK" screendump "$ARTIFACTS/screenshot-locked.ppm" >/dev/null || true
+    python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "$(cat "$LAB_PASSWORD_FILE")" >/dev/null
+    python3 "$HERE/test/qmp.py" "$QMP_SOCK" key ret >/dev/null
+    sleep 6
+    if [[ "$(lock_status)" == "OK unlocked" ]]; then echo "PASS  the password typed at the lock screen unlocks"
+    else echo "FAIL  still locked after typing the password: $(lock_status)"; RC=1; fi
+fi
 set -e
 
 # --- evidence --------------------------------------------------------------

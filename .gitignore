@@ -3,3 +3,4 @@
 /mkosi.packages/*.deb
 /mkosi.output/
 /.mkosi-*
+test/__pycache__/

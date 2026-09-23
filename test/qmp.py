@@ -48,14 +48,49 @@ class QMP:
             pass
 
 
+# QEMU key names ("qcodes") for what the gate needs to type. Lower-case
+# letters and digits are their own qcode; everything else is spelled out here.
+# Only characters the lab credentials use are supported, on purpose: an
+# unsupported character should fail loudly, not be typed as something else.
+QCODES = {"-": "minus", " ": "spc", ".": "dot", "_": ("shift", "minus")}
+
+
+def key_list(ch):
+    if ch.isascii() and (ch.islower() or ch.isdigit()):
+        return [ch]
+    if ch.isascii() and ch.isupper():
+        return ["shift", ch.lower()]
+    code = QCODES.get(ch)
+    if code is None:
+        raise ValueError(f"cannot type {ch!r}")
+    return list(code) if isinstance(code, tuple) else [code]
+
+
+def send_keys(qmp, names):
+    """Press the keys together and release them, like a real keyboard."""
+    qmp.command("send-key", keys=[{"type": "qcode", "data": n} for n in names], **{"hold-time": 60})
+
+
 def main():
     if len(sys.argv) < 3:
-        print("usage: qmp.py SOCKET {screendump FILE | quit | status}", file=sys.stderr)
+        print("usage: qmp.py SOCKET {screendump FILE | type TEXT | key CHORD | quit | status}", file=sys.stderr)
         return 2
     sock_path, action = sys.argv[1], sys.argv[2]
     qmp = QMP(sock_path)
     try:
-        if action == "screendump":
+        if action == "type":
+            # Real key events through QEMU's keyboard: kernel, libinput,
+            # compositor, Wine -- the same path a person's typing takes.
+            import time
+            for ch in sys.argv[3]:
+                send_keys(qmp, key_list(ch))
+                time.sleep(0.08)
+            print("typed %d characters" % len(sys.argv[3]))
+        elif action == "key":
+            # One chord, e.g. "ret" or "meta_l+l".
+            send_keys(qmp, sys.argv[3].split("+"))
+            print("sent %s" % sys.argv[3])
+        elif action == "screendump":
             qmp.command("screendump", filename=sys.argv[3])
             print(f"screendump written to {sys.argv[3]}")
         elif action == "quit":

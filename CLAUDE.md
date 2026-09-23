@@ -41,10 +41,31 @@ into `build/artifacts/`.
 It uses KVM when `/dev/kvm` is usable and falls back to TCG with a 6x longer
 budget, so it works in CI runners without nested virt.
 
-Knobs: `SG_BOOT_TIMEOUT`, `SG_CHECK_TIMEOUT`, `SG_SSH_PORT`, `SG_VM_MEM`,
+Knobs: `SG_BOOT_TIMEOUT`, `SG_CHECK_TIMEOUT`, `SG_SSH_PORT`, `SG_VM_MEM`, `SG_SKIP_LOGIN`,
 `SG_KEEP_VM` (leave the guest up to inspect a failure over ssh -- the gate
 prints the command),
 `SG_VM_CPUS`, `SG_IMAGE`, `SG_GUEST_CHECK`.
+
+## Signing in: the real login screen
+
+There is no autologin. greetd shows the Windows-style greeter (ADR 0008) and
+**the boot gate signs in by typing**: `test/qmp.py type` and `key` send key
+events through QEMU's keyboard, so the user name and password travel the
+kernel, libinput, sg-compositor, Wine and PAM — the path a person's typing
+takes. Then the usual session checks run.
+
+- **The lab password is generated per build** into `build/lab-password`
+  (gitignored, like the ssh key) and never committed. Only its SHA-512 crypt
+  hash enters the image, and `mkosi.postinst.chroot` deletes it after applying
+  it to `sguser`. Lower-case letters and digits only, so it types as plain keys.
+- `qmp.py` refuses characters it has no key for rather than typing something
+  else — a wrong character would turn "cannot type" into "wrong password",
+  which is a much worse thing to debug.
+- `SG_SKIP_LOGIN=1` skips the sign-in step, for checks that do not need a
+  session.
+- The gate also checks the **session user cannot read `/dev/input`**. Raw input
+  access would let any program in the session read keystrokes from the kernel,
+  including a password typed at the lock screen, going round the compositor.
 
 ## The S2 gate
 

@@ -37,14 +37,37 @@ else
     exit 1
 fi
 
+# The lab user's password, for the real login screen. Only the hash came into
+# the image (make lab-password), and it goes as soon as it is applied, so the
+# finished image carries no file with it. Lab machines only -- see the brief's
+# "test credentials only" rule.
+if [ -f /root/.sg-lab-password-hash ]; then
+    usermod -p "$(cat /root/.sg-lab-password-hash)" sguser
+    rm -f /root/.sg-lab-password-hash
+    echo "[sg-image] lab password set for sguser"
+else
+    echo "[sg-image] ERROR: no lab password hash; run 'make image', not bare mkosi" >&2
+    exit 1
+fi
+
 echo "[sg-image] configuring services"
 systemctl enable greetd.service
+# greetd owns tty1 (vt = 1 in its config). Nothing else may start a getty there:
+# at the handover from the login screen to the session the VT is briefly free,
+# systemd starts getty@tty1 (or logind an autovt), the getty takes the VT, and
+# the new session's compositor loses it and dies -- straight back to the login
+# screen. Autologin never had a handover, so this only appeared with the real
+# login screen.
+systemctl mask getty@tty1.service autovt@tty1.service
 systemctl enable sg-prefix-init.service
 # The machine-level wineserver: the Windows system itself, running before any
 # login. Enabled explicitly rather than relying on the package's own enable --
 # the units this image depends on are listed here so a missing one is a build
 # error rather than a machine that boots without its Windows side.
 systemctl enable sg-wineserver.service
+# The lock screen service (ADR 0009). If it is not running the machine cannot
+# be unlocked, so it is enabled explicitly like the others.
+systemctl enable sg-lockd.service
 systemctl enable ssh.service
 systemctl enable systemd-networkd.service
 systemctl enable systemd-resolved.service
