@@ -149,7 +149,7 @@ GPO=$(on dc "samba-tool gpo create 'SG Test Policy' -U administrator --password=
       | grep -o '{[0-9A-Fa-f-]*}' | head -1 || true)
 if [[ -n "$GPO" ]] && on dc "set -e
     g=/var/lib/samba/sysvol/sgtest.lan/Policies/$GPO/User
-    mkdir -p \$g/Preferences/Drives \$g/Scripts/Logon
+    mkdir -p \$g/Preferences/Drives \$g/Scripts/Logon \$g/../Machine
     cat > \$g/Preferences/Drives/Drives.xml <<'XML'
 <?xml version=\"1.0\" encoding=\"utf-8\"?>
 <Drives clsid=\"{8FDDCC1A-0C3C-43cd-A6B4-71A6DF20DA8C}\"><Drive clsid=\"{935D1B74-9CB8-4e3c-9914-7DD559B7A417}\" name=\"T:\" status=\"T:\" image=\"2\" changed=\"2026-09-24 00:00:00\" uid=\"{6A2C4D1E-0000-4000-8000-000000000001}\"><Properties action=\"U\" thisDrive=\"NOCHANGE\" allDrives=\"NOCHANGE\" userName=\"\" path=\"\\\\dc1\\shared\" label=\"Shared\" persistent=\"0\" useLetter=\"1\" letter=\"T\"/></Drive></Drives>
@@ -159,7 +159,9 @@ XML
 open(sys.argv[1], 'wb').write('\\ufeff[Logon]\\r\\n0CmdLine=gpo-logon.cmd\\r\\n0Parameters=\\r\\n'.encode('utf-16-le'))
 def w(s): return s.encode('utf-16-le')
 e = w('[') + w('Software\\\\Policies\\\\StainedGlassTest\\0') + w(';') + w('GpoValue\\0') + w(';') + (4).to_bytes(4, 'little') + w(';') + (4).to_bytes(4, 'little') + w(';') + (42).to_bytes(4, 'little') + w(']')
-open(sys.argv[2], 'wb').write(b'PReg' + (1).to_bytes(4, 'little') + e)\" \$g/Scripts/scripts.ini \$g/Registry.pol
+open(sys.argv[2], 'wb').write(b'PReg' + (1).to_bytes(4, 'little') + e)
+m = w('[') + w('Software\\\\Policies\\\\StainedGlassTest\\0') + w(';') + w('MachineValue\\0') + w(';') + (4).to_bytes(4, 'little') + w(';') + (4).to_bytes(4, 'little') + w(';') + (7).to_bytes(4, 'little') + w(']')
+open(sys.argv[3], 'wb').write(b'PReg' + (1).to_bytes(4, 'little') + m)\" \$g/Scripts/scripts.ini \$g/Registry.pol \$g/../Machine/Registry.pol
     samba-tool gpo setlink DC=sgtest,DC=lan $GPO -U administrator --password='$ADMIN_PW' >/dev/null
     samba-tool ntacl sysvolreset >/dev/null 2>&1 || true"; then
     pass "a GPO ($GPO) with a drive map, a logon script and a registry policy is linked to the domain"
@@ -178,6 +180,7 @@ if on ws "getent passwd alice | grep -q '/home/SGTEST/alice' && id alice | grep 
 else fail "alice: $(on ws 'getent passwd alice; id alice' 2>&1)"; fi
 if on ws "id dave | grep -qi '(domain admins)'"; then pass "dave is in Domain Admins"
 else fail "dave: $(on ws 'id dave' 2>&1)"; fi
+
 
 # --- signing in at ws1's console as alice -----------------------------------------
 log "signing in to ws1 as alice"
@@ -270,6 +273,26 @@ gpo_reg=$(on ws "runuser -u alice -- sh -c '. /usr/lib/stained-glass/sg-common.s
 if printf '%s\n' "$gpo_reg" | grep -Eq 'GpoValue.*REG_DWORD.*0x2a'; then
     pass "Group Policy: the user's registry policy is in her HKCU"
 else fail "GPO user registry policy: $(printf '%s ' "$gpo_reg")"; fi
+
+# Machine Group Policy: the computer's GPOs' registry policy, fetched with the
+# machine account and applied to HKLM as SYSTEM. gpupdate is eventually
+# consistent (it needs the machine wineserver up, and the 90-minute timer
+# retries), so poll a little, as Windows' own gpupdate does.
+on ws "sg-gpupdate" >/dev/null 2>&1
+if on ws "ls /etc/stained-glass/policy.d/60-domain-*.pol >/dev/null 2>&1"; then
+    pass "sg-gpupdate fetches the computer's GPO registry policy"
+else fail "machine GPO: $(on ws 'journalctl -b -t sg-gpo-machine -o cat | tail -4; ls /etc/stained-glass/policy.d' 2>&1)"; fi
+mreg=""; t=0
+while [ $t -lt 40 ]; do
+    on ws "sg-gpupdate" >/dev/null 2>&1
+    mreg=$(on ws "runuser -u sgsystem -- sh -c '. /usr/lib/stained-glass/sg-common.sh; sg_wine_env
+        timeout 120 wine reg query \"HKLM\\\\Software\\\\Policies\\\\StainedGlassTest\" /v MachineValue 2>/dev/null'" | tr -d '\r' || true)
+    printf '%s\n' "$mreg" | grep -Eq 'MachineValue.*REG_DWORD.*0x7' && break
+    sleep 4; t=$(( t + 4 ))
+done
+if printf '%s\n' "$mreg" | grep -Eq 'MachineValue.*REG_DWORD.*0x7'; then
+    pass "and it is in HKLM of the machine's Windows system"
+else fail "machine GPO value: $(printf '%s ' "$mreg")"; fi
 
 # --- administrators: Domain Admins are, Domain Users are not ---------------------
 session_groups() {   # session_groups USER: group names the user's shell process holds
