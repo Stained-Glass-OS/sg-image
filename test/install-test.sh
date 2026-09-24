@@ -47,7 +47,7 @@ for c in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd; do [[ -f 
 
 rm -rf "$ARTIFACTS"; mkdir -p "$ARTIFACTS"
 # shellcheck disable=SC2317  # invoked via trap
-cleanup() { [[ -n "$QEMU_PID" ]] && kill "$QEMU_PID" 2>/dev/null; return 0; }
+cleanup() { set +e; [[ -n "$QEMU_PID" ]] && kill "$QEMU_PID" 2>/dev/null; return 0; }
 trap cleanup EXIT INT TERM
 
 # The owner's password: generated here, lower-case letters and digits so it
@@ -88,6 +88,7 @@ qemu_args=(
     -qmp "unix:$QMP_SOCK,server,nowait"
 )
 [[ "$ACCEL" == kvm ]] && qemu_args+=(-cpu host)
+if ssh_guest true 2>/dev/null; then echo "FAIL: something already answers on port $SSH_PORT -- a VM left over?"; exit 1; fi
 qemu-system-x86_64 "${qemu_args[@]}" &
 QEMU_PID=$!
 deadline=$(( SECONDS + BOOT_TIMEOUT ))

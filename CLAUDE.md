@@ -12,6 +12,8 @@ make deps        # host packages (mkosi, qemu, ovmf, ...)
 make image       # build build/sg-image.raw
 make boot-test   # boot it headless in QEMU and run the gate
 make install-test  # install it from its live entry onto a blank disk, then boot that
+make rdp-test    # Remote Desktop into it from this machine (E1)
+make dc-test     # make it the SGTEST.LAN domain controller and use it (D2)
 make test        # both
 ```
 

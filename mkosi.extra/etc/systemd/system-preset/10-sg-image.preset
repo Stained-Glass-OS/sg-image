@@ -1,0 +1,11 @@
+# One image, two roles (workstation, domain controller): no Samba server runs
+# until a role asks for it -- file sharing is off, as on Windows, and a
+# workstation that is not a domain member has no use for winbind.
+# sg-dc-provision and sg-domain-join enable what their role needs.
+#
+# A preset, not `systemctl disable` in mkosi.postinst.chroot: mkosi applies
+# presets after that script, and Debian's default preset enables everything.
+disable smbd.service
+disable nmbd.service
+disable samba-ad-dc.service
+disable winbind.service

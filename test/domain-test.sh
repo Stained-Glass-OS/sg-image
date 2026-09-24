@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# The domain member gate (D1), with the image's own DC role (D2) as the domain.
+#
+# Two copies of the image on a private network segment (QEMU multicast
+# socket), each also on its own user-mode network for ssh:
+#
+#   dc1  192.168.77.10  sg-dc-provision: SGTEST.LAN, users alice (a Domain
+#                        User) and dave (a Domain Admin)
+#   ws1  192.168.77.20  sg-domain-join, then signed in to at its console, by
+#                        typing, as the domain user alice
+#
+# Checks: the join (trust, users and groups resolve), a wrong password is
+# refused at the login screen, alice's session comes up with the Windows
+# desktop, it holds the Windows system's group (Domain Users are local Users),
+# she got a Kerberos ticket at sign-in, and a Windows program in
+# her session gets a Kerberos service ticket for the DC's file service through
+# SSPI -- single sign-on, no password asked. dave is an administrator of ws1.
+#
+# Passwords are generated per run and never committed. Needs what
+# boot-test.sh needs.
+set -euo pipefail
+
+HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+BUILD="$HERE/build"
+IMAGE="${SG_IMAGE:-$BUILD/sg-image.raw}"
+SSH_KEY="$BUILD/ssh/id_ed25519"
+ARTIFACTS="$BUILD/artifacts-domain"
+MCAST="${SG_DOMAIN_MCAST:-230.0.0.1:$(( 20000 + RANDOM % 10000 ))}"
+REALM=SGTEST.LAN
+declare -A PORT=( [dc]=2231 [ws]=2232 ) ADDR=( [dc]=192.168.77.10 [ws]=192.168.77.20 ) MAC=( [dc]=52:54:00:77:00:10 [ws]=52:54:00:77:00:20 )
+declare -A PID=()
+RC=0
+
+log()  { echo "[domain-test] $*"; }
+pass() { echo "PASS  $*"; }
+fail() { echo "FAIL  $*"; RC=1; }
+
+[[ -f "$IMAGE" ]] || { echo "no image at $IMAGE -- run 'make image'"; exit 2; }
+[[ -f "$SSH_KEY" ]] || { echo "no ssh key -- run 'make image'"; exit 2; }
+if [[ -r /dev/kvm && -w /dev/kvm ]]; then ACCEL=kvm; BOOT_TIMEOUT=300; else ACCEL=tcg; BOOT_TIMEOUT=1800; fi
+OVMF_CODE=""
+for c in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd; do [[ -f "$c" ]] && { OVMF_CODE=$c; break; }; done
+[[ -n "$OVMF_CODE" ]] || { echo "no OVMF"; exit 2; }
+rm -rf "$ARTIFACTS"; mkdir -p "$ARTIFACTS"
+# shellcheck disable=SC2317  # invoked via trap
+cleanup() { set +e; local p; for p in "${PID[@]}"; do kill "$p" 2>/dev/null; done; return 0; }
+trap cleanup EXIT INT TERM
+
+genpw() {   # AD's default policy: upper, lower and digits
+    python3 -c 'import secrets, string
+a = string.ascii_letters + string.digits
+while True:
+    p = "".join(secrets.choice(a) for _ in range(14))
+    if any(c.islower() for c in p) and any(c.isupper() for c in p) and any(c.isdigit() for c in p): break
+print(p, end="")'
+}
+ADMIN_PW=$(genpw); ALICE_PW=$(genpw); DAVE_PW=$(genpw)
+# Typed through QEMU's keyboard: qmp.py types letters (either case) and digits.
+
+on() {   # on dc|ws COMMAND...
+    local vm=$1; shift
+    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+        -o ConnectTimeout=5 -p "${PORT[$vm]}" root@127.0.0.1 "$@"
+}
+qmp() { python3 "$HERE/test/qmp.py" "$BUILD/domain-ws-qmp.sock" "$@" >/dev/null; }
+
+boot() {   # boot dc|ws
+    local vm=$1
+    cp --reflink=auto "$IMAGE" "$BUILD/domain-$vm.raw"
+    cp "${OVMF_CODE/CODE/VARS}" "$BUILD/domain-$vm-vars.fd"
+    # shellcheck disable=SC2054  # the commas are inside quoted QEMU arguments
+    local args=(
+        -machine "q35,accel=$ACCEL" -m 4096 -smp 4
+        -drive "if=pflash,format=raw,unit=0,readonly=on,file=$OVMF_CODE"
+        -drive "if=pflash,format=raw,unit=1,file=$BUILD/domain-$vm-vars.fd"
+        -drive "if=virtio,format=raw,file=$BUILD/domain-$vm.raw"
+        -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${PORT[$vm]}-:22" -device virtio-net-pci,netdev=net0
+        -netdev "socket,id=net1,mcast=$MCAST" -device "virtio-net-pci,netdev=net1,mac=${MAC[$vm]}"
+        -device virtio-vga -display none -serial "file:$ARTIFACTS/serial-$vm.log" -no-reboot
+        -qmp "unix:$BUILD/domain-$vm-qmp.sock,server,nowait"
+    )
+    [[ "$ACCEL" == kvm ]] && args+=(-cpu host)
+    qemu-system-x86_64 "${args[@]}" &
+    PID[$vm]=$!
+}
+wait_up() {
+    local vm=$1 deadline=$(( SECONDS + BOOT_TIMEOUT ))
+    until on "$vm" true 2>/dev/null; do
+        kill -0 "${PID[$vm]}" 2>/dev/null || { echo "FAIL: $vm's QEMU exited"; exit 1; }
+        (( SECONDS < deadline )) || { echo "FAIL: $vm has no ssh"; exit 1; }
+        sleep 5
+    done
+    # The private segment: a fixed address on the NIC with the known MAC.
+    on "$vm" "cat > /etc/systemd/network/05-sgtest.network <<EOF
+[Match]
+MACAddress=${MAC[$vm]}
+[Network]
+Address=${ADDR[$vm]}/24
+EOF
+networkctl reload; sleep 2; ip -4 -o addr show | grep -q 'inet ${ADDR[$vm]}/'"
+}
+
+for vm in dc ws; do
+    if on "$vm" true 2>/dev/null; then echo "FAIL: something already answers on port ${PORT[$vm]} -- a VM left over?"; exit 1; fi
+done
+log "booting dc1 and ws1 on segment $MCAST"
+boot dc; boot ws
+wait_up dc; wait_up ws
+pass "both machines are up on the private segment"
+
+# --- the domain -----------------------------------------------------------------
+if printf '%s' "$ADMIN_PW" | on dc "sg-dc-provision --realm $REALM --address ${ADDR[dc]} --admin-password-stdin" \
+        > "$ARTIFACTS/provision.log" 2>&1; then
+    pass "dc1 is the domain controller for $REALM"
+else fail "provisioning: $(tail -3 "$ARTIFACTS/provision.log")"; exit 1; fi
+if on dc "samba-tool user create alice '$ALICE_PW' --given-name=Alice --surname=User >/dev/null &&
+       samba-tool user create dave '$DAVE_PW' --given-name=Dave --surname=Admin >/dev/null &&
+       samba-tool group addmembers 'Domain Admins' dave >/dev/null"; then
+    pass "users alice (Domain Users) and dave (Domain Admins) exist"
+else fail "creating users"; fi
+
+# --- the join -------------------------------------------------------------------
+on ws "hostnamectl set-hostname ws1"
+if printf '%s' "$ADMIN_PW" | on ws "sg-domain-join --domain $REALM --dc ${ADDR[dc]} --user administrator --password-stdin" \
+        > "$ARTIFACTS/join.log" 2>&1; then
+    pass "ws1 joined $REALM"
+else fail "join: $(tail -5 "$ARTIFACTS/join.log")"; exit 1; fi
+if on ws "wbinfo -t" >/dev/null 2>&1; then pass "the machine account's trust holds (wbinfo -t)"
+else fail "trust: $(on ws 'wbinfo -t' 2>&1)"; fi
+if on ws "getent passwd alice | grep -q '/home/SGTEST/alice' && id alice | grep -qi '(domain users)'"; then
+    pass "domain users resolve by plain name (alice, in Domain Users)"
+else fail "alice: $(on ws 'getent passwd alice; id alice' 2>&1)"; fi
+if on ws "id dave | grep -qi '(domain admins)'"; then pass "dave is in Domain Admins"
+else fail "dave: $(on ws 'id dave' 2>&1)"; fi
+
+# --- signing in at ws1's console as alice -----------------------------------------
+log "signing in to ws1 as alice"
+t=0
+until on ws "journalctl -b -t sg-login --no-pager -o cat | grep -q 'greeter ready'" 2>/dev/null; do
+    (( t < 300 )) || { fail "no login screen on ws1"; break; }; sleep 3; t=$(( t + 3 ))
+done
+sleep 3
+type_login() {   # type_login USER PASSWORD
+    # After a refused sign-in the greeter keeps the user name, as Windows does:
+    # select what is there, so typing replaces it.
+    qmp type x; qmp key backspace; sleep 1
+    qmp key home; qmp key shift+end
+    qmp type "$1"; qmp key ret; sleep 4
+    qmp type "$2"; qmp key ret
+}
+type_login alice "Wrong$ALICE_PW"
+sleep 8
+if on ws "journalctl -b -t greetd --no-pager -o cat | grep -q 'authentication error'" 2>/dev/null \
+   && ! on ws "pgrep -u alice -f explorer.exe >/dev/null" 2>/dev/null; then
+    pass "a wrong domain password is refused at the login screen"
+else fail "wrong password: $(on ws 'journalctl -b -t greetd -o cat | tail -3' 2>&1)"; fi
+sleep 3
+type_login alice "$ALICE_PW"
+t=0
+until on ws "pgrep -u alice -x explorer.exe >/dev/null" 2>/dev/null; do
+    (( t < 240 )) || break; sleep 3; t=$(( t + 3 ))
+done
+python3 "$HERE/test/qmp.py" "$BUILD/domain-ws-qmp.sock" screendump "$ARTIFACTS/ws1-alice.ppm" >/dev/null 2>&1 || true
+if on ws "pgrep -u alice -x explorer.exe >/dev/null" 2>/dev/null; then
+    pass "alice's session came up with the Windows desktop"
+else fail "no session for alice: $(on ws 'journalctl -b -t greetd -t sg-session -o cat | tail -8' 2>&1)"; fi
+
+ALICE_UID=$(on ws "id -u alice")
+SHELL_PID=$(on ws "pgrep -u alice -x explorer.exe | head -1" || true)
+if [[ -n "$SHELL_PID" ]] && on ws "grep '^Groups:' /proc/$SHELL_PID/status | tr ' \\t' '\\n\\n' | grep -qx \$(getent group sgwine | cut -d: -f3)"; then
+    pass "her session holds the Windows system's group from sign-in (Domain Users are local Users)"
+else fail "session groups: $(on ws "grep Groups /proc/${SHELL_PID:-1}/status" 2>&1)"; fi
+if on ws "ls /tmp/krb5cc_$ALICE_UID >/dev/null && runuser -u alice -- klist -s -c /tmp/krb5cc_$ALICE_UID"; then
+    pass "she got a Kerberos ticket at sign-in"
+else fail "no ticket cache for alice: $(on ws 'ls -l /tmp/krb5cc_* 2>&1')"; fi
+
+# A Windows program in her session: SSPI, no password.
+probe=$(on ws "runuser -u alice -- env KRB5CCNAME=FILE:/tmp/krb5cc_$ALICE_UID sh -c '
+    . /usr/lib/stained-glass/sg-common.sh; sg_wine_env
+    timeout 120 wine /usr/libexec/stained-glass/sg-sspi-probe.exe cifs/dc1.sgtest.lan 2>/dev/null'" | tr -d '\r' || true)
+printf '%s\n' "$probe" > "$ARTIFACTS/sspi-probe.txt"
+if printf '%s\n' "$probe" | grep -qx 'AcquireKerberos=0x00000000'; then
+    pass "a Windows program gets alice's Kerberos credentials through SSPI, without a password"
+else fail "SSPI credentials: $(printf '%s ' "$probe")"; fi
+if printf '%s\n' "$probe" | grep -Eq '^InitKerberos=0x0009031[12]$' && printf '%s\n' "$probe" | grep -qx 'MechKerberos=kerberos'; then
+    pass "and a service ticket for dc1's file service -- single sign-on"
+else fail "SSPI context: $(printf '%s ' "$probe")"; fi
+if printf '%s\n' "$probe" | grep -Eq '^InitNegotiate=0x0009031[12]$' && printf '%s\n' "$probe" | grep -qx 'MechNegotiate=kerberos'; then
+    pass "Negotiate chooses Kerberos too, not NTLM"
+else fail "Negotiate: $(printf '%s ' "$probe")"; fi
+
+# --- administrators: Domain Admins are, Domain Users are not ---------------------
+session_groups() {   # session_groups USER: group names the user's shell process holds
+    on ws "p=\$(pgrep -u $1 -x explorer.exe | head -1); [ -n \"\$p\" ] &&
+        for g in \$(sed -n 's/^Groups:\t*//p' /proc/\$p/status); do getent group \$g | cut -d: -f1; done" 2>/dev/null
+}
+alice_groups=$(session_groups alice || true)
+if [[ -z "$alice_groups" ]]; then fail "could not read alice's session groups"
+elif printf '%s\n' "$alice_groups" | grep -qx sg-admins; then fail "alice, a Domain User, is an administrator of ws1"
+else pass "alice, a Domain User, is not an administrator of ws1"; fi
+log "signing alice out, dave in"
+on ws "loginctl terminate-user alice" >/dev/null 2>&1 || true
+t=0
+until [[ $(on ws "journalctl -b -t sg-login --no-pager -o cat | grep -c 'greeter ready'" 2>/dev/null || echo 0) -ge 2 ]]; do
+    (( t < 180 )) || break; sleep 3; t=$(( t + 3 ))
+done
+sleep 3
+type_login dave "$DAVE_PW"
+t=0
+until on ws "pgrep -u dave -x explorer.exe >/dev/null" 2>/dev/null; do
+    (( t < 240 )) || break; sleep 3; t=$(( t + 3 ))
+done
+dave_groups=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    dave_groups=$(session_groups dave || true)
+    [[ -n "$dave_groups" ]] && break
+    sleep 3
+done
+if printf '%s\n' "$dave_groups" | grep -qx sg-admins; then pass "dave, a Domain Admin, is an administrator of ws1 (sg-admins from sign-in)"
+else fail "dave's session groups: $(printf '%s' "$dave_groups" | tr '\n' ' ')"; fi
+
+on dc "journalctl -b --no-pager" > "$ARTIFACTS/journal-dc.log" 2>/dev/null || true
+on ws "journalctl -b --no-pager" > "$ARTIFACTS/journal-ws.log" 2>/dev/null || true
+for pw in "$ADMIN_PW" "$ALICE_PW" "$DAVE_PW"; do
+    if grep -rq "$pw" "$ARTIFACTS"; then fail "a password appears in the artifacts"; fi
+done
+
+echo
+if [[ $RC -eq 0 ]]; then log "GATE PASS"; else log "GATE FAIL -- artifacts in $ARTIFACTS"; fi
+exit $RC

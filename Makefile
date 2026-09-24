@@ -54,7 +54,10 @@ wine-deb:
 		exit 1; }
 	$(MAKE) -C $(SG_WINE) deb
 	@mkdir -p $(EXTRA_TREE)/opt/sg-packages
-	@cp $(SG_WINE)/../wine-sg_*_amd64.deb $(EXTRA_TREE)/opt/sg-packages/
+	@# The newest version only. Copying every wine-sg_*.deb beside the checkout
+	@# made dpkg unpack them all in glob order, and 10.0-9 sorts after 10.0-11:
+	@# images shipped an old Wine, silently.
+	@cp "$$(ls $(SG_WINE)/../wine-sg_*_amd64.deb | sort -V | tail -1)" $(EXTRA_TREE)/opt/sg-packages/
 
 session-deb:
 	@test -d $(SG_SESSION) || { \
@@ -330,6 +333,25 @@ update-test:
 # alone and sign in as the owner it created (needs sudo for the boot menu).
 install-test:
 	test/install-test.sh
+
+# Remote Desktop (E1): sign in to the image over RDP from this machine with a
+# real FreeRDP client; a remote session, its own lock screen, reconnect.
+.PHONY: rdp-test
+rdp-test:
+	test/rdp-test.sh
+
+# The domain controller role (D2): provision SGTEST.LAN in the image and use it
+# as a member would -- DNS SRV records, Kerberos, the directory, SMB, a reboot.
+.PHONY: dc-test
+dc-test:
+	test/dc-test.sh
+
+# A domain member (D1) of the image's own DC role: two VMs on a private
+# segment, a join, a domain user signed in at the console, single sign-on from
+# a Windows program, Domain Admins as administrators.
+.PHONY: domain-test
+domain-test:
+	test/domain-test.sh
 
 test: image boot-test
 

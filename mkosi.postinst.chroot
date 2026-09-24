@@ -15,6 +15,12 @@ set -eu
 # mkosi's local package repository.
 if [ -d /opt/sg-packages ]; then
     echo "[sg-image] installing staged packages"
+    # One version of each package, or dpkg installs whichever it unpacks last.
+    dups=$(for d in /opt/sg-packages/*.deb; do basename "$d" | cut -d_ -f1; done | sort | uniq -d)
+    if [ -n "$dups" ]; then
+        echo "[sg-image] ERROR: more than one version staged of: $dups" >&2
+        exit 1
+    fi
     dpkg -i /opt/sg-packages/*.deb
     rm -rf /opt/sg-packages
 else
@@ -72,6 +78,8 @@ systemctl enable sg-wineserver.service
 # The lock screen service (ADR 0009). If it is not running the machine cannot
 # be unlocked, so it is enabled explicitly like the others.
 systemctl enable sg-lockd.service
+# Samba's services stay off until a role asks: see
+# mkosi.extra/etc/systemd/system-preset/10-sg-image.preset.
 systemctl enable ssh.service
 systemctl enable systemd-networkd.service
 systemctl enable systemd-resolved.service
