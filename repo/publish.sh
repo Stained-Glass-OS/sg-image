@@ -28,6 +28,20 @@ else
     mkdir -p "$LIVE"
 fi
 
+# The site is replaced by exactly the packages given, so a live package left
+# off the command line would vanish from every machine's sources (sg-shell
+# did, once). Refuse unless it is named in SG_PUBLISH_DROP.
+given=" "
+for deb in "$@"; do given+="$(basename "$deb" | cut -d_ -f1) "; done
+if [[ -d "$LIVE/pool" ]]; then
+    while read -r live_pkg; do
+        [[ "$given" == *" $live_pkg "* ]] && continue
+        [[ " ${SG_PUBLISH_DROP:-} " == *" $live_pkg "* ]] && { log "  dropping $live_pkg, as asked"; continue; }
+        echo "[publish] REFUSED: $live_pkg is published and not given; pass its .deb, or SG_PUBLISH_DROP=$live_pkg" >&2
+        exit 1
+    done < <(find "$LIVE/pool" -name '*.deb' -printf '%f\n' | cut -d_ -f1 | sort -u)
+fi
+
 PUBLISHED_DIR="$LIVE" "$HERE/repo/build-repo.sh" "$OUT" "$@"
 "$HERE/repo/check-repo.sh" "$OUT"
 
