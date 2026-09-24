@@ -15,6 +15,9 @@
 # she got a Kerberos ticket at sign-in, and a Windows program in
 # her session gets a Kerberos service ticket for the DC's file service through
 # SSPI -- single sign-on, no password asked. dave is an administrator of ws1.
+# Network drives: alice's home drive (homeDirectory \\dc1\home\alice as
+# H:) is mapped at sign-in with her own ticket, her logon script runs from
+# NETLOGON, maps S: with NET USE and writes to H:; dave does not get her H:.
 #
 # Passwords are generated per run and never committed. Needs what
 # boot-test.sh needs.
@@ -43,7 +46,13 @@ for c in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd; do [[ -f 
 [[ -n "$OVMF_CODE" ]] || { echo "no OVMF"; exit 2; }
 rm -rf "$ARTIFACTS"; mkdir -p "$ARTIFACTS"
 # shellcheck disable=SC2317  # invoked via trap
-cleanup() { set +e; local p; for p in "${PID[@]}"; do kill "$p" 2>/dev/null; done; return 0; }
+cleanup() {
+    set +e
+    # SG_DOMAIN_HOLD=1 leaves both machines running for a look afterwards
+    # (ssh -p 2231 / 2232 root@127.0.0.1 with the image's key).
+    if [[ -n "${SG_DOMAIN_HOLD:-}" ]]; then echo "[domain-test] holding dc1 (:${PORT[dc]}) and ws1 (:${PORT[ws]})"; return 0; fi
+    local p; for p in "${PID[@]}"; do kill "$p" 2>/dev/null; done; return 0
+}
 trap cleanup EXIT INT TERM
 
 genpw() {   # AD's default policy: upper, lower and digits
@@ -113,11 +122,48 @@ if printf '%s' "$ADMIN_PW" | on dc "sg-dc-provision --realm $REALM --address ${A
         > "$ARTIFACTS/provision.log" 2>&1; then
     pass "dc1 is the domain controller for $REALM"
 else fail "provisioning: $(tail -3 "$ARTIFACTS/provision.log")"; exit 1; fi
-if on dc "samba-tool user create alice '$ALICE_PW' --given-name=Alice --surname=User >/dev/null &&
+if on dc "samba-tool user create alice '$ALICE_PW' --given-name=Alice --surname=User \
+           --home-drive=H: --home-directory='\\\\dc1\\home\\alice' --script-path=logon.bat >/dev/null &&
        samba-tool user create dave '$DAVE_PW' --given-name=Dave --surname=Admin >/dev/null &&
        samba-tool group addmembers 'Domain Admins' dave >/dev/null"; then
     pass "users alice (Domain Users) and dave (Domain Admins) exist"
 else fail "creating users"; fi
+# File shares on dc1 for the network-drive checks: alice's home folder, a
+# shared folder, and her logon script in NETLOGON. The script writes to H:
+# (mapped before it runs) and maps S: itself, as logon scripts do.
+if on dc "set -e
+    mkdir -p /srv/home/alice /srv/shared
+    chmod 1777 /srv/home /srv/shared; chmod 0777 /srv/home/alice
+    echo marker > /srv/shared/marker.txt
+    printf '\n[home]\n\tpath = /srv/home\n\tread only = no\n\n[shared]\n\tpath = /srv/shared\n\tread only = no\n' >> /etc/samba/smb.conf
+    printf '%s\\r\\n' '@echo off' 'echo %USERNAME% ran the logon script> H:\\logon-ran.txt' \\
+        'net use S: \\\\dc1\\shared' 'if exist S:\\marker.txt echo S-ok>> H:\\logon-ran.txt' \\
+        > /var/lib/samba/sysvol/sgtest.lan/scripts/logon.bat
+    smbcontrol all reload-config >/dev/null 2>&1 || true"; then
+    pass "dc1 shares alice's home folder, a shared folder and a logon script"
+else fail "file shares on dc1"; fi
+# A Group Policy Object linked to the domain, for alice's sign-in: a
+# Preferences drive map (T: -> \\dc1\shared), a GPO logon script, and a
+# user registry policy value.
+GPO=$(on dc "samba-tool gpo create 'SG Test Policy' -U administrator --password='$ADMIN_PW' 2>/dev/null" \
+      | grep -o '{[0-9A-Fa-f-]*}' | head -1 || true)
+if [[ -n "$GPO" ]] && on dc "set -e
+    g=/var/lib/samba/sysvol/sgtest.lan/Policies/$GPO/User
+    mkdir -p \$g/Preferences/Drives \$g/Scripts/Logon
+    cat > \$g/Preferences/Drives/Drives.xml <<'XML'
+<?xml version=\"1.0\" encoding=\"utf-8\"?>
+<Drives clsid=\"{8FDDCC1A-0C3C-43cd-A6B4-71A6DF20DA8C}\"><Drive clsid=\"{935D1B74-9CB8-4e3c-9914-7DD559B7A417}\" name=\"T:\" status=\"T:\" image=\"2\" changed=\"2026-09-24 00:00:00\" uid=\"{6A2C4D1E-0000-4000-8000-000000000001}\"><Properties action=\"U\" thisDrive=\"NOCHANGE\" allDrives=\"NOCHANGE\" userName=\"\" path=\"\\\\dc1\\shared\" label=\"Shared\" persistent=\"0\" useLetter=\"1\" letter=\"T\"/></Drive></Drives>
+XML
+    printf '%s\\r\\n' 'echo GPO script ran> H:\\gpo-ran.txt' 'if exist T:\\marker.txt echo T-ok>> H:\\gpo-ran.txt' > \$g/Scripts/Logon/gpo-logon.cmd
+    python3 -c \"import sys
+open(sys.argv[1], 'wb').write('\\ufeff[Logon]\\r\\n0CmdLine=gpo-logon.cmd\\r\\n0Parameters=\\r\\n'.encode('utf-16-le'))
+def w(s): return s.encode('utf-16-le')
+e = w('[') + w('Software\\\\Policies\\\\StainedGlassTest\\0') + w(';') + w('GpoValue\\0') + w(';') + (4).to_bytes(4, 'little') + w(';') + (4).to_bytes(4, 'little') + w(';') + (42).to_bytes(4, 'little') + w(']')
+open(sys.argv[2], 'wb').write(b'PReg' + (1).to_bytes(4, 'little') + e)\" \$g/Scripts/scripts.ini \$g/Registry.pol
+    samba-tool gpo setlink DC=sgtest,DC=lan $GPO -U administrator --password='$ADMIN_PW' >/dev/null
+    samba-tool ntacl sysvolreset >/dev/null 2>&1 || true"; then
+    pass "a GPO ($GPO) with a drive map, a logon script and a registry policy is linked to the domain"
+else fail "creating the test GPO"; fi
 
 # --- the join -------------------------------------------------------------------
 on ws "hostnamectl set-hostname ws1"
@@ -189,6 +235,42 @@ if printf '%s\n' "$probe" | grep -Eq '^InitNegotiate=0x0009031[12]$' && printf '
     pass "Negotiate chooses Kerberos too, not NTLM"
 else fail "Negotiate: $(printf '%s ' "$probe")"; fi
 
+# --- network drives and the logon script -------------------------------------------
+if on ws "readlink /run/stained-glass-net/drives/$ALICE_UID/h: | grep -q '/unc/dc1/home/alice\$' &&
+          grep -q ' /run/stained-glass-net/unc/dc1/home cifs ' /proc/mounts"; then
+    pass "alice's home drive H: is \\\\dc1\\home\\alice, mounted with her ticket at sign-in"
+else fail "home drive: $(on ws "ls -l /run/stained-glass-net/drives/$ALICE_UID/ 2>&1; grep cifs /proc/mounts; journalctl -b -t sg-domain-logon -o cat | tail -3" 2>&1)"; fi
+t=0
+until on dc "grep -q 'S-ok' /srv/home/alice/logon-ran.txt" 2>/dev/null; do
+    (( t < 120 )) || break; sleep 3; t=$(( t + 3 ))
+done
+if on dc "grep -qi '^alice ran the logon script' /srv/home/alice/logon-ran.txt"; then
+    pass "her logon script ran from NETLOGON and wrote to H: on the file server"
+else fail "logon script: $(on ws "journalctl -b -t sg-session -t sg-domain-logon -o cat | grep -i logon | tail -4" 2>&1)"; fi
+if on dc "grep -q 'S-ok' /srv/home/alice/logon-ran.txt"; then
+    pass "and mapped S: with NET USE (the Windows network provider), which her programs then read"
+else fail "NET USE S: in the logon script: $(on dc 'cat /srv/home/alice/logon-ran.txt' 2>&1)"; fi
+drive_probe=$(on ws "runuser -u alice -- env KRB5CCNAME=FILE:/tmp/krb5cc_$ALICE_UID sh -c '
+    . /usr/lib/stained-glass/sg-common.sh; sg_wine_env
+    timeout 120 wine cmd /c \"type H:\\logon-ran.txt & type \\\\\\\\dc1\\\\shared\\\\marker.txt\" 2>/dev/null'" | tr -d '\r' || true)
+printf '%s\n' "$drive_probe" > "$ARTIFACTS/drive-probe.txt"
+if printf '%s\n' "$drive_probe" | grep -qi 'ran the logon script' && printf '%s\n' "$drive_probe" | grep -qx marker; then
+    pass "a Windows program reads H: and \\\\dc1\\shared directly (UNC)"
+else fail "Windows program on H: / UNC: $(printf '%s ' "$drive_probe")"; fi
+
+t=0
+until on dc "grep -q 'T-ok' /srv/home/alice/gpo-ran.txt" 2>/dev/null; do
+    (( t < 90 )) || break; sleep 3; t=$(( t + 3 ))
+done
+if on dc "grep -q '^GPO script ran' /srv/home/alice/gpo-ran.txt && grep -q 'T-ok' /srv/home/alice/gpo-ran.txt"; then
+    pass "Group Policy: the GPO's logon script ran and its drive map T: works"
+else fail "GPO drive map / logon script: $(on ws "journalctl -b -t sg-gpo-user -o cat | tail -5" 2>&1)"; fi
+gpo_reg=$(on ws "runuser -u alice -- sh -c '. /usr/lib/stained-glass/sg-common.sh; sg_wine_env
+    timeout 120 wine reg query \"HKCU\\\\Software\\\\Policies\\\\StainedGlassTest\" /v GpoValue 2>/dev/null'" | tr -d '\r' || true)
+if printf '%s\n' "$gpo_reg" | grep -Eq 'GpoValue.*REG_DWORD.*0x2a'; then
+    pass "Group Policy: the user's registry policy is in her HKCU"
+else fail "GPO user registry policy: $(printf '%s ' "$gpo_reg")"; fi
+
 # --- administrators: Domain Admins are, Domain Users are not ---------------------
 session_groups() {   # session_groups USER: group names the user's shell process holds
     on ws "p=\$(pgrep -u $1 -x explorer.exe | head -1); [ -n \"\$p\" ] &&
@@ -218,6 +300,10 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 if printf '%s\n' "$dave_groups" | grep -qx sg-admins; then pass "dave, a Domain Admin, is an administrator of ws1 (sg-admins from sign-in)"
 else fail "dave's session groups: $(printf '%s' "$dave_groups" | tr '\n' ' ')"; fi
+DAVE_UID=$(on ws "id -u dave")
+if on ws "test ! -e /run/stained-glass-net/drives/$DAVE_UID/h: && test ! -e /run/stained-glass-net/drives/$ALICE_UID"; then
+    pass "alice's drive letters went with her session; dave has none of them"
+else fail "drive letters after sign-out: $(on ws 'ls -lR /run/stained-glass-net/drives' 2>&1)"; fi
 
 on dc "journalctl -b --no-pager" > "$ARTIFACTS/journal-dc.log" 2>/dev/null || true
 on ws "journalctl -b --no-pager" > "$ARTIFACTS/journal-ws.log" 2>/dev/null || true
