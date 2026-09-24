@@ -1,0 +1,19 @@
+# Live boots only (the stick's "live" entry, systemd.volatile=overlay): the
+# machine's Windows system -- the Wine prefix, ~650 MB -- gets a tmpfs of its
+# own. The overlay that holds a live system's changes is a fixed fraction of
+# memory (under 1 GB on a 4 GB machine), and the prefix built at boot filled
+# it, leaving no room for anything else. A tmpfs takes memory only as it fills.
+# sg-prefix-init sets the ownership. An installed machine does not match the
+# condition and keeps its prefix on disk.
+[Unit]
+Description=Live system: the Windows system in memory
+ConditionKernelCommandLine=systemd.volatile=overlay
+DefaultDependencies=no
+Conflicts=umount.target
+Before=local-fs.target umount.target sg-prefix-init.service
+
+[Mount]
+What=tmpfs
+Where=/var/lib/stained-glass
+Type=tmpfs
+Options=mode=0755,size=75%,nosuid,nodev

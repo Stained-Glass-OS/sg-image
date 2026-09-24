@@ -11,6 +11,7 @@ Project brief: [`stained-glass/docs/BRIEF.md`](https://github.com/Stained-Glass-
 make deps        # host packages (mkosi, qemu, ovmf, ...)
 make image       # build build/sg-image.raw
 make boot-test   # boot it headless in QEMU and run the gate
+make install-test  # install it from its live entry onto a blank disk, then boot that
 make test        # both
 ```
 
@@ -77,6 +78,29 @@ deliberately excluded from `make test` and from CI, because a known-red gate
 sitting in CI would mask real regressions. Run it on purpose.
 
 See [`stained-glass/docs/s2-wineserver-analysis.md`](https://github.com/Stained-Glass-OS/stained-glass/blob/main/docs/s2-wineserver-analysis.md).
+
+## The live entry and the install gate
+
+Every image is also its own installation media. `mkosi.postoutput` gives each
+boot entry a `-live` twin with `systemd.volatile=overlay`: booted that way the
+stick is never written, and its login screen is Setup (sg-session's
+`sg-setup`, `sg-installd` and `sg-install`). It is post-output, editing the
+finished image's ESP with mtools, because **mkosi writes the boot entries
+after its finalize scripts run** -- a finalize script finds no entries.
+
+On a live boot `var-lib-stained\x2dglass.mount` puts the Wine prefix on a
+tmpfs of its own: the live overlay is a fixed fraction of memory, and the
+prefix built at boot (~650 MB) filled it.
+
+**`make install-test`** is the F5 gate: it copies the image, points the copy's
+boot menu at the live entry (mtools, no root), boots it with a blank 24 GB
+disk, checks sg-install's refusals over ssh, drives Setup through QEMU's
+keyboard onto the blank disk, lets "Restart now" end the VM, then boots the
+installed disk **alone** and runs the whole boot gate there as the new owner,
+plus checks of what the installer did (host name, machine id, root grown, no
+live entry, no lab account, owner an administrator, host keys). It uses ssh
+port 2223, so it can run beside `make boot-test`, not beside another
+install-test.
 
 ## Things that will bite you
 

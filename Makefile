@@ -326,6 +326,11 @@ privilege-test:
 update-test:
 	test/update-test.sh
 
+# F5: install from the live system onto a blank disk, then boot that disk
+# alone and sign in as the owner it created (needs sudo for the boot menu).
+install-test:
+	test/install-test.sh
+
 test: image boot-test
 
 deps:

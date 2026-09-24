@@ -12,6 +12,9 @@ HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 BUILD="$HERE/build"
 ARTIFACTS="$BUILD/artifacts"
 IMAGE="${SG_IMAGE:-$BUILD/sg-image.raw}"
+# Who signs in: the image's lab account unless a gate installed another one
+# (test/install-test.sh boots the installed disk as the owner it created).
+LOGIN_USER="${SG_LOGIN_USER:-sguser}"
 SSH_KEY="$BUILD/ssh/id_ed25519"
 
 SSH_PORT="${SG_SSH_PORT:-2222}"
@@ -164,7 +167,7 @@ case "${SG_GUEST_CHECK:-session}" in
     session)
         # sg-session-check runs as the session user: it talks to that session's
         # X display and inspects that user's Wine processes.
-        CHECK_CMD="SG_CHECK_TIMEOUT=$CHECK_TIMEOUT runuser -u sguser -- /usr/bin/sg-session-check"
+        CHECK_CMD="SG_CHECK_TIMEOUT=$CHECK_TIMEOUT runuser -u $LOGIN_USER -- /usr/bin/sg-session-check"
         CHECK_NAME="sg-session-check"
         ;;
     d3d)
@@ -181,7 +184,7 @@ case "${SG_GUEST_CHECK:-session}" in
             [ -e /var/lib/stained-glass/prefix/.sg-initialized ] && break; sleep 1; done; \
             [ -e /var/lib/stained-glass/prefix/.sg-initialized ] \
               || { echo 'FAIL  prefix was still initializing after ${CHECK_TIMEOUT}s'; exit 1; }; \
-            runuser -u sguser -- /usr/bin/sg-d3d-check"
+            runuser -u $LOGIN_USER -- /usr/bin/sg-d3d-check"
         CHECK_NAME="sg-d3d-check (Direct3D)"
         ;;
     apps)
@@ -193,8 +196,8 @@ case "${SG_GUEST_CHECK:-session}" in
             [ -e /var/lib/stained-glass/prefix/.sg-initialized ] && break; sleep 1; done; \
             [ -e /var/lib/stained-glass/prefix/.sg-initialized ] \
               || { echo 'FAIL  prefix was still initializing after ${CHECK_TIMEOUT}s'; exit 1; }; \
-            PAM_TYPE=open_session PAM_USER=sguser /usr/libexec/stained-glass/sg-profile-create; \
-            runuser -u sguser -- /usr/bin/sg-apps-check"
+            PAM_TYPE=open_session PAM_USER=$LOGIN_USER /usr/libexec/stained-glass/sg-profile-create; \
+            runuser -u $LOGIN_USER -- /usr/bin/sg-apps-check"
         CHECK_NAME="sg-apps-check (PowerShell, Python)"
         ;;
     fileaccess)
@@ -211,7 +214,7 @@ case "${SG_GUEST_CHECK:-session}" in
         # stops its own agent, proving the positive and the mutant.
         CHECK_CMD="for i in \$(seq 1 $CHECK_TIMEOUT); do \
             [ -e /var/lib/stained-glass/prefix/.sg-initialized ] && break; sleep 1; done; \
-            runuser -u sguser -- /usr/bin/sg-procagent-check"
+            runuser -u $LOGIN_USER -- /usr/bin/sg-procagent-check"
         CHECK_NAME="sg-procagent-check (D16/D19)"
         ;;
     elevate)
@@ -237,7 +240,7 @@ case "${SG_GUEST_CHECK:-session}" in
         # administrator? Root, like fileaccess: it runs the probe as both.
         CHECK_CMD="for i in \$(seq 1 $CHECK_TIMEOUT); do \
             [ -e /var/lib/stained-glass/prefix/.sg-initialized ] && break; sleep 1; done; \
-            PAM_TYPE=open_session PAM_USER=sguser /usr/libexec/stained-glass/sg-profile-create; \
+            PAM_TYPE=open_session PAM_USER=$LOGIN_USER /usr/libexec/stained-glass/sg-profile-create; \
             /usr/bin/sg-token-check"
         CHECK_NAME="sg-token-check (D17)"
         ;;
@@ -246,7 +249,7 @@ case "${SG_GUEST_CHECK:-session}" in
         # tokens (D17).
         CHECK_CMD="for i in \$(seq 1 $CHECK_TIMEOUT); do \
             [ -e /var/lib/stained-glass/prefix/.sg-initialized ] && break; sleep 1; done; \
-            PAM_TYPE=open_session PAM_USER=sguser /usr/libexec/stained-glass/sg-profile-create; \
+            PAM_TYPE=open_session PAM_USER=$LOGIN_USER /usr/libexec/stained-glass/sg-profile-create; \
             rc=0; /usr/bin/sg-file-access-check || rc=1; /usr/bin/sg-token-check || rc=1; exit \$rc"
         CHECK_NAME="sg-file-access-check + sg-token-check"
         ;;
@@ -266,7 +269,7 @@ esac
 # Sign in the way a person does -- key events through QEMU's keyboard, so they
 # travel the kernel, libinput, the compositor, Wine and PAM. The lab password
 # was generated into build/ by `make image` and never committed.
-LAB_PASSWORD_FILE="$BUILD/lab-password"
+LAB_PASSWORD_FILE="${SG_LOGIN_PASSWORD_FILE:-$BUILD/lab-password}"
 if [[ "${SG_SKIP_LOGIN:-0}" != "1" ]]; then
     [[ -s "$LAB_PASSWORD_FILE" ]] || { fail "no lab password at $LAB_PASSWORD_FILE -- run 'make image'"; exit 2; }
     log "waiting for the login screen"
@@ -285,12 +288,12 @@ if [[ "${SG_SKIP_LOGIN:-0}" != "1" ]]; then
     done
     sleep 2   # the window exists; give the compositor a moment to focus it
     python3 "$HERE/test/qmp.py" "$QMP_SOCK" screendump "$ARTIFACTS/screenshot-login.ppm" >/dev/null || true
-    log "login screen is up; signing in as sguser"
+    log "login screen is up; signing in as $LOGIN_USER"
     # Warm up the greeter's keymap; the first keys are otherwise lost.
     python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "x" >/dev/null
     python3 "$HERE/test/qmp.py" "$QMP_SOCK" key backspace >/dev/null
     sleep 1
-    python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "sguser" >/dev/null
+    python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "$LOGIN_USER" >/dev/null
     python3 "$HERE/test/qmp.py" "$QMP_SOCK" key ret >/dev/null
     sleep 4
     python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "$(cat "$LAB_PASSWORD_FILE")" >/dev/null
@@ -303,13 +306,20 @@ set +e
 ssh_guest "$CHECK_CMD" 2>&1 | tee "$ARTIFACTS/${SG_GUEST_CHECK:-session}-check.log"
 RC=${PIPESTATUS[0]}
 
+# Extra checks a calling gate wants in the guest (test/install-test.sh checks
+# what the installer did); their failure fails the gate.
+if [[ -n "${SG_POST_CHECK:-}" ]]; then
+    ssh_guest "$SG_POST_CHECK" 2>&1 | tee "$ARTIFACTS/post-check.log"
+    [[ ${PIPESTATUS[0]} -eq 0 ]] || RC=1
+fi
+
 # The session user must not be able to read raw input devices. Membership of
 # `input` would let any program in the session read keystrokes straight from
 # the kernel -- including a password typed at the lock screen -- going round
 # the compositor (ADR 0009). logind grants the compositor its devices; the
 # user needs no group for it.
 if [[ "${SG_GUEST_CHECK:-session}" == session ]]; then
-    readable=$(ssh_guest "runuser -u sguser -- sh -c 'for f in /dev/input/event*; do [ -r \"\$f\" ] && echo \"\$f\"; done; true'" 2>/dev/null)
+    readable=$(ssh_guest "runuser -u $LOGIN_USER -- sh -c 'for f in /dev/input/event*; do [ -r \"\$f\" ] && echo \"\$f\"; done; true'" 2>/dev/null)
     if [[ -z "$readable" ]]; then
         echo "PASS  the session user cannot read raw input devices"
     else
@@ -322,7 +332,7 @@ fi
 # lock screen must come up as the machine account (sgsystem), and the lab
 # password typed through the keyboard must unlock. Only after a good session.
 if [[ "${SG_GUEST_CHECK:-session}" == session && $RC -eq 0 && "${SG_TEST_LOCK:-1}" == 1 ]]; then
-    ctl="SG_LOCK_CONTROL=/run/stained-glass-seat/seat0/\$(id -u sguser)/control.sock /usr/libexec/stained-glass/sg-lockctl"
+    ctl="SG_LOCK_CONTROL=/run/stained-glass-seat/seat0/\$(id -u $LOGIN_USER)/control.sock /usr/libexec/stained-glass/sg-lockctl"
     lock_status() { ssh_guest "$ctl STATUS" 2>/dev/null | tr -d '\r'; }
     python3 "$HERE/test/qmp.py" "$QMP_SOCK" key meta_l+l >/dev/null
     sleep 3

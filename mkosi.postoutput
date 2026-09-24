@@ -1,0 +1,36 @@
+#!/bin/sh
+# Add a "live" twin of every boot entry: the same kernel and initrds, with the
+# root file system mounted read-only under a tmpfs overlay
+# (systemd.volatile=overlay). Booted that way from a USB stick, Stained Glass
+# runs without changing the stick -- and the installer (sg-install) can copy
+# the root partition block for block, because nothing is writing to it.
+#
+# Post-output, on the finished image, because mkosi writes the boot entries
+# after its finalize scripts have run. The ESP is edited in place with mtools:
+# no loop device, no root.
+set -eu
+IMG="$OUTPUTDIR/sg-image.raw"
+[ -f "$IMG" ] || { echo "mkosi.postoutput: no $IMG" >&2; exit 1; }
+start=$(/usr/sbin/sfdisk -d "$IMG" | awk -F'[ ,=]+' 'toupper($0) ~ /TYPE=C12A7328-F81F-11D2-BA4B-00A0C93EC93B/ {
+    for (i = 1; i <= NF; i++) if ($i == "start") { print $(i + 1); exit } }')
+[ -n "$start" ] || { echo "mkosi.postoutput: the image has no ESP" >&2; exit 1; }
+ESP="$IMG@@$((start * 512))"
+export MTOOLS_SKIP_CHECK=1
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+n=0
+for e in $(mdir -b -i "$ESP" ::/loader/entries); do
+    case "$e" in *.conf) ;; *) continue ;; esac
+    case "$e" in *-live.conf) continue ;; esac
+    base=${e##*/}
+    live="${base%.conf}-live.conf"
+    mtype -i "$ESP" "$e" | tr -d '\r' | sed \
+        -e 's/^title \(.*\)$/title \1 (live: try or install, changes are not kept)/' \
+        -e 's/^options \(.*\)$/options \1 systemd.volatile=overlay/' > "$tmp/$live"
+    grep -q '^options .*systemd.volatile=overlay' "$tmp/$live" || { echo "mkosi.postoutput: $e has no options line" >&2; exit 1; }
+    mcopy -o -i "$ESP" "$tmp/$live" "::/loader/entries/$live"
+    echo "mkosi.postoutput: added $live"
+    n=$((n + 1))
+done
+[ "$n" -gt 0 ] || { echo "mkosi.postoutput: no boot entries to make live" >&2; exit 1; }
