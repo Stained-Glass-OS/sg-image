@@ -190,9 +190,9 @@ g "ip -4 -o addr show dev $NIC2 | grep -q 'inet 10.0.3.15/24.*dynamic' && ! ip -
     && pass "netsh ... dhcp: back on a lease" || fail "netsh dhcp: $(g "ip -4 -o addr show dev $NIC2")"
 g "runuser -u sguser -- sg-netctl adapters $NIC2" > "$ARTIFACTS/adapters-before-renew.log" 2>&1 || true
 # name the test adapter: renewing every adapter would renew the one this ssh uses
-out=$(g "runuser -u sguser -- env WINEDEBUG=err+all,+seh sh /tmp/sg-wine.sh ipconfig /renew $NIC2 2>>/tmp/ipconfig.err; echo \"rc=\$?\"" 2>/dev/null | tr -d '\r')
+out=$(g "runuser -u sguser -- env WINEDEBUG=err+all,+seh sh /tmp/sg-wine.sh ipconfig /renew $NIC2 2>>/tmp/ipconfig.err; echo \"rc=\$?\"" 2>"$ARTIFACTS/renew-ssh.err" | tr -d '\r')
 g "cat /tmp/ipconfig.err" > "$ARTIFACTS/ipconfig.err" 2>/dev/null || true
-grep -q '10.0.3.15' <<<"$out" && pass "ipconfig /renew $NIC2 renews, and lists the lease" || fail "ipconfig /renew: $out"
+grep -q '10.0.3.15' <<<"$out" && pass "ipconfig /renew $NIC2 renews, and lists the lease" || fail "ipconfig /renew: ${out:-no output at all; ssh said: $(head -c 300 "$ARTIFACTS/renew-ssh.err")}"
 
 # --- Wi-Fi --------------------------------------------------------------------------------
 if ! g "modprobe mac80211_hwsim radios=2" 2>"$ARTIFACTS/hwsim.log"; then
