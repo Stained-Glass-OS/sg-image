@@ -264,6 +264,18 @@ case "${SG_GUEST_CHECK:-session}" in
         ;;
 esac
 
+# --- what a calling gate does before the sign-in ----------------------------
+# install-test.sh walks the first-run setup (the OOBE), which comes before the
+# login screen at an installed machine's first boot. Its failure fails the gate.
+if [[ -n "${SG_PRE_LOGIN:-}" ]]; then
+    log "before signing in: $SG_PRE_LOGIN"
+    if ! SG_QMP_SOCK="$QMP_SOCK" SG_SSH_PORT="$SSH_PORT" SG_SSH_KEY="$SSH_KEY" SG_ARTIFACTS="$ARTIFACTS" \
+            SG_WAIT="$CHECK_TIMEOUT" "$SG_PRE_LOGIN" 2>&1 | tee "$ARTIFACTS/pre-login.log"; then
+        fail "the steps before signing in failed"
+        exit 1
+    fi
+fi
+
 # --- sign in through the real login screen -------------------------------
 # There is no autologin: greetd shows the Windows-style greeter (ADR 0008).
 # Sign in the way a person does -- key events through QEMU's keyboard, so they

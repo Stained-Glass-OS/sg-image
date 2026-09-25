@@ -68,7 +68,9 @@ budget, so it works in CI runners without nested virt.
 Knobs: `SG_BOOT_TIMEOUT`, `SG_CHECK_TIMEOUT`, `SG_SSH_PORT`, `SG_VM_MEM`, `SG_SKIP_LOGIN`,
 `SG_KEEP_VM` (leave the guest up to inspect a failure over ssh -- the gate
 prints the command),
-`SG_VM_CPUS`, `SG_IMAGE`, `SG_GUEST_CHECK`.
+`SG_VM_CPUS`, `SG_IMAGE`, `SG_GUEST_CHECK`, `SG_PRE_LOGIN` (a script run between
+the boot and the sign-in, with `SG_QMP_SOCK`/`SG_SSH_PORT`/`SG_SSH_KEY`/`SG_ARTIFACTS`;
+its failure fails the gate).
 
 ## Signing in: the real login screen
 
@@ -160,7 +162,19 @@ stays; no NVIDIA card: nothing), and `apt-get -s` of the NVIDIA set resolving
 against the archive when the VM can reach it. On the live system it also
 forces Secure Boot on for `sg-drivers --secure-boot-enroll` into a scratch
 root: a root-only key, DKMS pointed at it, the enrollment request held by
-the firmware (then withdrawn). It uses ssh
+the firmware (then withdrawn). **The installed machine's first boot shows the first-run setup** (sg-session's
+OOBE) before its login screen, and the gate walks it through QEMU's keyboard
+(`test/oobe-walk.sh`, run by boot-test.sh's `SG_PRE_LOGIN`): United Kingdom,
+US plus German, the VM's wired network (or "Skip for now" offline), no account
+page (Setup made the owner), Location on, no browser. It checks no login
+screen came first, the service socket's owner and mode, the marker gone, the
+choices recorded, `/etc/default/keyboard`, the login screen's compositor
+started with both layouts, HKLM's switches and `AllowTelemetry` read as
+SYSTEM, and the service refusing afterwards; after sign-in, the owner's
+session has en-GB formats (dd/MM/yyyy -- wine-sg 0168), country 242, the two
+layouts in `Keyboard Layout\Preload` and in its compositor, and the privacy
+switches. Screenshots `oobe-*.ppm`. `SG_MUTANT_NO_OOBE=1` removes the marker
+from the target before "Restart now": the gate must then fail. It uses ssh
 port 2223, so it can run beside `make boot-test`, not beside another
 install-test. Screenshots of every Setup page are in
 `build/artifacts-install-<scenario>/`.

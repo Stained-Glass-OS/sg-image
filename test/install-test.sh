@@ -365,6 +365,13 @@ if grep -q 'page done$' "$ARTIFACTS/setup.log"; then
 else
     fail "Setup did not finish"; grep -E 'page|sg-installd|failed' "$ARTIFACTS/setup.log" | tail -20; exit 1
 fi
+# The mutant that proves the first-run setup is checked: the installed
+# machine's marker removed, so its first boot goes straight to the login
+# screen. SG_MUTANT_NO_OOBE=1 must make this gate fail.
+if [[ "${SG_MUTANT_NO_OOBE:-0}" == 1 ]]; then
+    ssh_guest "p=\$(lsblk -nrpo NAME,PARTTYPE /dev/$TGT_DEV | awk '\$2 == \"4f68bce3-e8cd-4db1-96e7-fbcaf984b709\" { print \$1 }' | head -1)
+        m=\$(mktemp -d) && mount \$p \$m && rm -f \$m/etc/stained-glass/oobe.pending && umount \$m && echo 'MUTANT: removed the first-run marker'"
+fi
 qmp key ret                                       # Restart now
 for _ in $(seq 1 60); do kill -0 "$QEMU_PID" 2>/dev/null || break; sleep 2; done
 if kill -0 "$QEMU_PID" 2>/dev/null; then
@@ -431,8 +438,27 @@ else
 [ -d /boot/stained-glass ] && [ -f /boot/loader/loader.conf ] && echo 'PASS  the kernels are in the system partition under its own name' || { echo 'FAIL  /boot layout'; ls -R /boot | head -20; exit 1; }"
 fi
 
+# The first-run setup's choices, as the owner's session got them at the first
+# sign-in: the region's format (wine-sg 0168 keeps it), the country, the
+# layouts Windows programs see, the per-user privacy switches; and the
+# session's compositor with both layouts.
+read -r -d '' OOBE_POST <<'EOS' || true
+q() { runuser -u "$O" -- sh -c '. /usr/lib/stained-glass/sg-common.sh; . "$(sg_session_env)"; export DISPLAY XDG_RUNTIME_DIR WAYLAND_DISPLAY WINEPREFIX; sg_wine_env; wine reg query "$1" /v "$2" 2>/dev/null' sh "$1" "$2" | tr -d '\r' | awk -v v="$2" '$1 == v { print $3 }'; }
+intl='HKCU\Control Panel\International'
+r="$(q "$intl" LocaleName) $(q "$intl" sShortDate) $(q "$intl\Geo" Nation)"
+[ "$r" = "en-GB dd/MM/yyyy 242" ] && echo "PASS  the owner's region from the first-run setup: en-GB formats (dd/MM/yyyy), country 242" || { echo "FAIL  the owner's region: '$r'"; exit 1; }
+cs='HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore'
+r="$(q 'HKCU\Keyboard Layout\Preload' 1) $(q 'HKCU\Keyboard Layout\Preload' 2) $(q "$cs\location" Value) $(q "$cs\microphone" Value)"
+[ "$r" = "00000409 00000407 Allow Allow" ] && echo "PASS  the owner's keyboard layouts (US, German) and privacy switches (location, microphone) from the first-run setup" || { echo "FAIL  the owner's layouts/privacy: '$r'"; exit 1; }
+ok=0; for p in $(pgrep -u "$O" -x sg-compositor); do tr '\0' '\n' < /proc/$p/environ | grep -qx 'XKB_DEFAULT_LAYOUT=us,de' && ok=1; done
+[ "$ok" = 1 ] && echo "PASS  the owner's session runs with both keyboard layouts" || { echo "FAIL  the session's compositor has no XKB_DEFAULT_LAYOUT=us,de"; exit 1; }
+EOS
+POST_CHECK="$POST_CHECK
+O=$OWNER
+$OOBE_POST"
+
 set +e
-SG_IMAGE="$TARGET" SG_LOGIN_USER="$OWNER" SG_LOGIN_PASSWORD_FILE="$OWNER_PASS_FILE" \
+SG_IMAGE="$TARGET" SG_LOGIN_USER="$OWNER" SG_LOGIN_PASSWORD_FILE="$OWNER_PASS_FILE" SG_PRE_LOGIN="$HERE/test/oobe-walk.sh" \
     SG_POST_CHECK="$POST_CHECK" SG_SSH_PORT="$SSH_PORT" "$HERE/test/boot-test.sh"
 BRC=$?
 set -e
