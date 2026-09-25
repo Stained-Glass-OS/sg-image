@@ -78,6 +78,13 @@ systemctl enable sg-wineserver.service
 # The lock screen service (ADR 0009). If it is not running the machine cannot
 # be unlocked, so it is enabled explicitly like the others.
 systemctl enable sg-lockd.service
+# The live session's account and "Install Stained Glass OS" shortcuts. It runs
+# on live boots only (ConditionKernelCommandLine), so enabling it everywhere is
+# safe, and a machine installed from the stick has the unit but never runs it.
+systemctl enable sg-live.service
+# Setup's "third-party drivers": runs at boot only while that request is
+# pending (ConditionPathExists), so enabling it everywhere is safe.
+systemctl enable sg-drivers.service
 # Samba's services stay off until a role asks: see
 # mkosi.extra/etc/systemd/system-preset/10-sg-image.preset.
 systemctl enable ssh.service

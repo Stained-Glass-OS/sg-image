@@ -6,15 +6,19 @@
 # download. Stained Glass's own repository is added beside this once it is
 # published, with its key pinned to it alone (stained-glass
 # docs/package-repository.md).
+#
+# non-free and non-free-firmware: the drivers a PC may need -- NVIDIA's,
+# Broadcom's Wi-Fi, firmware -- which sg-drivers installs when Setup's
+# "third-party drivers" is chosen, as Windows Update's optional drivers.
 
 Types: deb
 URIs: http://deb.debian.org/debian
 Suites: trixie trixie-updates
-Components: main contrib non-free-firmware
+Components: main contrib non-free non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 
 Types: deb
 URIs: http://deb.debian.org/debian-security
 Suites: trixie-security
-Components: main contrib non-free-firmware
+Components: main contrib non-free non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg

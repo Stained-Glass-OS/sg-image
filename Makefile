@@ -332,7 +332,15 @@ update-test:
 # F5: install from the live system onto a blank disk, then boot that disk
 # alone and sign in as the owner it created (needs sudo for the boot menu).
 install-test:
-	test/install-test.sh
+	SG_INSTALL_SCENARIO=blank test/install-test.sh
+	SG_INSTALL_SCENARIO=dualboot test/install-test.sh
+
+# One scenario of it: the hybrid path onto a blank disk, or beside Windows.
+.PHONY: install-blank-test install-dualboot-test
+install-blank-test:
+	SG_INSTALL_SCENARIO=blank test/install-test.sh
+install-dualboot-test:
+	SG_INSTALL_SCENARIO=dualboot test/install-test.sh
 
 # Remote Desktop (E1): sign in to the image over RDP from this machine with a
 # real FreeRDP client; a remote session, its own lock screen, reconnect.

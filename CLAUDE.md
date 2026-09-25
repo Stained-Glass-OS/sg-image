@@ -87,7 +87,9 @@ See [`stained-glass/docs/s2-wineserver-analysis.md`](https://github.com/Stained-
 Every image is also its own installation media. `mkosi.postoutput` gives each
 boot entry a `-live` twin with `systemd.volatile=overlay`: booted that way the
 stick is never written, and its login screen is Setup (sg-session's
-`sg-setup`, `sg-installd` and `sg-install`). It is post-output, editing the
+`sg-setup`, `sg-installd` and `sg-install`), which also offers **"Try
+Stained Glass OS"** -- a live desktop (`sg-live.service`, live boots only)
+with "Install Stained Glass OS" on it. It is post-output, editing the
 finished image's ESP with mtools, because **mkosi writes the boot entries
 after its finalize scripts run** -- a finalize script finds no entries.
 
@@ -95,15 +97,53 @@ On a live boot `var-lib-stained\x2dglass.mount` puts the Wine prefix on a
 tmpfs of its own: the live overlay is a fixed fraction of memory, and the
 prefix built at boot (~650 MB) filled it.
 
-**`make install-test`** is the F5 gate: it copies the image, points the copy's
-boot menu at the live entry (mtools, no root), boots it with a blank 24 GB
-disk, checks sg-install's refusals over ssh, drives Setup through QEMU's
-keyboard onto the blank disk, lets "Restart now" end the VM, then boots the
-installed disk **alone** and runs the whole boot gate there as the new owner,
-plus checks of what the installer did (host name, machine id, root grown, no
-live entry, no lab account, owner an administrator, host keys). It uses ssh
+The installer copies the live root's files into a partition or unallocated
+space of the target (see sg-session's CLAUDE.md), so the image carries
+`fdisk` (sfdisk), `dosfstools`, `e2fsprogs` and `efibootmgr`.
+
+**Third-party drivers.** The apt sources (`mkosi.extra/etc/apt`) and the
+build's `Repositories=` include Debian **non-free** as well as
+non-free-firmware, and the image carries `nvidia-detect` (non-free: Debian's
+own list of which NVIDIA driver runs which card), `pciutils` and `mokutil`
+for sg-session's `sg-drivers`. Setup's "Install third-party drivers" makes
+`sg-drivers.service` install what the PC needs at its first boot.
+
+**`make install-test`** is the F5 gate, in two scenarios (each alone:
+`make install-blank-test`, `make install-dualboot-test`). Both copy the image,
+point the copy's boot menu at the live entry (mtools, no root), boot it with a
+second disk, check sg-install's refusals over ssh (the disk it runs from, no
+`--yes`), the socket's owner and mode, the live account and the Install
+shortcuts, then drive Setup through QEMU's keyboard:
+
+- **blank** (24 GB): the hybrid path -- Try, the live desktop's own session
+  gate, Setup opened from the desktop shortcut (windowed), New on the blank
+  disk (system partition + the new one), install onto the new partition.
+- **dualboot** (32 GB): the disk is built on the host with Windows' layout --
+  a 100 MB ESP holding `EFI/Microsoft/Boot/bootmgfw.efi` (random bytes), a
+  16 MB MSR, a 4 GB data partition -- and 27 GB unallocated. Setup, full
+  screen, installs into the unallocated space. Afterwards the boot manager,
+  the MSR and data partitions' bytes and their table entries must be
+  identical, a boot partition and a root partition of ours must exist, and
+  `loader.conf` must show the menu.
+
+"Restart now" ends the VM; then the installed disk boots **alone** and the
+whole boot gate runs as the new owner, plus checks of what the installer did
+(host name, machine id, root size, root pinned by PARTUUID and that being the
+mounted root, `/etc/kernel/cmdline`, no live entry, no lab or live account, no
+installer socket, owner an administrator, host keys, the Debian and Stained
+Glass OS package sources with the key, the packages; dualboot: `/boot` is
+our XBOOTLDR and the Windows boot manager is still in the ESP), and the
+drivers: Debian non-free in the sources, the first-boot service settled (the
+VM needs nothing), the real nvidia-detect choosing per device id from fake
+PCI listings (a GTX 1050 Ti: nvidia-driver; a Kepler card: nothing, nouveau
+stays; no NVIDIA card: nothing), and `apt-get -s` of the NVIDIA set resolving
+against the archive when the VM can reach it. On the live system it also
+forces Secure Boot on for `sg-drivers --secure-boot-enroll` into a scratch
+root: a root-only key, DKMS pointed at it, the enrollment request held by
+the firmware (then withdrawn). It uses ssh
 port 2223, so it can run beside `make boot-test`, not beside another
-install-test.
+install-test. Screenshots of every Setup page are in
+`build/artifacts-install-<scenario>/`.
 
 ## The network
 
