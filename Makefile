@@ -17,7 +17,7 @@ SG_WINE     ?= ../wine-sg
 SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 
-.PHONY: net-test fileaccess-test token-test procagent-test elevate-test policy-test privilege-test addons apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
+.PHONY: net-test fileaccess-test token-test procagent-test elevate-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
 
 all: image
 
@@ -251,6 +251,35 @@ $(ADDONS_DIR)/.sg-addons: Makefile
 	@echo "wine-mono $(MONO_VERSION), wine-gecko $(GECKO_VERSION)" > $@
 	@echo "staged addons: $$(cat $@)"
 
+# --- voice typing's speech model ---------------------------------------------
+
+# Parakeet TDT 0.6B v3 (int8 ONNX, CC BY 4.0) and Silero VAD (MIT), 642 MB,
+# baked into the image so Win+H works out of the box and offline, as Windows'
+# own voice typing does. Too big for a .deb on the apt site (GitHub's 100 MB
+# file limit), so it rides in the image and the installer's copy of it; a
+# machine without it still gets it from sg-speechd on first use.
+#
+# The file list, pinned revisions and SHA-256s are sg-session's sgspeech.FILES,
+# and the download is sg-dictate's own fetch_model (resume, verify, NOTICE,
+# .verified stamp), run unprivileged into a cache: one definition of "the model
+# is installed", shared with sg-speechd.
+SPEECH_CACHE := $(BUILD)/speech-cache
+SPEECH_DIR   := $(EXTRA_TREE)/var/lib/stained-glass-speech
+
+speech: $(SPEECH_DIR)/status
+
+$(SPEECH_DIR)/status: $(SG_SESSION)/speech/sgspeech.py
+	@mkdir -p $(SPEECH_CACHE)
+	@SG_SPEECH_DIR=$(CURDIR)/$(SPEECH_CACHE) SG_SPEECH_LIB=$(SG_SESSION)/speech \
+	  python3 -c 'import runpy, sys; g = runpy.run_path(sys.argv[1], run_name="sg_image"); \
+	    g["fetch_model"](lambda done, total: None)' $(SG_SESSION)/speech/sg-dictate
+	@rm -rf $(SPEECH_DIR)
+	@mkdir -p $(SPEECH_DIR)
+	@cp -a $(SPEECH_CACHE)/. $(SPEECH_DIR)/
+	@rm -f $(SPEECH_DIR)/.lock
+	@chmod -R u=rwX,go=rX $(SPEECH_DIR)
+	@echo "staged speech model: $$(du -sh $(SPEECH_DIR) | cut -f1)"
+
 # --- package repository --------------------------------------------------------
 
 # The signed apt repository, https://stained-glass-os.github.io/apt (stained-glass
@@ -274,7 +303,7 @@ publish: staged-debs
 
 # --- image -----------------------------------------------------------------
 
-image: staged-debs d3d apps addons
+image: staged-debs d3d apps addons speech
 	mkosi --force
 	@ls -lh $(IMAGE)
 

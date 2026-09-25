@@ -327,6 +327,31 @@ if [[ "${SG_GUEST_CHECK:-session}" == session ]]; then
         RC=1
     fi
 fi
+
+# Voice typing's model is baked in (make speech): installed as sg-speechd would
+# leave it, root-owned so no user or SYSTEM can swap it, and it recognises
+# speech -- a sentence spoken by espeak-ng on the host, when that is there.
+if [[ "${SG_GUEST_CHECK:-session}" == session ]]; then
+    st=$(ssh_guest "runuser -u $LOGIN_USER -- sg-dictate --status | head -1; stat -c '%U' /var/lib/stained-glass-speech/parakeet-tdt-0.6b-v3-int8/encoder-model.int8.onnx; find /var/lib/stained-glass-speech ! -user root | head -1" 2>/dev/null | tr '\n' ' ')
+    if [[ "$st" == "MODEL installed root " ]]; then
+        echo "PASS  the speech model is baked in, installed and root-owned"
+    else
+        echo "FAIL  the speech model is not baked in as expected: $st"
+        RC=1
+    fi
+    if command -v espeak-ng >/dev/null; then
+        wav=$(mktemp --suffix=.wav)
+        espeak-ng -s 150 -w "$wav" "Stained glass voice typing works" 2>/dev/null
+        heard=$(ssh_guest "f=\$(mktemp --suffix=.wav); cat > \$f; chmod 644 \$f; runuser -u $LOGIN_USER -- sg-dictate --transcribe-file \$f 2>/dev/null; rm -f \$f" < "$wav" 2>/dev/null)
+        rm -f "$wav"
+        if tr 'A-Z' 'a-z' <<<"$heard" | grep -q 'voice typing works'; then
+            echo "PASS  the baked-in model recognises speech in the guest: $heard"
+        else
+            echo "FAIL  the baked-in model did not recognise the sentence: '$heard'"
+            RC=1
+        fi
+    fi
+fi
 # --- lock and unlock with the real keyboard --------------------------------
 # Win+L through QEMU's keyboard must lock (the compositor reserves it), the
 # lock screen must come up as the machine account (sgsystem), and the lab
