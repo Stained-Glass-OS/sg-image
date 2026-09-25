@@ -36,10 +36,26 @@ for deb in "$@"; do
     dest="$OUT/pool/$COMPONENT/$pkg"
     mkdir -p "$dest"
     cp "$deb" "$dest/"
+    # The source it was built from (sg-image's staged SOURCES), kept beside it.
+    src=$(awk -v p="$pkg" '$1 == p {print $2}' "$(dirname "$deb")/SOURCES" 2>/dev/null || true)
+    [[ -z "$src" ]] || echo "$src" > "$dest/$(basename "$deb").src"
     if [[ -n "${PUBLISHED_DIR:-}" ]]; then
         live="$PUBLISHED_DIR/pool/$COMPONENT/$pkg/$(basename "$deb")"
         if [[ -f "$live" ]] && ! cmp -s "$live" "$deb"; then
-            echo "refusing: $pkg $ver is already published with different contents." >&2
+            livesrc=$(cat "$live.src" 2>/dev/null || true)
+            # Builds are not byte-reproducible: a rebuild of the same clean
+            # source keeps what machines already have. SG_PUBLISH_KEEP names
+            # packages to keep regardless (for versions published before the
+            # .src record existed).
+            if [[ -n "$src" && "$src" == "$livesrc" && "$src" != *-dirty ]] \
+                    || [[ " ${SG_PUBLISH_KEEP:-} " == *" $pkg "* ]]; then
+                cp "$live" "$dest/"
+                [[ -z "$livesrc" ]] || echo "$livesrc" > "$dest/$(basename "$deb").src"
+                log "  $pkg $ver (unchanged source: keeping the published build)"
+                continue
+            fi
+            echo "refusing: $pkg $ver is already published with different contents" >&2
+            echo "          (built from ${src:-unknown}, published from ${livesrc:-unknown})." >&2
             echo "          Machines would never receive the change -- bump the version." >&2
             exit 1
         fi

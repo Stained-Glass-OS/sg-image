@@ -42,6 +42,13 @@ staged-debs: $(SSH_KEY) lab-password
 	@mkdir -p $(EXTRA_TREE)/opt/sg-packages
 	@rm -f $(EXTRA_TREE)/opt/sg-packages/*.deb
 	$(MAKE) wine-deb compositor-deb shell-deb session-deb
+	@# The source each package was built from (repo/build-repo.sh publishes it
+	@# beside the .deb): a rebuild of an unchanged, already-published version
+	@# keeps the published build instead of being refused.
+	@for p in wine-sg:$(SG_WINE) sg-compositor:$(SG_COMPOSITOR) sg-shell:$(SG_SHELL) sg-session:$(SG_SESSION); do \
+	  d=$${p#*:}; c=$$(git -C $$d rev-parse HEAD); \
+	  git -C $$d diff --quiet HEAD -- . 2>/dev/null || c=$$c-dirty; \
+	  echo "$${p%%:*} $$c"; done > $(EXTRA_TREE)/opt/sg-packages/SOURCES
 	@echo "staged for the image:"; ls -1 $(EXTRA_TREE)/opt/sg-packages/
 
 # wine-sg is the reason this image can run 32-bit Windows applications without
@@ -269,6 +276,8 @@ SPEECH_CACHE := $(BUILD)/speech-cache
 speech: staged-debs
 	@rm -rf $(EXTRA_TREE)/var/lib/stained-glass-speech
 	speech-model/build-deb.sh $(SG_SESSION) $(SPEECH_CACHE) $(EXTRA_TREE)/opt/sg-packages
+	@echo "sg-speech-model-parakeet $$(cat speech-model/build-deb.sh $(SG_SESSION)/speech/sgspeech.py | sha256sum | cut -c1-40)" \
+	  >> $(EXTRA_TREE)/opt/sg-packages/SOURCES
 
 # --- package repository --------------------------------------------------------
 
