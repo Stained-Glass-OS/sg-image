@@ -162,6 +162,29 @@ else fail "after dhcp: $(g "ip -4 -o addr show dev $NIC2")"; fi
 g "resolvectl dns $NIC2 | grep -qw 10.0.3.3 && ! resolvectl dns $NIC2 | grep -qw 9.9.9.9 && ip -4 route show default dev $NIC2 | grep -q 'proto dhcp'" \
     && pass "DNS and the gateway come from the DHCP server again" || fail "after dhcp: $(g "resolvectl dns $NIC2; ip -4 route show dev $NIC2")"
 
+# --- netsh and ipconfig (wine-sg 0079), on the real NetworkManager -----------------------
+# As a Windows program runs them: a user's wine, the system prefix.
+g "printf '%s\\n' '. /usr/lib/stained-glass/sg-common.sh' 'sg_wine_env' 'exec wine \"\$@\"' > /tmp/sg-wine.sh && chmod 0755 /tmp/sg-wine.sh"
+W() { local u=$1; shift; g "runuser -u $u -- sh /tmp/sg-wine.sh $*" 2>/dev/null | tr -d '\r'; }
+out=$(W stduser netsh interface ip set address name=$NIC2 static 10.0.3.60 255.255.255.0 10.0.3.2)
+if grep -q 'requires elevation' <<<"$out" && ! g "ip -4 -o addr show dev $NIC2 | grep -q 10.0.3.60"; then
+    pass "netsh: a standard user is refused, in Windows' words, and nothing changed"
+else fail "netsh as a standard user: $out"; fi
+W sguser netsh interface ip set address name=$NIC2 static 10.0.3.60 255.255.255.0 10.0.3.2 > "$ARTIFACTS/netsh-static.log"
+t=0; until g "ip -4 -o addr show dev $NIC2 | grep -q 'inet 10.0.3.60/24'" || (( t > 30 )); do sleep 2; t=$(( t + 2 )); done
+if g "ip -4 -o addr show dev $NIC2 | grep 'inet 10.0.3.60/24' | grep -vq dynamic && ip -4 route show default dev $NIC2 | grep -q 'via 10.0.3.2'"; then
+    pass "netsh interface ip set address ... static: the adapter has it, and the gateway"
+else fail "netsh static: $(cat "$ARTIFACTS/netsh-static.log"); $(g "ip -4 -o addr show dev $NIC2")"; fi
+out=$(W sguser netsh interface ip show config name=$NIC2)
+grep -q 'DHCP enabled: *No' <<<"$out" && grep -q 'IP Address: *10.0.3.60' <<<"$out" \
+    && pass "netsh interface ip show config reports it" || fail "netsh show config: $out"
+W sguser netsh interface ip set address name=$NIC2 dhcp > "$ARTIFACTS/netsh-dhcp.log"
+t=0; until g "ip -4 -o addr show dev $NIC2 | grep -q 'inet 10.0.3.15/24.*dynamic'" || (( t > 45 )); do sleep 3; t=$(( t + 3 )); done
+g "ip -4 -o addr show dev $NIC2 | grep -q 'inet 10.0.3.15/24.*dynamic' && ! ip -4 -o addr show dev $NIC2 | grep -q 10.0.3.60" \
+    && pass "netsh ... dhcp: back on a lease" || fail "netsh dhcp: $(g "ip -4 -o addr show dev $NIC2")"
+out=$(W sguser ipconfig /renew)
+grep -q '10.0.3.15' <<<"$out" && pass "ipconfig /renew renews, and lists the lease" || fail "ipconfig /renew: $out"
+
 # --- Wi-Fi --------------------------------------------------------------------------------
 if ! g "modprobe mac80211_hwsim radios=2" 2>"$ARTIFACTS/hwsim.log"; then
     fail "mac80211_hwsim: $(cat "$ARTIFACTS/hwsim.log")"
