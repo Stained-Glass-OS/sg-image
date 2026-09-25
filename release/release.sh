@@ -26,6 +26,10 @@ for a in "$@"; do
     esac
 done
 log() { echo "[release] $(date +%H:%M:%S) $*"; }
+# Compilers and mkfs spool into TMPDIR; /tmp here is a small tmpfs that
+# other work fills (it failed a Wine build once). Keep the release on disk.
+export TMPDIR=/var/tmp/sg-release-tmp
+mkdir -p "$TMPDIR"
 
 mkdir -p "$REL"
 for r in wine-sg sg-session sg-shell sg-compositor sg-image; do
