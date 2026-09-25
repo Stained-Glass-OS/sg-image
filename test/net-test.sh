@@ -47,7 +47,12 @@ for c in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd; do [[ -f 
 [[ -n "$OVMF_CODE" ]] || { echo "no OVMF"; exit 2; }
 rm -rf "$ARTIFACTS"; mkdir -p "$ARTIFACTS"
 # shellcheck disable=SC2317  # invoked via trap
-cleanup() { set +e; [[ -n "$QEMU_PID" ]] && kill "$QEMU_PID" 2>/dev/null; rm -f "$RUN_IMAGE"; return 0; }
+cleanup() {
+    set +e
+    # SG_KEEP_VM=1 leaves the guest up (ssh -p $SSH_PORT) to look at a failure
+    if [[ "${SG_KEEP_VM:-0}" == "1" && -n "$QEMU_PID" ]]; then echo "[net-test] keeping the guest (qemu pid $QEMU_PID)"; return 0; fi
+    [[ -n "$QEMU_PID" ]] && kill "$QEMU_PID" 2>/dev/null; rm -f "$RUN_IMAGE"; return 0
+}
 trap cleanup EXIT INT TERM
 
 # The Wi-Fi network: a name with a space and a non-ASCII character, and a
@@ -183,8 +188,9 @@ W sguser netsh interface ip set address name=$NIC2 dhcp > "$ARTIFACTS/netsh-dhcp
 t=0; until g "ip -4 -o addr show dev $NIC2 | grep -q 'inet 10.0.3.15/24.*dynamic'" || (( t > 45 )); do sleep 3; t=$(( t + 3 )); done
 g "ip -4 -o addr show dev $NIC2 | grep -q 'inet 10.0.3.15/24.*dynamic' && ! ip -4 -o addr show dev $NIC2 | grep -q 10.0.3.60" \
     && pass "netsh ... dhcp: back on a lease" || fail "netsh dhcp: $(g "ip -4 -o addr show dev $NIC2")"
-out=$(W sguser ipconfig /renew)
-grep -q '10.0.3.15' <<<"$out" && pass "ipconfig /renew renews, and lists the lease" || fail "ipconfig /renew: $out"
+# name the test adapter: renewing every adapter would renew the one this ssh uses
+out=$(W sguser ipconfig /renew $NIC2)
+grep -q '10.0.3.15' <<<"$out" && pass "ipconfig /renew $NIC2 renews, and lists the lease" || fail "ipconfig /renew: $out"
 
 # --- Wi-Fi --------------------------------------------------------------------------------
 if ! g "modprobe mac80211_hwsim radios=2" 2>"$ARTIFACTS/hwsim.log"; then
