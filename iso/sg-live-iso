@@ -1,0 +1,47 @@
+#!/bin/bash
+# In the initrd, when booted from the Stained Glass ISO (sg.live=iso): find the
+# medium by its volume label, mount it, and attach the root file system image
+# on it to a loop device. udev then names that device by its label, which is
+# what root=LABEL=SGLIVEROOT waits for; systemd.volatile=overlay puts a RAM
+# overlay on top, exactly as the USB stick's live entry does.
+#
+# It also loop-mounts the medium's EFI system partition image read-only at
+# /run/sg-esp: the installer copies the kernels and boot loader from there.
+# Both mounts live under /run, which carries over into the real system.
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -u
+say() { echo "sg-live-iso: $*" > /dev/kmsg 2>/dev/null || echo "sg-live-iso: $*"; }
+
+for m in cdrom sr_mod isofs loop erofs usb-storage uas virtio_scsi virtio_blk; do
+    modprobe -q "$m" 2>/dev/null || :
+done
+
+# A USB stick or a slow optical drive can take a while to appear.
+# Probe each block device itself: blkid's cached search passes optical drives by.
+find_medium() {
+    for b in /sys/class/block/*; do
+        d=/dev/${b##*/}
+        [ -b "$d" ] || continue
+        [ "$(blkid -p -o value -s TYPE "$d" 2>/dev/null)" = iso9660 ] || continue
+        [ "$(blkid -p -o value -s LABEL "$d" 2>/dev/null)" = SGLIVE ] || continue
+        echo "$d"; return 0
+    done
+    return 1
+}
+dev=""
+for _ in $(seq 1 240); do
+    dev=$(find_medium)
+    [ -n "$dev" ] && break
+    udevadm settle -t 1 2>/dev/null || :
+    sleep 0.5
+done
+[ -n "$dev" ] || { say "no Stained Glass medium (label SGLIVE) was found"; exit 1; }
+
+mkdir -p /run/sg-iso /run/sg-esp
+mount -t iso9660 -o ro "$dev" /run/sg-iso || { say "cannot mount $dev"; exit 1; }
+[ -f /run/sg-iso/live/root.erofs ] || { say "$dev has no live/root.erofs"; exit 1; }
+loop=$(losetup -r -f --show /run/sg-iso/live/root.erofs) || { say "cannot attach the root image"; exit 1; }
+mount -t vfat -o ro /run/sg-iso/boot/efi.img /run/sg-esp 2>/dev/null \
+    || say "cannot mount the medium's system partition image (installing will not work)"
+say "live medium $dev, root image on $loop"

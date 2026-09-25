@@ -18,6 +18,26 @@ make net-test    # NetworkManager: DHCP, static addresses (admins only), Wi-Fi o
 make test        # both
 ```
 
+### The ISO
+
+`make iso` turns `build/sg-image.raw` into `build/sg-live.iso` (about 1.9 GB,
+sudo needed to read the image's root): a hybrid UEFI ISO -- DVD, a VM's CD
+drive, or a USB stick -- that boots the live system (try it, or run Setup).
+`make iso-test` installs from it as a USB stick (blank disk) and from a CD
+drive (beside Windows), then boots each installed disk.
+
+How it boots (`iso/`): the ISO (volume label `SGLIVE`) carries `boot/efi.img`
+(the ESP: El Torito image and appended GPT partition) and `live/root.erofs`
+(the root, lzma EROFS, label `SGLIVEROOT`). The ESP's only entry is the live
+one (`sg.live=iso root=LABEL=SGLIVEROOT systemd.volatile=overlay`) with a
+third initrd, `loader/sg-live.initrd`: `iso/sg-live-iso` finds the medium by
+probing each block device (blkid's cached search skips optical drives),
+attaches the root image to a loop device and mounts efi.img at /run/sg-esp.
+The plain entry the installer copies lives in `loader/install/`, out of the
+boot menu. sg-install's ISO path keys on `sg.live=iso` (sg-session 0.1.0-17).
+The compressed root is cached as `build/sg-live-root.erofs` while the image
+is unchanged.
+
 Expects **`wine-sg` and `sg-session`** checked out beside this repo; override
 with `SG_WINE=` and `SG_SESSION=`. `make image` builds both repos' `.deb`s,
 stages them into `build/extra-tree/opt/sg-packages/`, and

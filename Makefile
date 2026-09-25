@@ -371,6 +371,20 @@ install-blank-test:
 install-dualboot-test:
 	SG_INSTALL_SCENARIO=dualboot test/install-test.sh
 
+# The ISO: the finished image as a hybrid UEFI ISO (DVD, a VM's CD drive, or a
+# USB stick) that boots the live system -- try it, or install from it. Built
+# from build/sg-image.raw; needs sudo to read its root file system.
+ISO := $(BUILD)/sg-live.iso
+.PHONY: iso iso-test
+iso:
+	iso/build-iso.sh $(IMAGE) $(ISO)
+
+# Install from the ISO as a USB stick (blank disk), then from a CD drive
+# (beside Windows): the same gate as install-test, from the other medium.
+iso-test:
+	SG_LIVE_ISO=$(ISO) SG_LIVE_ISO_AS=disk SG_INSTALL_SCENARIO=blank test/install-test.sh
+	SG_LIVE_ISO=$(ISO) SG_LIVE_ISO_AS=cdrom SG_INSTALL_SCENARIO=dualboot test/install-test.sh
+
 # Remote Desktop (E1): sign in to the image over RDP from this machine with a
 # real FreeRDP client; a remote session, its own lock screen, reconnect.
 .PHONY: rdp-test
@@ -402,7 +416,8 @@ deps:
 	sudo apt-get install -y mkosi systemd-repart qemu-system-x86 qemu-utils \
 	                        systemd-boot-efi systemd-boot-tools \
 	                        ovmf debian-archive-keyring openssh-client \
-	                        dosfstools e2fsprogs mtools unzip
+	                        dosfstools e2fsprogs mtools unzip python3-numpy \
+	                        xorriso erofs-utils espeak-ng
 
 clean:
 	rm -rf $(BUILD)/run-disk.raw $(BUILD)/run-vars.fd $(BUILD)/artifacts $(BUILD)/qmp.sock

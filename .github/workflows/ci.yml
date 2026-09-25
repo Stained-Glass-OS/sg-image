@@ -86,7 +86,7 @@ jobs:
             systemd-repart systemd-boot-efi \
             debian-archive-keyring dosfstools e2fsprogs mtools \
             qemu-system-x86 qemu-utils ovmf openssh-client \
-            make curl unzip xz-utils zstd openssl
+            make curl unzip xz-utils zstd openssl python3-numpy
           # The packages are built in a Debian container (below); the runner
           # only needs mkosi, the image tools, and what the Direct3D, apps and
           # add-ons downloads use.

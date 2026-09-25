@@ -1,0 +1,12 @@
+[Unit]
+Description=Stained Glass live medium
+DefaultDependencies=no
+ConditionKernelCommandLine=sg.live=iso
+Wants=systemd-udevd.service
+After=systemd-udevd.service systemd-udev-trigger.service systemd-modules-load.service
+Before=initrd-root-device.target sysroot.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/sg-live-iso

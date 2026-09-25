@@ -34,6 +34,13 @@ SSH_KEY="$BUILD/ssh/id_ed25519"
 SSH_PORT="${SG_SSH_PORT:-2223}"
 TARGET="$BUILD/install-target.raw"
 LIVE_IMAGE="$BUILD/install-live.raw"
+# SG_LIVE_ISO=build/sg-live.iso installs from the ISO instead of the disk
+# image's live entry: written to a USB stick (SG_LIVE_ISO_AS=disk, the
+# default: the hybrid path) or in a CD drive (SG_LIVE_ISO_AS=cdrom).
+LIVE_ISO="${SG_LIVE_ISO:-}"
+LIVE_ISO_AS="${SG_LIVE_ISO_AS:-disk}"
+LIVE_DEV=vda; TGT_DEV=vdb
+if [[ -n "$LIVE_ISO" && "$LIVE_ISO_AS" == cdrom ]]; then LIVE_DEV=sr0; TGT_DEV=vda; fi
 LIVE_VARS="$BUILD/install-live-vars.fd"
 OWNER=alice
 OWNER_PASS_FILE="$BUILD/install-owner-password"
@@ -79,8 +86,13 @@ export MTOOLS_SKIP_CHECK=1
 
 # --- the stick: a copy of the image that boots its live entry ---------------
 log "preparing the live medium"
-cp --reflink=auto "$IMAGE" "$LIVE_IMAGE"
 cp "${OVMF_CODE/CODE/VARS}" "$LIVE_VARS"
+if [[ -n "$LIVE_ISO" ]]; then
+    [[ -f "$LIVE_ISO" ]] || { echo "no ISO at $LIVE_ISO -- run 'make iso'"; exit 2; }
+    cp --reflink=auto "$LIVE_ISO" "$LIVE_IMAGE"
+    live_entry="the ISO's ($LIVE_ISO_AS)"
+else
+cp --reflink=auto "$IMAGE" "$LIVE_IMAGE"
 esp_start=$(sfdisk -d "$LIVE_IMAGE" | awk -F'[ ,=]+' -v t="$ESP_GUID" 'toupper($0) ~ "TYPE=" t {
     for (i = 1; i <= NF; i++) if ($i == "start") { print $(i + 1); exit } }')
 ESP="$LIVE_IMAGE@@$((esp_start * 512))"
@@ -88,6 +100,7 @@ live_entry=$(mdir -b -i "$ESP" ::/loader/entries | sed -n 's#.*/\([^/]*-live\.co
 [[ -n "$live_entry" ]] || { echo "FAIL: the image has no live boot entry (mkosi.postoutput)"; exit 1; }
 printf 'default %s\ntimeout 0\n' "$live_entry" > "$ARTIFACTS/loader.conf"
 mcopy -o -i "$ESP" "$ARTIFACTS/loader.conf" ::/loader/loader.conf
+fi
 
 # --- the disk to install to ----------------------------------------------------
 rm -f "$TARGET"
@@ -133,12 +146,18 @@ qemu_args=(
     -machine "${LIVE_MACHINE/__ACCEL__/$ACCEL}" -m 4096 -smp 4
     -drive "if=pflash,format=raw,unit=0,readonly=on,file=$LIVE_CODE"
     -drive "if=pflash,format=raw,unit=1,file=$LIVE_VARS"
-    -drive "if=virtio,format=raw,file=$LIVE_IMAGE"
-    -drive "if=virtio,format=raw,file=$TARGET"
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" -device virtio-net-pci,netdev=net0
     -device virtio-vga -display none -serial "file:$ARTIFACTS/live-serial.log" -no-reboot
     -qmp "unix:$QMP_SOCK,server,nowait"
 )
+if [[ -n "$LIVE_ISO" && "$LIVE_ISO_AS" == cdrom ]]; then
+    # shellcheck disable=SC2054  # the commas are inside quoted QEMU arguments
+    qemu_args+=(-drive "if=none,id=live,format=raw,media=cdrom,readonly=on,file=$LIVE_IMAGE" -device ide-cd,drive=live,bootindex=0)
+    qemu_args+=(-drive "if=virtio,format=raw,file=$TARGET")
+else
+    # The stick first, so it is vda and the target vdb.
+    qemu_args+=(-drive "if=virtio,format=raw,file=$LIVE_IMAGE" -drive "if=virtio,format=raw,file=$TARGET")
+fi
 [[ "$ACCEL" == kvm ]] && qemu_args+=(-cpu host)
 [[ "$LIVE_CODE" == *secboot* ]] && qemu_args+=(-global "driver=cfi.pflash01,property=secure,value=on")
 if ssh_guest true 2>/dev/null; then echo "FAIL: something already answers on port $SSH_PORT -- a VM left over?"; exit 1; fi
@@ -156,22 +175,25 @@ log "live system is up"
 # --- the installer's own checks ----------------------------------------------
 # / is the overlay; the stick's root partition under it must be mounted
 # read-only (the kernel's ext4 state: one superblock, one state).
+if [[ -n "$LIVE_ISO" ]]; then ro_check="grep -qw sg.live=iso /proc/cmdline && mountpoint -q /run/sg-iso \
+        && [ \"\$(blkid -o value -s TYPE \$(blkid -L SGLIVEROOT))\" = erofs ]"
+else ro_check="grep -qx ro /proc/fs/ext4/vda2/options"; fi
 if ssh_guest "grep -q systemd.volatile=overlay /proc/cmdline && [ \"\$(findmnt -n -o FSTYPE /)\" = overlay ] \
-        && grep -qx ro /proc/fs/ext4/vda2/options"; then
+        && $ro_check"; then
     pass "the live system runs with its root read-only under an overlay"
 else fail "the live boot is not read-only"; fi
 layout=$(ssh_guest "sg-install --layout" 2>&1 || true)
 echo "$layout" > "$ARTIFACTS/layout-before.txt"
-if printf '%s\n' "$layout" | grep -q '^DISK /dev/vdb' && ! printf '%s\n' "$layout" | grep -q '/dev/vda'; then
+if printf '%s\n' "$layout" | grep -q "^DISK /dev/$TGT_DEV" && ! printf '%s\n' "$layout" | grep -q "/dev/$LIVE_DEV"; then
     pass "the layout offers the target disk and nothing of the disk it runs from"
 else fail "--layout: $layout"; fi
-if ssh_guest "echo x | sg-install --disk /dev/vda --user bob --password-stdin --yes" >/dev/null 2>&1; then
+if ssh_guest "echo x | sg-install --disk /dev/$LIVE_DEV --user bob --password-stdin --yes" >/dev/null 2>&1; then
     fail "installing over the running disk was allowed"
 else pass "it refuses to install over the disk it runs from"; fi
-if ssh_guest "sg-install --delete /dev/vda2 --yes" >/dev/null 2>&1; then
+if ssh_guest "sg-install --delete /dev/${LIVE_DEV}2 --yes" >/dev/null 2>&1; then
     fail "deleting a partition of the disk it runs from was allowed"
 else pass "it refuses to change the partitions of the disk it runs from"; fi
-if ssh_guest "echo x | sg-install --disk /dev/vdb --user bob --password-stdin" >/dev/null 2>&1; then
+if ssh_guest "echo x | sg-install --disk /dev/$TGT_DEV --user bob --password-stdin" >/dev/null 2>&1; then
     fail "it erased a disk without --yes"
 else pass "it will not erase a disk without --yes"; fi
 if [[ "$(ssh_guest "stat -c '%U:%G %a' /run/stained-glass-setup/installd.sock" 2>/dev/null)" == "root:sgsetup 660" ]]; then
@@ -330,7 +352,7 @@ else
 fi
 shot setup-ready
 qmp key tab; qmp key ret                          # focus starts on Back; Tab to Install
-log "installing onto /dev/vdb as $OWNER, through Setup"
+log "installing onto /dev/$TGT_DEV as $OWNER, through Setup"
 page installing 1
 sleep 20; shot setup-installing
 page "done" 1 "$INSTALL_TIMEOUT" && shot setup-done
