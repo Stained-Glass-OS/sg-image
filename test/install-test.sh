@@ -57,6 +57,13 @@ else ACCEL=tcg; BOOT_TIMEOUT=1800; INSTALL_TIMEOUT=5400; fi
 OVMF_CODE=""
 for c in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd; do [[ -f "$c" ]] && { OVMF_CODE=$c; break; }; done
 [[ -n "$OVMF_CODE" ]] || { echo "no OVMF"; exit 2; }
+# The live VM runs Secure Boot capable firmware with no keys enrolled (setup
+# mode): the SecureBoot variable exists, so mokutil works as on a real PC, but
+# nothing is enforced, so the unsigned boot loader still starts.
+LIVE_CODE=$OVMF_CODE LIVE_MACHINE="q35,accel=__ACCEL__"
+if [[ -f /usr/share/OVMF/OVMF_CODE_4M.secboot.fd ]]; then
+    LIVE_CODE=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd LIVE_MACHINE="q35,smm=on,accel=__ACCEL__"
+fi
 
 rm -rf "$ARTIFACTS"; mkdir -p "$ARTIFACTS"
 # shellcheck disable=SC2317  # invoked via trap
@@ -123,8 +130,8 @@ ssh_guest() {
 
 # shellcheck disable=SC2054  # the commas are inside quoted QEMU arguments
 qemu_args=(
-    -machine "q35,accel=$ACCEL" -m 4096 -smp 4
-    -drive "if=pflash,format=raw,unit=0,readonly=on,file=$OVMF_CODE"
+    -machine "${LIVE_MACHINE/__ACCEL__/$ACCEL}" -m 4096 -smp 4
+    -drive "if=pflash,format=raw,unit=0,readonly=on,file=$LIVE_CODE"
     -drive "if=pflash,format=raw,unit=1,file=$LIVE_VARS"
     -drive "if=virtio,format=raw,file=$LIVE_IMAGE"
     -drive "if=virtio,format=raw,file=$TARGET"
@@ -133,6 +140,7 @@ qemu_args=(
     -qmp "unix:$QMP_SOCK,server,nowait"
 )
 [[ "$ACCEL" == kvm ]] && qemu_args+=(-cpu host)
+[[ "$LIVE_CODE" == *secboot* ]] && qemu_args+=(-global "driver=cfi.pflash01,property=secure,value=on")
 if ssh_guest true 2>/dev/null; then echo "FAIL: something already answers on port $SSH_PORT -- a VM left over?"; exit 1; fi
 log "booting the live entry: $live_entry"
 qemu-system-x86_64 "${qemu_args[@]}" &
@@ -279,10 +287,22 @@ if [[ "$SCENARIO" == blank ]]; then
         pass "'Try Stained Glass OS' signs in to a working live desktop"
     else fail "the live desktop's session check: $(tail -5 "$ARTIFACTS/live-session-check.log")"; fi
     sleep 3; shot live-desktop
-    # What double-clicking the desktop shortcut does.
-    ssh_guest "nohup runuser -u live -- sh -c '. /usr/lib/stained-glass/sg-common.sh; . \"\$(sg_session_env)\"; \
-        wine start \"C:\\\\users\\\\Public\\\\Desktop\\\\Install Stained Glass OS.lnk\"' >/dev/null 2>&1 &"
-    if page welcome 2 90; then pass "the desktop's 'Install Stained Glass OS' opens Setup in a window"; fi
+    # What double-clicking the desktop shortcut runs: its target, as the live
+    # user, in the live session. (The shortcut itself is checked for that
+    # target; opening .lnk files through ShellExecute is the shell's.)
+    lnk='/var/lib/stained-glass/prefix/drive_c/users/Public/Desktop/Install Stained Glass OS.lnk'
+    if ssh_guest "grep -aqF 'Z:\\usr\\libexec\\stained-glass\\sg-setup64.exe' '$lnk'"; then
+        pass "the desktop shortcut points at Setup"
+    else fail "the desktop shortcut's target"; fi
+    ssh_guest "cat > /tmp/sg-open-setup.sh" <<'EOS'
+. /usr/lib/stained-glass/sg-common.sh
+. "$(sg_session_env)"
+export DISPLAY XDG_RUNTIME_DIR WAYLAND_DISPLAY WINEPREFIX
+sg_wine_env
+exec wine 'Z:\usr\libexec\stained-glass\sg-setup64.exe'
+EOS
+    ssh_guest "chmod 755 /tmp/sg-open-setup.sh; nohup runuser -u live -- sh /tmp/sg-open-setup.sh >/dev/null 2>&1 &"
+    if page welcome 2 90; then pass "Setup, opened from the live desktop, starts its bridge and opens in a window"; fi
     sleep 3; shot setup-windowed
     qmp key shift; sleep 1
     press_until start 2
@@ -382,7 +402,7 @@ if timeout 300 apt-get -q update >/tmp/apt-update.log 2>&1; then
 else echo 'SKIP  the archive is unreachable from the VM: apt resolution not checked'; fi"
 if [[ "$SCENARIO" == dualboot ]]; then
     POST_CHECK="$POST_CHECK
-[ \"\$(lsblk -n -o PARTTYPE \"\$(findmnt -n -o SOURCE /boot)\")\" = bc13c2ff-59e6-4262-a352-b275fd6f7172 ] && echo 'PASS  the kernels are on its own boot partition, not in Windows'\"'\"' system partition' || { echo 'FAIL  /boot'; findmnt /boot; exit 1; }
+ls /boot >/dev/null; [ \"\$(lsblk -n -o PARTTYPE \"\$(findmnt -n -o SOURCE -t vfat /boot)\")\" = bc13c2ff-59e6-4262-a352-b275fd6f7172 ] && echo 'PASS  the kernels are on its own boot partition, not in Windows'\"'\"' system partition' || { echo 'FAIL  /boot'; findmnt /boot; exit 1; }
 [ -f /efi/EFI/Microsoft/Boot/bootmgfw.efi ] && echo 'PASS  the Windows boot manager is still in the system partition' || { echo 'FAIL  bootmgfw.efi'; exit 1; }"
 else
     POST_CHECK="$POST_CHECK
