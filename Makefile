@@ -375,6 +375,23 @@ iso-test:
 	SG_LIVE_ISO=$(ISO) SG_LIVE_ISO_AS=disk SG_INSTALL_SCENARIO=blank test/install-test.sh
 	SG_LIVE_ISO=$(ISO) SG_LIVE_ISO_AS=cdrom SG_INSTALL_SCENARIO=dualboot test/install-test.sh
 
+# Put the ISO on https://freesoft.page/iso/ as sg-live-DATE-REV.iso, with its
+# SHA-256 in SHA256SUMS and sg-live-latest.iso pointing at it. release.sh does
+# this only after the ISO install gates pass.
+ISO_HOST ?= root@freesoft.page
+ISO_DIR  ?= /srv/www/iso
+.PHONY: upload-iso
+upload-iso:
+	@test -f $(ISO) || { echo "no $(ISO) -- run 'make iso'"; exit 2; }
+	@set -e; name=sg-live-$$(date -u +%Y%m%d)-$$(git rev-parse --short HEAD).iso; \
+	ssh="ssh -i $$HOME/.ssh/sg -o BatchMode=yes"; \
+	sum=$$(sha256sum < $(ISO) | cut -d' ' -f1); \
+	rsync -a --partial --info=progress2 -e "$$ssh" $(ISO) $(ISO_HOST):$(ISO_DIR)/$$name.part; \
+	$$ssh $(ISO_HOST) "cd $(ISO_DIR) && echo '$$sum  $$name.part' | sha256sum -c --quiet - && mv $$name.part $$name \
+	  && { grep -v ' $$name\$$' SHA256SUMS 2>/dev/null || true; echo '$$sum  $$name'; } > SHA256SUMS.new && mv SHA256SUMS.new SHA256SUMS \
+	  && ln -sfn $$name sg-live-latest.iso"; \
+	echo "uploaded https://freesoft.page/iso/$$name (sha256 $$sum)"
+
 # Remote Desktop (E1): sign in to the image over RDP from this machine with a
 # real FreeRDP client; a remote session, its own lock screen, reconnect.
 .PHONY: rdp-test
