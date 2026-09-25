@@ -17,7 +17,7 @@ SG_WINE     ?= ../wine-sg
 SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 
-.PHONY: fileaccess-test token-test procagent-test elevate-test policy-test privilege-test addons apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
+.PHONY: net-test fileaccess-test token-test procagent-test elevate-test policy-test privilege-test addons apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
 
 all: image
 
@@ -352,6 +352,12 @@ dc-test:
 .PHONY: domain-test
 domain-test:
 	test/domain-test.sh
+
+# Connectivity (NetworkManager, sg-netd): wired DHCP, static addresses by
+# administrators only, and Wi-Fi joined by a standard user, over a simulated
+# radio pair with an access point of the test's own.
+net-test:
+	test/net-test.sh
 
 test: image boot-test
 

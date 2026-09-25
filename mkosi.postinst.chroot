@@ -81,8 +81,14 @@ systemctl enable sg-lockd.service
 # Samba's services stay off until a role asks: see
 # mkosi.extra/etc/systemd/system-preset/10-sg-image.preset.
 systemctl enable ssh.service
-systemctl enable systemd-networkd.service
+# NetworkManager configures the network (wired DHCP by default, Wi-Fi, static
+# addresses through sg-netd); systemd-resolved stays the resolver it feeds.
+# networkd must not also manage the same links.
+systemctl disable systemd-networkd.service systemd-networkd.socket \
+    systemd-networkd-wait-online.service >/dev/null 2>&1 || true
+systemctl enable NetworkManager.service NetworkManager-wait-online.service
 systemctl enable systemd-resolved.service
+systemctl enable sg-netd.socket
 systemctl set-default graphical.target
 
 # --- the Wine prefix is NOT baked here ------------------------------------

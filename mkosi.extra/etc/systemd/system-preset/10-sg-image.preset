@@ -9,3 +9,13 @@ disable smbd.service
 disable nmbd.service
 disable samba-ad-dc.service
 disable winbind.service
+
+# NetworkManager configures the network, feeding systemd-resolved; networkd
+# must not manage the same links (see mkosi.postinst.chroot).
+disable systemd-networkd.service
+disable systemd-networkd.socket
+disable systemd-networkd-wait-online.service
+enable NetworkManager.service
+enable NetworkManager-wait-online.service
+enable systemd-resolved.service
+enable sg-netd.socket

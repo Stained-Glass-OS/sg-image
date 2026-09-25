@@ -14,6 +14,7 @@ make boot-test   # boot it headless in QEMU and run the gate
 make install-test  # install it from its live entry onto a blank disk, then boot that
 make rdp-test    # Remote Desktop into it from this machine (E1)
 make dc-test     # make it the SGTEST.LAN domain controller and use it (D2)
+make net-test    # NetworkManager: DHCP, static addresses (admins only), Wi-Fi over hwsim
 make test        # both
 ```
 
@@ -103,6 +104,34 @@ plus checks of what the installer did (host name, machine id, root grown, no
 live entry, no lab account, owner an administrator, host keys). It uses ssh
 port 2223, so it can run beside `make boot-test`, not beside another
 install-test.
+
+## The network
+
+**NetworkManager** runs the network (systemd-networkd is disabled, in
+`mkosi.postinst.chroot` and the preset); every wired adapter gets a DHCP
+profile by default, and DNS goes to systemd-resolved
+(`mkosi.extra/etc/NetworkManager/conf.d/50-stained-glass.conf`, `dns=systemd-resolved`,
+`rc-manager=unmanaged`), which the DC and member roles configure. Wi-Fi:
+wpasupplicant, the regulatory database, and the common Wi-Fi firmware from
+non-free-firmware (Intel, Realtek, Atheros, Broadcom, MediaTek, misc), about
+300 MB, so a laptop's Wi-Fi works at first boot. polkitd enforces sg-session's
+rules. Who may change what is sg-session's sg-netd (see its CLAUDE.md).
+
+**`make net-test`** boots the image with two user-mode NICs (each with its
+own DHCP) and runs as a standard user (`sgwine`, not `sg-admins`), an
+administrator (`sguser`) and an account with no Windows session: DHCP leases
+with no configuration; a standard user refused a static address both through
+sg-netd and through nmcli; an administrator's static address, gateway
+(`proto static`) and DNS, surviving a NetworkManager restart, and DHCP back.
+Then Wi-Fi with no hardware: `mac80211_hwsim radios=2`, one radio moved into a
+network namespace as an access point (wpa_supplicant AP mode, WPA2-PSK; SSID
+with a space and a non-ASCII character, key generated per run and never
+written anywhere but a root-only file in the guest's /run) with dnsmasq for
+DHCP and a web server; the standard user scans, is refused with a wrong key
+(and the network is not remembered), joins, gets a lease, fetches a page
+across the air, disconnects, rejoins with the saved key, forgets it, turns
+the radio off and on. The key must appear in no log or artifact. Port 2227.
+The domain gate sets its private-segment addresses with `sg-netctl` too.
 
 ## Things that will bite you
 

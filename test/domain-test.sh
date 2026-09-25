@@ -99,14 +99,11 @@ wait_up() {
         (( SECONDS < deadline )) || { echo "FAIL: $vm has no ssh"; exit 1; }
         sleep 5
     done
-    # The private segment: a fixed address on the NIC with the known MAC.
-    on "$vm" "cat > /etc/systemd/network/05-sgtest.network <<EOF
-[Match]
-MACAddress=${MAC[$vm]}
-[Network]
-Address=${ADDR[$vm]}/24
-EOF
-networkctl reload; sleep 2; ip -4 -o addr show | grep -q 'inet ${ADDR[$vm]}/'"
+    # The private segment: a fixed address on the NIC with the known MAC, set
+    # the way an administrator sets one (NetworkManager, through sg-netctl).
+    on "$vm" "dev=\$(ip -o link | awk -v m='${MAC[$vm]}' 'index(\$0, m) {sub(/:\$/, \"\", \$2); print \$2; exit}')
+[ -n \"\$dev\" ] && sg-netctl ipv4 \"\$dev\" static ${ADDR[$vm]}/24 >/dev/null &&
+ip -4 -o addr show | grep -q 'inet ${ADDR[$vm]}/'"
 }
 
 for vm in dc ws; do
