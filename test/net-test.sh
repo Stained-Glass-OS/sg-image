@@ -166,7 +166,7 @@ g "resolvectl dns $NIC2 | grep -qw 10.0.3.3 && ! resolvectl dns $NIC2 | grep -qw
 # As a Windows program runs them: a user's wine, the system prefix.
 g "printf '%s\\n' '. /usr/lib/stained-glass/sg-common.sh' 'sg_wine_env' 'exec wine \"\$@\"' > /tmp/sg-wine.sh && chmod 0755 /tmp/sg-wine.sh"
 # (a refused command exits 1: its output is what the checks judge)
-W() { local u=$1; shift; { g "runuser -u $u -- sh /tmp/sg-wine.sh $*" 2>/dev/null || true; } | tr -d '\r'; }
+W() { local u=$1; shift; { g "runuser -u $u -- sh /tmp/sg-wine.sh $*" 2>>"$ARTIFACTS/wine-stderr.log" || true; } | tr -d '\r'; }
 out=$(W stduser netsh interface ip set address name=$NIC2 static 10.0.3.60 255.255.255.0 10.0.3.2)
 if grep -q 'requires elevation' <<<"$out" && ! g "ip -4 -o addr show dev $NIC2 | grep -q 10.0.3.60"; then
     pass "netsh: a standard user is refused, in Windows' words, and nothing changed"
