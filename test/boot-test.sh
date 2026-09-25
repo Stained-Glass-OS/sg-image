@@ -328,13 +328,13 @@ if [[ "${SG_GUEST_CHECK:-session}" == session ]]; then
     fi
 fi
 
-# Voice typing's model is baked in (make speech): installed as sg-speechd would
-# leave it, root-owned so no user or SYSTEM can swap it, and it recognises
+# Voice typing's model comes installed (make speech: the package
+# sg-speech-model-parakeet), root-owned so no user or SYSTEM can swap it, and it recognises
 # speech -- a sentence spoken by espeak-ng on the host, when that is there.
 if [[ "${SG_GUEST_CHECK:-session}" == session ]]; then
-    st=$(ssh_guest "runuser -u $LOGIN_USER -- sg-dictate --status | head -1; stat -c '%U' /var/lib/stained-glass-speech/parakeet-tdt-0.6b-v3-int8/encoder-model.int8.onnx; find /var/lib/stained-glass-speech ! -user root | head -1" 2>/dev/null | tr '\n' ' ')
-    if [[ "$st" == "MODEL installed root " ]]; then
-        echo "PASS  the speech model is baked in, installed and root-owned"
+    st=$(ssh_guest "runuser -u $LOGIN_USER -- sg-dictate --status | head -1; dpkg-query -W -f '\${Status}' sg-speech-model-parakeet; echo; stat -c '%U' /usr/share/stained-glass-speech/parakeet-tdt-0.6b-v3-int8/encoder-model.int8.onnx" 2>/dev/null | tr '\n' ' ')
+    if [[ "$st" == "MODEL installed install ok installed root " ]]; then
+        echo "PASS  the speech model is installed from its package (sg-speech-model-parakeet), root-owned"
     else
         echo "FAIL  the speech model is not baked in as expected: $st"
         RC=1

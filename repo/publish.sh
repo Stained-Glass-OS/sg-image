@@ -1,19 +1,25 @@
 #!/usr/bin/env bash
-# Publish the repository to GitHub Pages: https://stained-glass-os.github.io/apt
+# Publish the repository to https://freesoft.page/apt (the project's server;
+# it used to be GitHub Pages, whose 100 MB file limit kept the speech model
+# out of the repository).
 #
 #   repo/publish.sh DEB...
 #
 # 1. fetch what is live (to refuse a changed package under an unchanged version);
 # 2. build and sign the repository (repo/build-repo.sh);
 # 3. verify it with apt (repo/check-repo.sh) -- a failure publishes nothing;
-# 4. replace the live site with a single orphan commit, so wine-sg's ~56 MB per
-#    release never accumulates in git history.
+# 4. rsync it to the server: files first, the signed indices last, so a
+#    machine never sees an index naming a package not yet there.
 #
 # Signing happens here, where the key is; no CI system holds it.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-REMOTE="${SG_APT_REMOTE:-https://github.com/Stained-Glass-OS/apt.git}"
+# ssh target and directory; the key is ~/.ssh/sg unless SG_APT_SSH_KEY says.
+HOST="${SG_APT_HOST:-root@freesoft.page}"
+DIR="${SG_APT_DIR:-/srv/www/apt}"
+KEY="${SG_APT_SSH_KEY:-$HOME/.ssh/sg}"
+SSH="ssh -i $KEY -o BatchMode=yes"
 LIVE="$HERE/build/apt-live"
 OUT="$HERE/build/apt"
 
@@ -21,12 +27,9 @@ log() { echo "[publish] $*"; }
 
 log "fetching the live repository"
 rm -rf "$LIVE"
-if git ls-remote --exit-code "$REMOTE" main >/dev/null 2>&1; then
-    git clone -q --depth 1 --branch main "$REMOTE" "$LIVE"
-else
-    log "  nothing published yet"
-    mkdir -p "$LIVE"
-fi
+mkdir -p "$LIVE"
+rsync -a -e "$SSH" "$HOST:$DIR/" "$LIVE/"
+[[ -d "$LIVE/pool" ]] || log "  nothing published yet"
 
 # The site is replaced by exactly the packages given, so a live package left
 # off the command line would vanish from every machine's sources (sg-shell
@@ -46,12 +49,6 @@ PUBLISHED_DIR="$LIVE" "$HERE/repo/build-repo.sh" "$OUT" "$@"
 "$HERE/repo/check-repo.sh" "$OUT"
 
 log "publishing"
-cd "$OUT"
-rm -rf .git
-git init -q -b main
-git add -A
-git -c user.name="Stained Glass OS" -c user.email="dev@stained-glass.example" \
-    commit -q -m "Repository as of $(date -u +%Y-%m-%dT%H:%MZ)"
-git push -q --force "$REMOTE" main
-rm -rf .git
-log "live at https://stained-glass-os.github.io/apt (Pages may take a minute)"
+rsync -a -e "$SSH" --exclude dists/ "$OUT/" "$HOST:$DIR/"
+rsync -a --delete-after -e "$SSH" "$OUT/" "$HOST:$DIR/"
+log "live at https://freesoft.page/apt"

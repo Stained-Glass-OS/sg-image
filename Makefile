@@ -253,36 +253,26 @@ $(ADDONS_DIR)/.sg-addons: Makefile
 
 # --- voice typing's speech model ---------------------------------------------
 
-# Parakeet TDT 0.6B v3 (int8 ONNX, CC BY 4.0) and Silero VAD (MIT), 642 MB,
-# baked into the image so Win+H works out of the box and offline, as Windows'
-# own voice typing does. Too big for a .deb on the apt site (GitHub's 100 MB
-# file limit), so it rides in the image and the installer's copy of it; a
-# machine without it still gets it from sg-speechd on first use.
+# Parakeet TDT 0.6B v3 (int8 ONNX, CC BY 4.0) and Silero VAD (MIT), 642 MB, as
+# the Debian package sg-speech-model-parakeet (speech-model/build-deb.sh):
+# installed in the image so Win+H works out of the box and offline, and
+# published on the apt site like any package. A machine without it still gets
+# the model from sg-speechd on first use.
 #
 # The file list, pinned revisions and SHA-256s are sg-session's sgspeech.FILES,
-# and the download is sg-dictate's own fetch_model (resume, verify, NOTICE,
-# .verified stamp), run unprivileged into a cache: one definition of "the model
-# is installed", shared with sg-speechd.
+# fetched by sg-dictate's own fetch_model into a cache: one definition of "the
+# model is complete", shared with sg-speechd.
 SPEECH_CACHE := $(BUILD)/speech-cache
-SPEECH_DIR   := $(EXTRA_TREE)/var/lib/stained-glass-speech
 
-speech: $(SPEECH_DIR)/status
-
-$(SPEECH_DIR)/status: $(SG_SESSION)/speech/sgspeech.py
-	@mkdir -p $(SPEECH_CACHE)
-	@SG_SPEECH_DIR=$(CURDIR)/$(SPEECH_CACHE) SG_SPEECH_LIB=$(SG_SESSION)/speech \
-	  python3 -c 'import runpy, sys; g = runpy.run_path(sys.argv[1], run_name="sg_image"); \
-	    g["fetch_model"](lambda done, total: None)' $(SG_SESSION)/speech/sg-dictate
-	@rm -rf $(SPEECH_DIR)
-	@mkdir -p $(SPEECH_DIR)
-	@cp -a $(SPEECH_CACHE)/. $(SPEECH_DIR)/
-	@rm -f $(SPEECH_DIR)/.lock
-	@chmod -R u=rwX,go=rX $(SPEECH_DIR)
-	@echo "staged speech model: $$(du -sh $(SPEECH_DIR) | cut -f1)"
+# Rebuilt every time (staged-debs clears the staging directory); the download
+# is cached, so that is a minute of packaging, not a download.
+speech: staged-debs
+	@rm -rf $(EXTRA_TREE)/var/lib/stained-glass-speech
+	speech-model/build-deb.sh $(SG_SESSION) $(SPEECH_CACHE) $(EXTRA_TREE)/opt/sg-packages
 
 # --- package repository --------------------------------------------------------
 
-# The signed apt repository, https://stained-glass-os.github.io/apt (stained-glass
+# The signed apt repository, https://freesoft.page/apt (stained-glass
 # docs/package-repository.md). Signed here with the key in ~/.sgkeys; no CI
 # system holds it.
 #
@@ -298,7 +288,7 @@ repo: staged-debs
 repo-check: repo
 	repo/check-repo.sh $(BUILD)/apt
 
-publish: staged-debs
+publish: staged-debs speech
 	repo/publish.sh $(REPO_DEBS)
 
 # --- image -----------------------------------------------------------------

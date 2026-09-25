@@ -410,7 +410,7 @@ ls /boot /efi >/dev/null 2>&1; ! ls /boot/loader/entries/ /efi/loader/entries/ 2
 ! getent passwd live >/dev/null && ! systemctl is-active --quiet sg-live.service && [ ! -e /run/stained-glass-setup/installd.sock ] && echo 'PASS  no live account and no installer service' || { echo 'FAIL  live pieces on the installed machine'; exit 1; }
 id -nG $OWNER | tr ' ' '\\n' | grep -qx sg-admins && echo 'PASS  the owner is an administrator' || { echo 'FAIL  owner not in sg-admins'; exit 1; }
 [ -s /etc/ssh/ssh_host_ed25519_key ] && echo 'PASS  ssh host keys generated on this machine' || { echo 'FAIL  no host keys'; exit 1; }
-grep -q stained-glass-os.github.io/apt /etc/apt/sources.list.d/stained-glass.sources && [ -s /usr/share/keyrings/stained-glass-archive-keyring.gpg ] && [ -f /etc/apt/sources.list.d/debian.sources ] && echo 'PASS  Debian and the Stained Glass OS repository, with its key, are the package sources' || { echo 'FAIL  package sources'; exit 1; }
+grep -q freesoft.page/apt /etc/apt/sources.list.d/stained-glass.sources && [ -s /usr/share/keyrings/stained-glass-archive-keyring.gpg ] && [ -f /etc/apt/sources.list.d/debian.sources ] && echo 'PASS  Debian and the Stained Glass OS repository, with its key, are the package sources' || { echo 'FAIL  package sources'; exit 1; }
 dpkg -s wine-sg sg-session >/dev/null 2>&1 && echo 'PASS  wine-sg and sg-session are installed packages' || { echo 'FAIL  packages'; exit 1; }
 grep -q 'non-free non-free-firmware' /etc/apt/sources.list.d/debian.sources && echo 'PASS  the installed machine has Debian non-free and non-free-firmware' || { echo 'FAIL  non-free sources'; exit 1; }
 t=0; while [ -e /etc/stained-glass/drivers.pending ] && [ \$t -lt 180 ]; do sleep 5; t=\$((t + 5)); done

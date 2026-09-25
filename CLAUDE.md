@@ -242,7 +242,7 @@ The domain gate sets its private-segment addresses with `sg-netctl` too.
   own build-time apt configuration is not left in the image, so before this an
   installed machine had no package sources at all.
 - **The package repository is published from here**: `make publish` builds
-  `https://stained-glass-os.github.io/apt` from the staged `.deb`s, signs it with
+  `https://freesoft.page/apt` from the staged `.deb`s, signs it with
   the key in `~/.sgkeys` (never in a repository), checks it with apt (and that a
   tampered index is rejected), and replaces the live site with one orphan
   commit. The image trusts only that key, pinned to that source. **apt upgrades

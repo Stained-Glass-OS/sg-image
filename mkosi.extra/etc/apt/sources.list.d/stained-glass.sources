@@ -7,7 +7,7 @@
 # docs/package-repository.md.
 
 Types: deb
-URIs: https://stained-glass-os.github.io/apt
+URIs: https://freesoft.page/apt
 Suites: trixie
 Components: main
 Signed-By: /usr/share/keyrings/stained-glass-archive-keyring.gpg

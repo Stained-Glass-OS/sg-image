@@ -94,7 +94,8 @@ else
     log "compressing the root file system (a few minutes)"
     sudo mount -o ro,loop,offset=$((root_start * 512)),sizelimit=$((root_size * 512)) "$IMG" "$MNT"
     rm -f "$ROOT_CACHE"
-    sudo mkfs.erofs -zlzma,level=6 -Eall-fragments,dedupe -L SGLIVEROOT --quiet "$ROOT_CACHE.tmp" "$MNT/"
+    # mkfs.erofs spools fragment data in TMPDIR: keep it off a tmpfs /tmp.
+    sudo TMPDIR="$(dirname "$ROOT_CACHE")" mkfs.erofs -zlzma,level=6 -Eall-fragments,dedupe -L SGLIVEROOT --quiet "$ROOT_CACHE.tmp" "$MNT/"
     sudo umount "$MNT"
     sudo chown "$(id -u):$(id -g)" "$ROOT_CACHE.tmp"
     mv "$ROOT_CACHE.tmp" "$ROOT_CACHE"

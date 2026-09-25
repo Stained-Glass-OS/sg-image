@@ -72,7 +72,7 @@ cat > index.html <<EOF
 <p>Signed with key <code>$FPR</code>
 (<a href="stained-glass-archive-keyring.gpg">stained-glass-archive-keyring.gpg</a>).</p>
 <pre>Types: deb
-URIs: https://stained-glass-os.github.io/apt
+URIs: https://freesoft.page/apt
 Suites: $SUITE
 Components: $COMPONENT
 Signed-By: /usr/share/keyrings/stained-glass-archive-keyring.gpg</pre>
