@@ -169,6 +169,11 @@ g "resolvectl dns $NIC2 | grep -qw 10.0.3.3 && ! resolvectl dns $NIC2 | grep -qw
 
 # --- netsh and ipconfig (wine-sg 0079), on the real NetworkManager -----------------------
 # As a Windows program runs them: a user's wine, the system prefix.
+# ssh answers long before the Windows side exists on a first boot: wait, as
+# the login screen does (greetd is After=sg-wineserver), for the machine
+# wineserver -- a user's wine started before it races sg-prefix-init.
+t=0; until g "systemctl is-active -q sg-wineserver.service" 2>/dev/null || (( t > 600 )); do sleep 5; t=$(( t + 5 )); done
+g "systemctl is-active -q sg-wineserver.service" || fail "the machine wineserver never started: $(g "systemctl status sg-wineserver --no-pager | tail -5")"
 g "printf '%s\\n' '. /usr/lib/stained-glass/sg-common.sh' 'sg_wine_env' 'exec wine \"\$@\"' > /tmp/sg-wine.sh && chmod 0755 /tmp/sg-wine.sh"
 # (a refused command exits 1: its output is what the checks judge)
 W() { local u=$1; shift; { g "runuser -u $u -- sh /tmp/sg-wine.sh $*" 2>>"$ARTIFACTS/wine-stderr.log" || true; } | tr -d '\r'; }
