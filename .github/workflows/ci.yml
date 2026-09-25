@@ -6,13 +6,22 @@ on:
   pull_request:
   workflow_dispatch:
 
+# One run at a time per branch; a newer push waits, and replaces any run still
+# waiting behind it. Not cancel-in-progress: a cancelled run loses its Wine
+# build before it is cached, and every later run pays for it again (the same
+# reasoning as sg-session's CI).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   boot-gate:
     name: build image + boot gate
     runs-on: ubuntu-latest
-    # This job now builds Wine from source as well as the image, then boots it
-    # under TCG. On a 4-core runner that is slow; budget accordingly.
-    timeout-minutes: 240
+    # This job builds Wine from source as well as the image, then boots it
+    # under TCG. On a 4-core runner that is slow; budget accordingly (a hosted
+    # job may run six hours).
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,15 +39,45 @@ jobs:
           repository: Stained-Glass-OS/wine-sg
           path: wine-sg
 
+      # make image builds every package the image installs, from checkouts
+      # beside this repo: the compositor and the shell panels too.
+      - name: Check out sg-compositor
+        uses: actions/checkout@v4
+        with:
+          repository: Stained-Glass-OS/sg-compositor
+          path: sg-compositor
+
+      - name: Check out sg-shell
+        uses: actions/checkout@v4
+        with:
+          repository: Stained-Glass-OS/sg-shell
+          path: sg-shell
+
       # Same cache as wine-sg's own CI, and the same reasoning: 'make image'
       # builds Wine from source, and that dominates the job. Keyed on the
       # upstream version and the patch series so a change anywhere else in
       # wine-sg still hits it.
-      - name: Cache the Wine build tree
-        uses: actions/cache@v4
+      # Built in Debian trixie (below), so not the Ubuntu-built trees the old
+      # key holds. Restored here, saved as soon as the packages are built: a
+      # cache saved only at the end of a green job is never saved while the
+      # gate is red, and every red run then rebuilds Wine from scratch.
+      - name: Restore the Wine build tree
+        id: wine-cache
+        uses: actions/cache/restore@v4
         with:
           path: wine-sg/build
-          key: wine-build-${{ runner.os }}-${{ hashFiles('wine-sg/wine-version', 'wine-sg/patches/**') }}
+          key: wine-build-trixie-${{ hashFiles('wine-sg/wine-version', 'wine-sg/patches/**', 'wine-sg/build.sh') }}
+          restore-keys: wine-build-trixie-
+
+      # The runner's preinstalled toolchains are not needed, and the Wine
+      # tree, the packages and an image of several GB do not fit beside them.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL \
+                      /usr/local/share/boost /usr/share/swift /usr/local/.ghcup
+          docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
 
       - name: Install dependencies
         run: |
@@ -47,15 +86,10 @@ jobs:
             systemd-repart systemd-boot-efi \
             debian-archive-keyring dosfstools e2fsprogs mtools \
             qemu-system-x86 qemu-utils ovmf openssh-client \
-            debhelper build-essential devscripts shellcheck \
-            gcc-mingw-w64-i686 gcc-mingw-w64-x86-64 mingw-w64-tools \
-            patch xz-utils file
-          # wine-sg is built from source as part of 'make image', so the image
-          # job needs Wine's build dependencies too.
-          sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/*.sources 2>/dev/null || true
-          sudo apt-get update
-          sudo apt-get build-dep -y --no-install-recommends wine || true
-          sudo apt-get install -y --no-install-recommends libsane-dev
+            make curl unzip xz-utils zstd openssl
+          # The packages are built in a Debian container (below); the runner
+          # only needs mkosi, the image tools, and what the Direct3D, apps and
+          # add-ons downloads use.
           # Ubuntu's mkosi lags, and the image config uses behaviour (the
           # .chroot postinst extension, mkosi.repart handling) that differs
           # between versions. Pin to the version this was developed and tested
@@ -100,9 +134,42 @@ jobs:
             echo "No KVM: the gate will run under TCG (slow)"
           fi
 
+      # The packages are built in Debian trixie, the distribution the image is,
+      # not on the Ubuntu runner: sg-compositor needs wlroots 0.18, which
+      # Ubuntu does not have, and a package built against Ubuntu's libraries
+      # is not the package the image should ship. Each repo's own
+      # Build-Depends decide what is installed. The workspace is mounted at
+      # the same path, so the Wine tree's absolute paths hold across runs.
+      - name: Build the packages (Debian trixie)
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -w "$GITHUB_WORKSPACE" \
+            -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" debian:trixie bash -euxc '
+              sed -i "s/^Types: deb\$/Types: deb deb-src/" /etc/apt/sources.list.d/debian.sources
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                build-essential devscripts debhelper equivs make git ca-certificates curl \
+                xz-utils patch file procps openssh-client openssl shellcheck python3
+              for r in wine-sg sg-compositor sg-shell sg-session; do
+                (cd "$r" && apt-get build-dep -y --no-install-recommends ./)
+              done
+              git config --global --add safe.directory "*"
+              status=0
+              make -C sg-image staged-debs || status=$?
+              chown -R "$HOST_UID:$HOST_GID" .
+              exit $status'
+
+      - name: Save the Wine build tree
+        if: always() && steps.wine-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: wine-sg/build
+          key: wine-build-trixie-${{ hashFiles('wine-sg/wine-version', 'wine-sg/patches/**', 'wine-sg/build.sh') }}
+
+      # -o staged-debs: the packages were built above; make builds the rest
+      # (Direct3D, the bundled apps, Wine Mono/Gecko) and the image itself.
       - name: Build image
         working-directory: sg-image
-        run: make image
+        run: make -o staged-debs image
 
       - name: Boot gate
         working-directory: sg-image
