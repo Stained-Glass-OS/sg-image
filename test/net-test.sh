@@ -189,7 +189,8 @@ t=0; until g "ip -4 -o addr show dev $NIC2 | grep -q 'inet 10.0.3.15/24.*dynamic
 g "ip -4 -o addr show dev $NIC2 | grep -q 'inet 10.0.3.15/24.*dynamic' && ! ip -4 -o addr show dev $NIC2 | grep -q 10.0.3.60" \
     && pass "netsh ... dhcp: back on a lease" || fail "netsh dhcp: $(g "ip -4 -o addr show dev $NIC2")"
 # name the test adapter: renewing every adapter would renew the one this ssh uses
-out=$(W sguser ipconfig /renew $NIC2)
+out=$(g "runuser -u sguser -- env WINEDEBUG=err+all,+seh sh /tmp/sg-wine.sh ipconfig /renew $NIC2 2>>/tmp/ipconfig.err; echo \"rc=\$?\"" 2>/dev/null | tr -d '\r')
+g "cat /tmp/ipconfig.err" > "$ARTIFACTS/ipconfig.err" 2>/dev/null || true
 grep -q '10.0.3.15' <<<"$out" && pass "ipconfig /renew $NIC2 renews, and lists the lease" || fail "ipconfig /renew: $out"
 
 # --- Wi-Fi --------------------------------------------------------------------------------
@@ -291,7 +292,7 @@ if grep -rqF -e "$PSK" -e "$WRONG" "$ARTIFACTS"; then fail "a Wi-Fi key appears 
 else pass "no Wi-Fi key in the journal or the artifacts"; fi
 grep -q 'sg-netd' "$ARTIFACTS/journal.log" && pass "sg-netd logs who changed what" || fail "sg-netd logged nothing"
 
-g "systemctl poweroff" >/dev/null 2>&1 || true
+[[ "${SG_KEEP_VM:-0}" == "1" ]] || g "systemctl poweroff" >/dev/null 2>&1 || true
 for _ in $(seq 1 60); do kill -0 "$QEMU_PID" 2>/dev/null || break; sleep 2; done
 kill "$QEMU_PID" 2>/dev/null || true; wait "$QEMU_PID" 2>/dev/null || true; QEMU_PID=""
 
