@@ -26,8 +26,11 @@ case "$1" in
         printf 'TYPED %s\n' "$(wine cmd /c type "$APP\\typed.txt" 2>/dev/null | tr -d '\r')"
         wine cmd /c if exist "$APP\\sg-test-app.exe" echo INSTALLED 2>/dev/null | tr -d '\r'
         wine cmd /c if exist 'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\SG Test App\SG Test App.lnk' echo SHORTCUT 2>/dev/null | tr -d '\r'
-        wine reg query 'HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\SGTestApp' /v DisplayName 2>/dev/null \
-            | grep -q 'SG Test App' && echo ARP
+        # A 32-bit installer (NSIS) writes its entry to the 32-bit view
+        # (WOW6432Node), as on Windows; Apps & features lists both views.
+        for view in /reg:64 /reg:32; do
+            wine reg query 'HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\SGTestApp' /v DisplayName $view 2>/dev/null
+        done | grep -q 'SG Test App' && echo ARP
         ;;
     *) echo "usage: guest.sh launch|accounts|status|windows|adversary D W|verify" >&2; exit 2 ;;
 esac
