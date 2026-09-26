@@ -12,12 +12,17 @@
 # Checks: the join (trust, users and groups resolve), a wrong password is
 # refused at the login screen, alice's session comes up with the Windows
 # desktop, it holds the Windows system's group (Domain Users are local Users),
+# her Windows identity is the domain's (her SID from dc1 in her token, files,
+# HKCU and ProfileList; domain groups in ACLs),
 # she got a Kerberos ticket at sign-in, and a Windows program in
 # her session gets a Kerberos service ticket for the DC's file service through
 # SSPI -- single sign-on, no password asked. dave is an administrator of ws1.
 # Network drives: alice's home drive (homeDirectory \\dc1\home\alice as
 # H:) is mapped at sign-in with her own ticket, her logon script runs from
 # NETLOGON, maps S: with NET USE and writes to H:; dave does not get her H:.
+# Machine Group Policy: the computer's registry policy on gpupdate, and --
+# after dc1's GPO changes and ws1 reboots -- at boot with no gpupdate, with
+# the computer's startup script run as SYSTEM.
 #
 # Passwords are generated per run and never committed. Needs what
 # boot-test.sh needs.
@@ -73,10 +78,12 @@ on() {   # on dc|ws COMMAND...
 }
 qmp() { python3 "$HERE/test/qmp.py" "$BUILD/domain-ws-qmp.sock" "$@" >/dev/null; }
 
-boot() {   # boot dc|ws
+boot() {   # boot dc|ws [again]: a fresh copy of the image, or (again) the same disk
     local vm=$1
-    cp --reflink=auto "$IMAGE" "$BUILD/domain-$vm.raw"
-    cp "${OVMF_CODE/CODE/VARS}" "$BUILD/domain-$vm-vars.fd"
+    if [[ "${2:-}" != again ]]; then
+        cp --reflink=auto "$IMAGE" "$BUILD/domain-$vm.raw"
+        cp "${OVMF_CODE/CODE/VARS}" "$BUILD/domain-$vm-vars.fd"
+    fi
     # shellcheck disable=SC2054  # the commas are inside quoted QEMU arguments
     local args=(
         -machine "q35,accel=$ACCEL" -m 4096 -smp 4
@@ -146,22 +153,24 @@ GPO=$(on dc "samba-tool gpo create 'SG Test Policy' -U administrator --password=
       | grep -o '{[0-9A-Fa-f-]*}' | head -1 || true)
 if [[ -n "$GPO" ]] && on dc "set -e
     g=/var/lib/samba/sysvol/sgtest.lan/Policies/$GPO/User
-    mkdir -p \$g/Preferences/Drives \$g/Scripts/Logon \$g/../Machine
+    mkdir -p \$g/Preferences/Drives \$g/Scripts/Logon \$g/../Machine/Scripts/Startup
     cat > \$g/Preferences/Drives/Drives.xml <<'XML'
 <?xml version=\"1.0\" encoding=\"utf-8\"?>
 <Drives clsid=\"{8FDDCC1A-0C3C-43cd-A6B4-71A6DF20DA8C}\"><Drive clsid=\"{935D1B74-9CB8-4e3c-9914-7DD559B7A417}\" name=\"T:\" status=\"T:\" image=\"2\" changed=\"2026-09-24 00:00:00\" uid=\"{6A2C4D1E-0000-4000-8000-000000000001}\"><Properties action=\"U\" thisDrive=\"NOCHANGE\" allDrives=\"NOCHANGE\" userName=\"\" path=\"\\\\dc1\\shared\" label=\"Shared\" persistent=\"0\" useLetter=\"1\" letter=\"T\"/></Drive></Drives>
 XML
     printf '%s\\r\\n' 'echo GPO script ran> H:\\gpo-ran.txt' 'if exist T:\\marker.txt echo T-ok>> H:\\gpo-ran.txt' > \$g/Scripts/Logon/gpo-logon.cmd
+    printf '%s\\r\\n' '@echo off' 'echo startup script ran as %USERNAME%> C:\\ProgramData\\sg-gpo-startup.txt' > \$g/../Machine/Scripts/Startup/gpo-startup.cmd
     python3 -c \"import sys
 open(sys.argv[1], 'wb').write('\\ufeff[Logon]\\r\\n0CmdLine=gpo-logon.cmd\\r\\n0Parameters=\\r\\n'.encode('utf-16-le'))
 def w(s): return s.encode('utf-16-le')
 e = w('[') + w('Software\\\\Policies\\\\StainedGlassTest\\0') + w(';') + w('GpoValue\\0') + w(';') + (4).to_bytes(4, 'little') + w(';') + (4).to_bytes(4, 'little') + w(';') + (42).to_bytes(4, 'little') + w(']')
 open(sys.argv[2], 'wb').write(b'PReg' + (1).to_bytes(4, 'little') + e)
 m = w('[') + w('Software\\\\Policies\\\\StainedGlassTest\\0') + w(';') + w('MachineValue\\0') + w(';') + (4).to_bytes(4, 'little') + w(';') + (4).to_bytes(4, 'little') + w(';') + (7).to_bytes(4, 'little') + w(']')
-open(sys.argv[3], 'wb').write(b'PReg' + (1).to_bytes(4, 'little') + m)\" \$g/Scripts/scripts.ini \$g/Registry.pol \$g/../Machine/Registry.pol
+open(sys.argv[3], 'wb').write(b'PReg' + (1).to_bytes(4, 'little') + m)
+open(sys.argv[4], 'wb').write('\\ufeff[Startup]\\r\\n0CmdLine=gpo-startup.cmd\\r\\n0Parameters=\\r\\n'.encode('utf-16-le'))\" \$g/Scripts/scripts.ini \$g/Registry.pol \$g/../Machine/Registry.pol \$g/../Machine/Scripts/scripts.ini
     samba-tool gpo setlink DC=sgtest,DC=lan $GPO -U administrator --password='$ADMIN_PW' >/dev/null
     samba-tool ntacl sysvolreset >/dev/null 2>&1 || true"; then
-    pass "a GPO ($GPO) with a drive map, a logon script and a registry policy is linked to the domain"
+    pass "a GPO ($GPO) with a drive map, a logon script, a startup script and registry policy is linked to the domain"
 else fail "creating the test GPO"; fi
 
 # --- the join -------------------------------------------------------------------
@@ -257,6 +266,13 @@ printf '%s\n' "$drive_probe" > "$ARTIFACTS/drive-probe.txt"
 if printf '%s\n' "$drive_probe" | grep -qi 'ran the logon script' && printf '%s\n' "$drive_probe" | grep -qx marker; then
     pass "a Windows program reads H: and \\\\dc1\\shared directly (UNC)"
 else fail "Windows program on H: / UNC: $(printf '%s ' "$drive_probe")"; fi
+dir_probe=$(on ws "runuser -u alice -- env KRB5CCNAME=FILE:/tmp/krb5cc_$ALICE_UID sh -c '
+    . /usr/lib/stained-glass/sg-common.sh; sg_wine_env
+    timeout 120 wine cmd /c \"dir \\\\\\\\dc1\\\\shared\" 2>/dev/null'" | tr -d '\r' || true)
+printf '%s\n' "$dir_probe" > "$ARTIFACTS/dir-probe.txt"
+if printf '%s\n' "$dir_probe" | grep -qF 'Directory of \\dc1\shared' && printf '%s\n' "$dir_probe" | grep -q ' marker.txt$'; then
+    pass "cmd's dir \\\\dc1\\shared lists the share (not Z:\\dc1)"
+else fail "dir of a UNC path: $(printf '%s ' "$dir_probe" | head -c 400)"; fi
 
 t=0
 until on dc "grep -q 'T-ok' /srv/home/alice/gpo-ran.txt" 2>/dev/null; do
@@ -270,6 +286,43 @@ gpo_reg=$(on ws "runuser -u alice -- sh -c '. /usr/lib/stained-glass/sg-common.s
 if printf '%s\n' "$gpo_reg" | grep -Eq 'GpoValue.*REG_DWORD.*0x2a'; then
     pass "Group Policy: the user's registry policy is in her HKCU"
 else fail "GPO user registry policy: $(printf '%s ' "$gpo_reg")"; fi
+
+# --- alice's Windows identity is the domain's -------------------------------------
+ALICE_SID=$(on dc "samba-tool user show alice --attributes=objectSid 2>/dev/null" | sed -n 's/^objectSid: //p' | tr -d '\r')
+DOMAIN_SID=${ALICE_SID%-*}
+sid_probe() {   # sid_probe USER ARGS...: sg-sid-probe in the user's session
+    local u=$1; shift
+    on ws "runuser -u $u -- sh -c '. /usr/lib/stained-glass/sg-common.sh; sg_wine_env
+        timeout 120 wine /usr/libexec/stained-glass/sg-sid-probe.exe $*' 2>/dev/null" | tr -d '\r' || true
+}
+sid_out=$(sid_probe alice '"C:\\users\\alice"' '"SGTEST\\alice"' '"SGTEST\\Domain Admins"')
+printf '%s\n' "$sid_out" > "$ARTIFACTS/sid-probe-alice.txt"
+has() { printf '%s\n' "$sid_out" | grep -qxF -- "$1"; }
+if [[ "$ALICE_SID" == S-1-5-21-* ]] && has "UserSid=$ALICE_SID"; then
+    pass "a Windows program's token has alice's domain SID ($ALICE_SID, from dc1)"
+else fail "token SID: wanted '$ALICE_SID': $(printf '%s ' "$sid_out" | head -c 600)"; fi
+if has 'UserName=SGTEST\alice use=1' && has 'SamCompatible=SGTEST\alice'; then
+    pass "LookupAccountSid and GetUserNameEx name her SGTEST\\alice"
+else fail "names: $(printf '%s\n' "$sid_out" | grep -E '^(UserName|SamCompatible)=' | tr '\n' ' ')"; fi
+if has "PrimaryGroup=$DOMAIN_SID-513" && has "Group=$DOMAIN_SID-513"; then
+    pass "her primary group is the domain's Domain Users"
+else fail "groups: $(printf '%s\n' "$sid_out" | grep -E '^(PrimaryGroup|Group)=' | tr '\n' ' ')"; fi
+if has "FileOwner=$ALICE_SID"; then pass "a file she creates is owned by her domain SID"
+else fail "file owner: $(printf '%s\n' "$sid_out" | grep '^File')"; fi
+if has 'HkcuIsHkuSid=1'; then pass "her HKCU is HKEY_USERS\\<her domain SID>"
+else fail "HKCU: $(printf '%s\n' "$sid_out" | grep '^Hkcu')"; fi
+if has 'ProfileImagePath=%SystemDrive%\users\alice'; then pass "ProfileList\\<her SID> names her profile"
+else fail "ProfileList: $(printf '%s\n' "$sid_out" | grep '^Profile')"; fi
+if has "Name[SGTEST\\alice]=$ALICE_SID SGTEST use=1" && has "Name[SGTEST\\Domain Admins]=$DOMAIN_SID-512 SGTEST use=2"; then
+    pass "LookupAccountName maps SGTEST\\alice and SGTEST\\Domain Admins to the domain's SIDs"
+else fail "LookupAccountName: $(printf '%s\n' "$sid_out" | grep '^Name')"; fi
+acl_held=$(sid_probe alice acl held '"SGTEST\\Domain Users"')
+acl_not=$(sid_probe alice acl notheld '"SGTEST\\Domain Admins"')
+printf '%s\n' "$acl_held" "$acl_not" > "$ARTIFACTS/sid-probe-acl.txt"
+if printf '%s\n' "$acl_held" | grep -qx "Ace=$DOMAIN_SID-513" && printf '%s\n' "$acl_held" | grep -qx 'Opened=0' &&
+   printf '%s\n' "$acl_not" | grep -qx "Ace=$DOMAIN_SID-512" && printf '%s\n' "$acl_not" | grep -qx 'Opened=5'; then
+    pass "ACLs name domain groups and are enforced by them (Domain Users may open, Domain Admins only: denied)"
+else fail "ACLs: $(printf '%s ' "$acl_held" "$acl_not")"; fi
 
 # Machine Group Policy: the computer's GPOs' registry policy, fetched with the
 # machine account and applied to HKLM as SYSTEM. gpupdate is eventually
@@ -320,10 +373,54 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 if printf '%s\n' "$dave_groups" | grep -qx sg-admins; then pass "dave, a Domain Admin, is an administrator of ws1 (sg-admins from sign-in)"
 else fail "dave's session groups: $(printf '%s' "$dave_groups" | tr '\n' ' ')"; fi
+dave_sid=$(sid_probe dave)
+printf '%s\n' "$dave_sid" > "$ARTIFACTS/sid-probe-dave.txt"
+if [[ -n "${DOMAIN_SID:-}" ]] && printf '%s\n' "$dave_sid" | grep -qx "Group=$DOMAIN_SID-512" &&
+   ! printf '%s\n' "$dave_sid" | grep -qx 'Group=S-1-5-32-544'; then
+    pass "dave's Windows token holds Domain Admins, not Administrators (elevation is the broker's)"
+else fail "dave's token: $(printf '%s\n' "$dave_sid" | grep -E '^(UserSid|Group)=' | tr '\n' ' ')"; fi
 DAVE_UID=$(on ws "id -u dave")
 if on ws "test ! -e /run/stained-glass-net/drives/$DAVE_UID/h: && test ! -e /run/stained-glass-net/drives/$ALICE_UID"; then
     pass "alice's drive letters went with her session; dave has none of them"
 else fail "drive letters after sign-out: $(on ws 'ls -lR /run/stained-glass-net/drives' 2>&1)"; fi
+
+# --- machine Group Policy at boot ---------------------------------------------------
+# dc1's GPO changes (MachineValue 7 -> 9); ws1 restarts. With no gpupdate run
+# by hand, the computer's policy is fetched and applied at boot and its
+# startup script runs, as SYSTEM, once.
+on ws "journalctl -b --no-pager" > "$ARTIFACTS/journal-ws-before-reboot.log" 2>/dev/null || true
+if on dc "set -e
+    m=/var/lib/samba/sysvol/sgtest.lan/Policies/$GPO/Machine/Registry.pol
+    python3 -c \"import sys
+def w(s): return s.encode('utf-16-le')
+m = w('[') + w('Software\\\\Policies\\\\StainedGlassTest\\0') + w(';') + w('MachineValue\\0') + w(';') + (4).to_bytes(4, 'little') + w(';') + (4).to_bytes(4, 'little') + w(';') + (9).to_bytes(4, 'little') + w(']')
+open(sys.argv[1], 'wb').write(b'PReg' + (1).to_bytes(4, 'little') + m)\" \$m" &&
+   on ws "rm -f /var/lib/stained-glass/prefix/drive_c/ProgramData/sg-gpo-startup.txt"; then
+    log "restarting ws1"
+    on ws "systemctl reboot" >/dev/null 2>&1 || true
+    t=0; while kill -0 "${PID[ws]}" 2>/dev/null && (( t < 120 )); do sleep 2; t=$(( t + 2 )); done
+    boot ws again
+    wait_up ws
+    mreg=""; t=0
+    while (( t < 240 )); do
+        mreg=$(on ws "runuser -u sgsystem -- sh -c '. /usr/lib/stained-glass/sg-common.sh; sg_wine_env
+            timeout 120 wine reg query \"HKLM\\\\Software\\\\Policies\\\\StainedGlassTest\" /v MachineValue 2>/dev/null'" | tr -d '\r' || true)
+        printf '%s\n' "$mreg" | grep -Eq 'MachineValue.*REG_DWORD.*0x9' && break
+        sleep 5; t=$(( t + 5 ))
+    done
+    if printf '%s\n' "$mreg" | grep -Eq 'MachineValue.*REG_DWORD.*0x9'; then
+        pass "at boot, with no gpupdate by hand, ws1 applies the computer's changed GPO (MachineValue 9)"
+    else fail "machine policy at boot: $(printf '%s ' "$mreg") $(on ws 'journalctl -b -u sg-gpupdate -t sg-gpo-machine -o cat | tail -5' 2>&1)"; fi
+    t=0
+    until on ws "grep -qi 'startup script ran' /var/lib/stained-glass/prefix/drive_c/ProgramData/sg-gpo-startup.txt" 2>/dev/null; do
+        (( t < 180 )) || break; sleep 5; t=$(( t + 5 ))
+    done
+    startup=$(on ws "cat /var/lib/stained-glass/prefix/drive_c/ProgramData/sg-gpo-startup.txt" 2>/dev/null | tr -d '\r' || true)
+    owner=$(on ws "stat -c %U /var/lib/stained-glass/prefix/drive_c/ProgramData/sg-gpo-startup.txt" 2>/dev/null || true)
+    if printf '%s\n' "$startup" | grep -qi 'startup script ran as' && [[ "$owner" == sgsystem ]]; then
+        pass "and runs the computer's GPO startup script at boot, as SYSTEM"
+    else fail "startup script: '$startup' (owner '$owner') $(on ws 'journalctl -b -t sg-gpupdate -t sg-gpo-machine -o cat | tail -5' 2>&1)"; fi
+else fail "changing the GPO / restarting ws1"; fi
 
 on dc "journalctl -b --no-pager" > "$ARTIFACTS/journal-dc.log" 2>/dev/null || true
 on ws "journalctl -b --no-pager" > "$ARTIFACTS/journal-ws.log" 2>/dev/null || true
