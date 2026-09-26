@@ -1,0 +1,87 @@
+#!/usr/bin/python3
+"""Regenerate the apt site's index.html from the repository's own Packages
+indices: every package, version, size and a direct download link, under the
+not-Windows notice. Installed on the server as /usr/local/bin/sg-apt-index;
+repo/publish.sh runs it after each publish.
+
+    sg-apt-index [REPO_DIR]        (default /srv/www/apt)
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+"""
+import html
+import os
+import re
+import sys
+
+D = sys.argv[1] if len(sys.argv) > 1 else "/srv/www/apt"
+packages = []
+for arch in ("amd64", "all"):
+    p = os.path.join(D, "dists/trixie/main/binary-%s/Packages" % arch)
+    if not os.path.exists(p):
+        continue
+    for block in open(p).read().split("\n\n"):
+        f = dict(re.findall(r"^([A-Za-z-]+): ?(.*)$", block, re.M))
+        if "Package" in f and all(x["Filename"] != f["Filename"] for x in packages):
+            packages.append(f)
+packages.sort(key=lambda f: f["Package"])
+
+date = ""
+rel = os.path.join(D, "dists/trixie/Release")
+if os.path.exists(rel):
+    m = re.search(r"^Date: (.*)$", open(rel).read(), re.M)
+    date = m.group(1) if m else ""
+
+
+def size(n):
+    n = int(n or 0)
+    return "%.1f MB" % (n / 1e6) if n >= 1e6 else "%d KB" % (n // 1000)
+
+
+rows = "\n".join(
+    '<tr><td><strong>%s</strong><br><small>%s</small></td><td>%s</td><td>%s</td>'
+    '<td>%s</td><td><a href="%s">.deb</a></td></tr>'
+    % (html.escape(f["Package"]), html.escape(f.get("Description", "")),
+       html.escape(f["Version"]), html.escape(f.get("Architecture", "")),
+       size(f.get("Size")), html.escape(f["Filename"]))
+    for f in packages)
+
+SOURCES = """Types: deb
+URIs: https://freesoft.page/apt
+Suites: trixie
+Components: main
+Signed-By: /usr/share/keyrings/stained-glass-archive-keyring.gpg"""
+
+page = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stained Glass OS packages</title><link rel="stylesheet" href="../style.css">
+<link rel="icon" type="image/svg+xml" href="../logo.svg"></head><body><main><div class="wrap">
+<p><a href="../index.html">&larr; freesoft.page</a></p>
+<h1>Stained Glass OS packages</h1>
+<div class="notice"><p><strong>Stained Glass OS is not Microsoft Windows.</strong> It is an independent,
+free and open-source operating system designed to be <em>compatible with</em> Windows programs. It is not
+a Microsoft product, contains no Microsoft code, and is not affiliated with, endorsed by, or sponsored by
+Microsoft Corporation in any way. Windows is a trademark of Microsoft Corporation.</p></div>
+<p>The signed apt repository for Debian 13 (trixie), amd64. Last published: {date}.
+Signing key: <a href="stained-glass-archive-keyring.gpg">stained-glass-archive-keyring.gpg</a>.
+All files: <a href="pool/main/">pool/main/</a>, <a href="dists/trixie/">dists/trixie/</a>.</p>
+<table><thead><tr><th>Package</th><th>Version</th><th>Arch</th><th>Size</th><th>Download</th></tr></thead>
+<tbody>
+{rows}
+</tbody></table>
+<h2>Use it</h2>
+<p>On a Debian 13 machine: save the key, add the source, update.</p>
+<pre>curl -fsSL https://freesoft.page/apt/stained-glass-archive-keyring.gpg \\
+  | sudo tee /usr/share/keyrings/stained-glass-archive-keyring.gpg &gt;/dev/null
+printf '%s\\n' '{sources_q}' \\
+  | sudo tee /etc/apt/sources.list.d/stained-glass.sources &gt;/dev/null
+sudo apt update</pre>
+<p>Source: <a href="https://github.com/Stained-Glass-OS">github.com/Stained-Glass-OS</a></p>
+</div></main></body></html>
+""".format(date=html.escape(date), rows=rows,
+           sources_q=html.escape(SOURCES.replace("\n", "' '")))
+
+tmp = os.path.join(D, "index.html.new")
+with open(tmp, "w") as f:
+    f.write(page)
+os.replace(tmp, os.path.join(D, "index.html"))
+print("sg-apt-index: %d packages" % len(packages))

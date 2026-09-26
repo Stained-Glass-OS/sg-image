@@ -51,4 +51,8 @@ PUBLISHED_DIR="$LIVE" "$HERE/repo/build-repo.sh" "$OUT" "$@"
 log "publishing"
 rsync -a -e "$SSH" --exclude dists/ "$OUT/" "$HOST:$DIR/"
 rsync -a --delete-after -e "$SSH" "$OUT/" "$HOST:$DIR/"
+# The site's package list (every package, version, size, download link, and
+# the not-Windows notice), regenerated from the indices just published.
+rsync -a --chmod=755 -e "$SSH" "$HERE/repo/sg-apt-index" "$HOST:/usr/local/bin/sg-apt-index"
+$SSH "$HOST" "sg-apt-index $DIR"
 log "live at https://freesoft.page/apt"
