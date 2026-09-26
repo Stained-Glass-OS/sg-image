@@ -1,0 +1,35 @@
+# Stained Glass OS boot splash: the diamond (diamond.png, drawn at image build
+# time by splash/make-splash.py) centred on a near-black screen, breathing
+# gently while the machine starts.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+Window.SetBackgroundTopColor(0.063, 0.063, 0.078);
+Window.SetBackgroundBottomColor(0.063, 0.063, 0.078);
+
+diamond.image = Image("diamond.png");
+diamond.sprite = Sprite(diamond.image);
+diamond.sprite.SetX(Window.GetX() + Window.GetWidth() / 2 - diamond.image.GetWidth() / 2);
+diamond.sprite.SetY(Window.GetY() + Window.GetHeight() / 2 - diamond.image.GetHeight() / 2);
+diamond.sprite.SetOpacity(0);
+
+tick = 0;
+fun refresh_callback ()
+{
+    tick++;
+    if (tick < 25)
+        diamond.sprite.SetOpacity(tick / 25);
+    else
+        diamond.sprite.SetOpacity(0.8 + 0.2 * Math.Cos((tick - 25) / 40));
+}
+Plymouth.SetRefreshFunction(refresh_callback);
+
+# Nothing here asks for a password (no encrypted disks); a message from the
+# system (an offline update) is shown under the diamond.
+message_sprite = Sprite();
+fun message_callback (text)
+{
+    img = Image.Text(text, 0.85, 0.85, 0.85);
+    message_sprite.SetImage(img);
+    message_sprite.SetX(Window.GetX() + Window.GetWidth() / 2 - img.GetWidth() / 2);
+    message_sprite.SetY(Window.GetY() + Window.GetHeight() / 2 + diamond.image.GetHeight() / 2 + 40);
+}
+Plymouth.SetMessageFunction(message_callback);

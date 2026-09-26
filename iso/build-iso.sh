@@ -13,8 +13,10 @@
 #                     the disk is kept in loader/install/, where the boot
 #                     loader does not look.
 #   live/root.erofs   the image's root file system, compressed, read-only.
+#   live/build-id     matches the initrd's copy: which ISO it belongs to
 # plus loader/sg-live.initrd inside efi.img: iso/sg-live-iso, which finds
-# the medium in the initrd and attaches root.erofs.
+# the medium in the initrd (a block device, or the .iso file on a partition
+# of a multiboot stick such as Ventoy) and attaches root.erofs.
 #
 # Needs root (sudo) only to read the image's ext4 root file system.
 #
@@ -55,6 +57,21 @@ mkdir -p "$W/iso/boot" "$W/iso/live" "$W/esp" "$W/initrd/usr/libexec" \
 
 # --- the live initrd -----------------------------------------------------------
 install -m 0755 "$HERE/sg-live-iso" "$W/initrd/usr/libexec/sg-live-iso"
+# Which ISO this initrd belongs to (sg-live-iso checks the medium's copy): a
+# multiboot stick often holds several releases.
+BUILD_ID=$(cat /proc/sys/kernel/random/uuid)
+mkdir -p "$W/initrd/usr/lib/sg-live/modules"
+echo "$BUILD_ID" > "$W/initrd/usr/lib/sg-live/build-id"
+echo "$BUILD_ID" > "$W/iso/live/build-id"
+# The file systems a multiboot stick (Ventoy) keeps the .iso file on -- not in
+# the image's own initrd, which only needs its own disk.
+sudo mount -o ro,loop,offset=$((root_start * 512)),sizelimit=$((root_size * 512)) "$IMG" "$MNT"
+for m in fs/fat/fat fs/fat/vfat fs/exfat/exfat fs/ntfs3/ntfs3 fs/nls/nls_cp437 fs/nls/nls_iso8859-1 fs/nls/nls_utf8; do
+    ko=$(ls "$MNT"/usr/lib/modules/*/kernel/$m.ko* 2>/dev/null | head -1)
+    [[ -n "$ko" ]] || { echo "build-iso: the image has no $m module" >&2; sudo umount "$MNT"; exit 1; }
+    cp "$ko" "$W/initrd/usr/lib/sg-live/modules/"
+done
+sudo umount "$MNT"
 install -m 0644 "$HERE/sg-live-iso.service" "$W/initrd/usr/lib/systemd/system/sg-live-iso.service"
 ln -s ../sg-live-iso.service "$W/initrd/usr/lib/systemd/system/initrd-root-device.target.wants/sg-live-iso.service"
 (cd "$W/initrd" && find . -mindepth 1 | LC_ALL=C sort | cpio -o -H newc --quiet --owner=0:0) > "$W/sg-live.initrd"
@@ -72,7 +89,7 @@ for e in "$W"/esp/loader/entries/*.conf; do
     base=${e##*/}
     mv "$e" "$W/esp/loader/install/$base"
     sed -e 's/^title .*/title Stained Glass OS (live: try or install)/' \
-        -e 's/^options \(.*\)$/options \1 root=LABEL=SGLIVEROOT rootfstype=erofs ro systemd.volatile=overlay sg.live=iso/' \
+        -e 's/^options \(.*\)$/options \1 root=LABEL=SGLIVEROOT rootfstype=erofs ro systemd.volatile=overlay sg.live=iso systemd.default_device_timeout_sec=300/' \
         "$W/esp/loader/install/$base" > "$W/esp/loader/entries/${base%.conf}-live.conf"
     echo "initrd /loader/sg-live.initrd" >> "$W/esp/loader/entries/${base%.conf}-live.conf"
     live=$((live + 1))
@@ -121,7 +138,8 @@ Stained Glass OS is not Microsoft Windows and is not affiliated with Microsoft;
 see NOTICE.txt.
 
 Boot it (a DVD, a virtual machine's CD drive, or a USB stick written with
-dd or any image writer) and choose "Stained Glass OS (live: try or install)".
+dd or any image writer, or copied as a file onto a Ventoy stick) and choose
+"Stained Glass OS (live: try or install)".
 Nothing on the computer changes until you run Setup.
 EOF
 rm -f "$OUT"

@@ -17,7 +17,7 @@ SG_WINE     ?= ../wine-sg
 SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 
-.PHONY: print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
+.PHONY: splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
 
 all: image
 
@@ -302,18 +302,34 @@ repo-check: repo
 publish: staged-debs speech
 	repo/publish.sh $(REPO_DEBS)
 
+# --- the boot splash ---------------------------------------------------------
+
+# The Plymouth theme's picture, drawn by splash/make-splash.py (our own art,
+# nothing binary committed); the theme itself is in mkosi.extra.
+SPLASH_PNG := $(EXTRA_TREE)/usr/share/plymouth/themes/stained-glass/diamond.png
+
+splash: $(SPLASH_PNG)
+$(SPLASH_PNG): splash/make-splash.py
+	@mkdir -p $(dir $@)
+	python3 splash/make-splash.py $@ 192
+
 # --- image -----------------------------------------------------------------
 
-image: staged-debs d3d apps addons speech
+image: staged-debs d3d apps addons speech splash
 	@# Older builds put the gate key in the extra tree: it must never ship.
 	rm -f $(EXTRA_TREE)/root/.ssh/authorized_keys
-	mkosi --force
+	mkosi --force --image-version=$$(date -u +%Y%m%d)-$$(git rev-parse --short HEAD)$$(git diff --quiet HEAD -- . 2>/dev/null || echo -dirty)
 	@ls -lh $(IMAGE)
 
 # --- gate ------------------------------------------------------------------
 
 boot-test:
 	test/boot-test.sh
+
+# The live ISO's boot, timed and watched: the splash on the screen, no text
+# console, and firmware-to-Setup within SG_BOOT_BUDGET seconds (QA B2, B4).
+boot-time-test:
+	ISO=$(ISO) test/boot-time.sh
 
 # The S2 gate, driven against a real booted image. Expected to fail until S2
 # lands -- see sg-session/bin/sg-multiuser-check. Deliberately not part of
@@ -398,14 +414,17 @@ iso:
 	iso/build-iso.sh $(IMAGE) $(ISO)
 
 # Install from the ISO as a USB stick (blank disk), then from a CD drive
-# (beside Windows): the same gate as install-test, from the other medium.
+# (beside Windows): the same gate as install-test, from the other medium; and
+# booted from a Ventoy-style multiboot stick (the .iso as a file on exFAT).
 iso-test:
 	SG_LIVE_ISO=$(ISO) SG_LIVE_ISO_AS=disk SG_INSTALL_SCENARIO=blank test/install-test.sh
 	SG_LIVE_ISO=$(ISO) SG_LIVE_ISO_AS=cdrom SG_INSTALL_SCENARIO=dualboot test/install-test.sh
+	ISO=$(ISO) test/ventoy-test.sh
 
 # Put the ISO on https://freesoft.page/iso/ as sg-live-DATE-REV.iso, with its
 # SHA-256 in SHA256SUMS and sg-live-latest.iso pointing at it. release.sh does
-# this only after the ISO install gates pass.
+# this only after the ISO install gates pass. Only the newest ISO is kept (the
+# server's disk is small): the others go once the new one is verified.
 ISO_HOST ?= root@freesoft.page
 ISO_DIR  ?= /srv/www/iso
 .PHONY: upload-iso
@@ -416,8 +435,10 @@ upload-iso:
 	sum=$$(sha256sum < $(ISO) | cut -d' ' -f1); \
 	rsync -a --partial --info=progress2 -e "$$ssh" $(ISO) $(ISO_HOST):$(ISO_DIR)/$$name.part; \
 	$$ssh $(ISO_HOST) "cd $(ISO_DIR) && echo '$$sum  $$name.part' | sha256sum -c --quiet - && mv $$name.part $$name \
-	  && { grep -v ' $$name\$$' SHA256SUMS 2>/dev/null || true; echo '$$sum  $$name'; } > SHA256SUMS.new && mv SHA256SUMS.new SHA256SUMS \
-	  && ln -sfn $$name sg-live-latest.iso && sg-iso-index"; \
+	  && echo '$$sum  $$name' > SHA256SUMS.new && mv SHA256SUMS.new SHA256SUMS \
+	  && ln -sfn $$name sg-live-latest.iso \
+	  && find . -maxdepth 1 -name 'sg-live-*.iso*' ! -name $$name ! -name sg-live-latest.iso -delete \
+	  && sg-iso-index"; \
 	echo "uploaded https://freesoft.page/iso/$$name (sha256 $$sum)"
 
 # Remote Desktop (E1): sign in to the image over RDP from this machine with a

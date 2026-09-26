@@ -1,42 +1,103 @@
 #!/bin/bash
 # In the initrd, when booted from the Stained Glass ISO (sg.live=iso): find the
-# medium by its volume label, mount it, and attach the root file system image
-# on it to a loop device. udev then names that device by its label, which is
-# what root=LABEL=SGLIVEROOT waits for; systemd.volatile=overlay puts a RAM
-# overlay on top, exactly as the USB stick's live entry does.
+# medium, mount it, and attach the root file system image on it to a loop
+# device. udev then names that device by its label, which is what
+# root=LABEL=SGLIVEROOT waits for; systemd.volatile=overlay puts a RAM overlay
+# on top, exactly as the USB stick's live entry does.
+#
+# The medium is either a block device (a DVD, a stick written with dd: an
+# ISO 9660 file system labelled SGLIVE) or, from a multiboot stick such as
+# Ventoy or a GRUB loopback entry, the .iso file itself on some partition
+# (exFAT, FAT, NTFS, ext4...): searched for when no such device turns up, and
+# attached to a loop device. Either way it must be the ISO this initrd came
+# from (live/build-id): a Ventoy stick often holds several releases.
 #
 # It also loop-mounts the medium's EFI system partition image read-only at
 # /run/sg-esp: the installer copies the kernels and boot loader from there.
-# Both mounts live under /run, which carries over into the real system.
+# All mounts live under /run, which carries over into the real system.
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -u
 say() { echo "sg-live-iso: $*" > /dev/kmsg 2>/dev/null || echo "sg-live-iso: $*"; }
 
-for m in cdrom sr_mod isofs loop erofs usb-storage uas virtio_scsi virtio_blk; do
-    modprobe -q "$m" 2>/dev/null || :
+for m in cdrom sr_mod isofs loop erofs usb-storage uas virtio_scsi virtio_blk \
+         fat vfat exfat ntfs3 nls_cp437 nls_iso8859-1 nls_utf8; do
+    # The file systems a multiboot stick uses are not in the image's initrd;
+    # build-iso.sh adds them here.
+    modprobe -q "$m" 2>/dev/null || insmod /usr/lib/sg-live/modules/"$m".ko* 2>/dev/null || :
 done
+ID=$(cat /usr/lib/sg-live/build-id 2>/dev/null)
+
+# Is the ISO 9660 file system on $1 this initrd's medium?
+ours() {
+    local m=/run/sg-probe id
+    [ "$(blkid -p -o value -s TYPE "$1" 2>/dev/null)" = iso9660 ] || return 1
+    [ "$(blkid -p -o value -s LABEL "$1" 2>/dev/null)" = SGLIVE ] || return 1
+    [ -n "$ID" ] || return 0
+    mkdir -p "$m"
+    mount -t iso9660 -o ro "$1" "$m" 2>/dev/null || return 1
+    id=$(cat "$m/live/build-id" 2>/dev/null)
+    umount "$m"
+    [ "$id" = "$ID" ] && return 0
+    say "$1 is a Stained Glass medium from another build ($id); passing it by"
+    return 1
+}
 
 # A USB stick or a slow optical drive can take a while to appear.
 # Probe each block device itself: blkid's cached search passes optical drives by.
 find_medium() {
     for b in /sys/class/block/*; do
         d=/dev/${b##*/}
-        [ -b "$d" ] || continue
-        [ "$(blkid -p -o value -s TYPE "$d" 2>/dev/null)" = iso9660 ] || continue
-        [ "$(blkid -p -o value -s LABEL "$d" 2>/dev/null)" = SGLIVE ] || continue
-        echo "$d"; return 0
+        case "${b##*/}" in loop*) continue ;; esac
+        [ -b "$d" ] && ours "$d" && { echo "$d"; return 0; }
     done
     return 1
 }
+
+# The .iso file on a partition: each file system is mounted read-only once and
+# stays mounted (under /run/sg-host) while the file is in use. Sets $dev (not
+# run in a subshell: it remembers what it has searched).
+searched=" "
+find_iso_file() {
+    local b d t mp f loop
+    for b in /sys/class/block/*; do
+        d=/dev/${b##*/}
+        case "${b##*/}" in loop*|sr*) continue ;; esac
+        [ -b "$d" ] || continue
+        case "$searched" in *" $d "*) continue ;; esac
+        t=$(blkid -p -o value -s TYPE "$d" 2>/dev/null)
+        case "$t" in exfat|vfat|ntfs|ntfs3|ext4|ext3|ext2|btrfs|xfs|f2fs) ;; *) continue ;; esac
+        searched="$searched$d "
+        [ "$t" = ntfs ] && t=ntfs3
+        mp=/run/sg-host/${b##*/}
+        mkdir -p "$mp"
+        mount -t "$t" -o ro "$d" "$mp" 2>/dev/null || { rmdir "$mp"; continue; }
+        while IFS= read -r f; do
+            loop=$(losetup -r -f --show "$f" 2>/dev/null) || continue
+            if ours "$loop"; then
+                say "found ${f#"$mp"} on $d"
+                dev=$loop; return 0
+            fi
+            losetup -d "$loop"
+        done < <(find "$mp" -maxdepth 4 -type f -iname '*.iso' -size +100M 2>/dev/null)
+        umount "$mp"; rmdir "$mp"
+    done
+    return 1
+}
+
 dev=""
-for _ in $(seq 1 240); do
+for i in $(seq 1 240); do
     dev=$(find_medium)
     [ -n "$dev" ] && break
+    # A few seconds without one: look for the file too (a stick's partitions
+    # appear about as late as the stick does, so keep looking at new ones).
+    if [ "$i" -ge 6 ]; then
+        find_iso_file && break
+    fi
     udevadm settle -t 1 2>/dev/null || :
     sleep 0.5
 done
-[ -n "$dev" ] || { say "no Stained Glass medium (label SGLIVE) was found"; exit 1; }
+[ -n "$dev" ] || { say "no Stained Glass medium (label SGLIVE, or its .iso file on a partition) was found"; exit 1; }
 
 mkdir -p /run/sg-iso /run/sg-esp
 mount -t iso9660 -o ro "$dev" /run/sg-iso || { say "cannot mount $dev"; exit 1; }

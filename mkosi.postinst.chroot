@@ -60,6 +60,36 @@ else
     exit 1
 fi
 
+# --- os-release: Stained Glass OS (QA B3) --------------------------------------
+# The system says what it is: NAME, PRETTY_NAME (the boot menu's and tools'
+# name for it), VERSION_ID, and IMAGE_VERSION -- the image build (date and
+# sg-image commit, from `make image`). ID_LIKE=debian and VERSION_CODENAME keep
+# tools that follow Debian working. Debian's file is diverted, so a base-files
+# upgrade writes to /usr/lib/os-release.debian and never over ours.
+SG_OS_VERSION=0.1
+if [ "$(dpkg-divert --truename /usr/lib/os-release)" = /usr/lib/os-release ]; then
+    dpkg-divert --local --rename --divert /usr/lib/os-release.debian --add /usr/lib/os-release
+fi
+. /usr/lib/os-release.debian
+cat > /usr/lib/os-release <<OSR
+PRETTY_NAME="Stained Glass OS $SG_OS_VERSION"
+NAME="Stained Glass OS"
+ID=stained-glass
+ID_LIKE=debian
+VERSION_ID="$SG_OS_VERSION"
+VERSION="$SG_OS_VERSION ($VERSION_CODENAME)"
+VERSION_CODENAME=$VERSION_CODENAME
+IMAGE_ID=stained-glass
+IMAGE_VERSION="${IMAGE_VERSION:-unknown}"
+DEBIAN_VERSION_ID="$VERSION_ID"
+HOME_URL="https://freesoft.page/"
+SUPPORT_URL="https://github.com/Stained-Glass-OS/stained-glass"
+BUG_REPORT_URL="https://github.com/Stained-Glass-OS/stained-glass/issues"
+ANSI_COLOR="1;35"
+OSR
+ln -sf ../usr/lib/os-release /etc/os-release
+echo "[sg-image] os-release: $(. /usr/lib/os-release; echo "$PRETTY_NAME, image $IMAGE_VERSION")"
+
 echo "[sg-image] configuring services"
 systemctl enable greetd.service
 # greetd owns tty1 (vt = 1 in its config). Nothing else may start a getty there:
@@ -104,13 +134,50 @@ systemctl enable systemd-resolved.service
 systemctl enable sg-netd.socket
 systemctl set-default graphical.target
 
-# --- the Wine prefix is NOT baked here ------------------------------------
-# It would be nice to bake it: a prefix build costs tens of seconds on every
-# first boot. But the image build's /var is not the image's /var, so anything
-# written to /var/lib/stained-glass here is liable to be discarded, and a
-# "baked" prefix that silently is not there is worse than no bake at all.
+# --- the Wine prefix, built once, here ----------------------------------------
+# Building the prefix (wineboot, the registry defaults, the Default User
+# profile, Direct3D and the bundled apps) took 77 s of every live boot -- a
+# live system's prefix is in memory, so it was rebuilt each time -- and of an
+# installed machine's first. It is built here instead, by the same
+# sg-prefix-init as the SYSTEM account, and packed with its owners into
+# /usr/lib/stained-glass/prefix-seed.tar.zst; at boot sg-prefix-init unpacks
+# it into the empty /var/lib/stained-glass in seconds and does only its
+# every-boot work. The build's /var is not the image's /var, so the prefix is
+# carried in /usr and this build's /var copy is removed.
 #
-# sg-prefix-init.service builds it on first boot instead, ordered before
-# greetd. The boot gate's timeouts account for it.
+# MachineGuid is left out: advapi32 makes it when missing, so every machine
+# gets its own rather than all sharing the image's.
+echo "[sg-image] building the Wine prefix"
+SEED=/usr/lib/stained-glass/prefix-seed.tar.zst
+SG_ROOT=/var/lib/stained-glass
+# As root: the build's user namespace maps no other uid (chown and setpriv
+# fail), and wine-sg takes root, like the prefix's owner, as the SYSTEM
+# account. At boot sg-prefix-init unpacks the seed as sgsystem, so every file
+# is sgsystem's there. What is root's own in the prefix -- its profile folder,
+# its hive, its ProfileList entry -- is taken out before packing.
+mkdir -p "$SG_ROOT" /run/stained-glass /var/log/stained-glass
+as_system() {
+    env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME="$SG_ROOT" XDG_RUNTIME_DIR=/run/stained-glass \
+        LANG=C.UTF-8 "$@"
+}
+t0=$(date +%s)
+as_system /usr/bin/sg-prefix-init
+as_system sh -c '. /usr/lib/stained-glass/sg-common.sh; sg_wine_env;
+    wine reg delete "HKLM\Software\Microsoft\Cryptography" /v MachineGuid /f >/dev/null 2>&1 || true
+    for k in $(wine reg query "HKLM\Software\Microsoft\Windows NT\CurrentVersion\ProfileList" 2>/dev/null | tr -d "\r" | grep -i "ProfileList\\S-"); do
+        wine reg query "$k" /v ProfileImagePath 2>/dev/null | grep -qi "users\\root" && wine reg delete "$k" /f >/dev/null 2>&1
+    done
+    wineserver -w; wineserver -k 2>/dev/null || true'
+rm -rf "$SG_ROOT/prefix/drive_c/users/root" "$SG_ROOT/prefix/user-0.reg"
+[ -e "$SG_ROOT/prefix/.sg-initialized" ] || { echo "[sg-image] ERROR: the prefix did not build" >&2; exit 1; }
+if grep -q MachineGuid "$SG_ROOT/prefix/system.reg"; then
+    echo "[sg-image] ERROR: the prefix still carries a MachineGuid" >&2; exit 1
+fi
+tar -C "$SG_ROOT" --numeric-owner -c . | zstd -q -3 -T0 -o "$SEED"
+# sgsystem unpacks it: readable by the SYSTEM account's group only where the
+# build may set the group; a fresh prefix holds nothing secret either way.
+if chgrp sgwine "$SEED" 2>/dev/null; then chmod 0640 "$SEED"; else chmod 0644 "$SEED"; fi
+echo "[sg-image] prefix built in $(( $(date +%s) - t0 ))s: $(du -sh "$SG_ROOT" | cut -f1) packed into $(du -h "$SEED" | cut -f1)"
+rm -rf "${SG_ROOT:?}"/* "${SG_ROOT:?}"/.[!.]* /run/stained-glass /var/log/stained-glass/* /tmp/.wine-* 2>/dev/null || true
 
 echo "[sg-image] done"
