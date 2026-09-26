@@ -87,6 +87,12 @@ systemctl enable sg-live.service
 systemctl enable sg-drivers.service
 # Samba's services stay off until a role asks: see
 # mkosi.extra/etc/systemd/system-preset/10-sg-image.preset.
+# The ssh server starts only when a gate provisioned a key (ssh.service.d);
+# a key baked into the image would give its holder root on every install.
+if [ -e /root/.ssh/authorized_keys ]; then
+    echo "mkosi.postinst: /root/.ssh/authorized_keys is in the image -- refusing to build" >&2
+    exit 1
+fi
 systemctl enable ssh.service
 # NetworkManager configures the network (wired DHCP by default, Wi-Fi, static
 # addresses through sg-netd); systemd-resolved stays the resolver it feeds.

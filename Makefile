@@ -23,14 +23,14 @@ all: image
 
 # --- inputs ----------------------------------------------------------------
 
-# A throwaway key for lab access. Generated, never committed: the image is a
-# disposable test machine, but a checked-in private key is still a bad habit.
+# A throwaway key for lab access. Generated, never committed, and never put in
+# the image: the gates hand it to their VMs as a systemd credential (QEMU
+# -smbios type=11, ssh.authorized_keys.root), so a released image or ISO
+# accepts no key and runs no ssh server (mkosi.extra's ssh.service.d).
 sshkey: $(SSH_KEY)
 $(SSH_KEY):
 	@mkdir -p $(dir $@)
 	ssh-keygen -t ed25519 -N '' -C 'sg-image boot gate (test only)' -f $@
-	@mkdir -p $(EXTRA_TREE)/root/.ssh
-	@install -m 0600 $@.pub $(EXTRA_TREE)/root/.ssh/authorized_keys
 	@echo "ssh key ready: $@"
 
 # Everything ships as a .deb. Build them from the sibling checkouts and drop
@@ -305,6 +305,8 @@ publish: staged-debs speech
 # --- image -----------------------------------------------------------------
 
 image: staged-debs d3d apps addons speech
+	@# Older builds put the gate key in the extra tree: it must never ship.
+	rm -f $(EXTRA_TREE)/root/.ssh/authorized_keys
 	mkosi --force
 	@ls -lh $(IMAGE)
 

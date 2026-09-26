@@ -101,6 +101,9 @@ qemu_args=(
     -serial "file:$SERIAL_LOG"
 )
 [[ "$ACCEL" == kvm ]] && qemu_args+=(-cpu host)
+# lab ssh: the gate key as a systemd credential (tmpfiles writes it to
+# /root/.ssh/authorized_keys); the image itself carries no key
+qemu_args+=(-smbios "type=11,value=io.systemd.credential.binary:ssh.authorized_keys.root=$(base64 -w0 < "$SSH_KEY.pub")")
 qemu-system-x86_64 "${qemu_args[@]}" &
 QEMU_PID=$!
 

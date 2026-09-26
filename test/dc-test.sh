@@ -69,6 +69,9 @@ boot() {
         -device virtio-vga -display none -serial "file:$ARTIFACTS/serial-$1.log" -no-reboot
     )
     [[ "$ACCEL" == kvm ]] && args+=(-cpu host)
+    # lab ssh: the gate key as a systemd credential (tmpfiles writes it to
+    # /root/.ssh/authorized_keys); the image itself carries no key
+    args+=(-smbios "type=11,value=io.systemd.credential.binary:ssh.authorized_keys.root=$(base64 -w0 < "$SSH_KEY.pub")")
     qemu-system-x86_64 "${args[@]}" &
     QEMU_PID=$!
     local deadline=$(( SECONDS + BOOT_TIMEOUT ))

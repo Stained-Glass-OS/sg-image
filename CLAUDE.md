@@ -274,8 +274,17 @@ The domain gate sets its private-segment addresses with `sg-netctl` too.
 log in with. **`build/` is gitignored and must stay that way.** No key, test or
 otherwise, gets committed.
 
-The image has no root password and `PasswordAuthentication no`. It is a
-disposable lab machine, reachable only with that generated key.
+The image has no root password and `PasswordAuthentication no`, and **no ssh
+key**: the gates hand theirs to each VM as a systemd credential (QEMU
+`-smbios type=11,value=io.systemd.credential.binary:ssh.authorized_keys.root=...`,
+which tmpfiles' `provision.conf` writes to `/root/.ssh/authorized_keys`), and
+`ssh.service`/`ssh.socket` start only when that file exists
+(`mkosi.extra/etc/systemd/system/ssh.*.d`). A released image or ISO -- and
+every machine installed from it -- runs no ssh server. `mkosi.postinst.chroot`
+refuses to build an image with a key in it. **Every new QEMU gate must pass the
+credential** (copy the `-smbios` line the existing gates add before starting
+QEMU). The first ISO (2026-09-26, d65702f) still carried the key -- see
+stained-glass `docs/qa-2026-09-26.md` (B1).
 
 ## License
 
