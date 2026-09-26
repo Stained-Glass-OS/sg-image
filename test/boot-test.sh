@@ -438,96 +438,94 @@ set -e
 # --- elevated programs' displays (ADR 0012, bug B56) -----------------------
 # The interactive gate: a real GUI installer that demands administrator rights
 # runs through the consent prompt and shows its window on a display of its own,
-# usable with the real keyboard, out of the session's reach.
+# usable with the real keyboard, out of the session's reach. Then "Add someone
+# else to this PC" the same way. Guest steps: test/elevated/guest.sh.
 if [[ "${SG_GUEST_CHECK:-session}" == elevated && $RC -eq 0 ]]; then
     set +e
     q() { python3 "$HERE/test/qmp.py" "$QMP_SOCK" "$@" >/dev/null; }
-    scp_guest() { scp -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null         -o LogLevel=ERROR -P "$SSH_PORT" "$1" root@127.0.0.1:"$2"; }
-    uid=$(ssh_guest "id -u $LOGIN_USER" 2>/dev/null | tr -d '\r')
-    ctl="SG_LOCK_CONTROL=/run/stained-glass-seat/seat0/$uid/control.sock /usr/libexec/stained-glass/sg-lockctl"
-    as_user() { ssh_guest "runuser -u $LOGIN_USER -- sh -lc '$1'" 2>/dev/null | tr -d '\r'; }
-    # Wine, as the session user, with their prefix and display.
-    winecmd="export \$(cat /run/user/$uid/sg-session.env | tr '\n' ' '); wine"
-
+    scp_guest() { scp -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR -P "$SSH_PORT" "$1" root@127.0.0.1:"$2"; }
+    G=/home/$LOGIN_USER/sgtest
+    g() { ssh_guest "runuser -u $LOGIN_USER -- sh $G/guest.sh $*" 2>/dev/null | tr -d '\r'; }
+    wait_status() {   # $1 = wanted STATUS reply, $2 = seconds
+        local w=0; until [[ "$(g status)" == "$1" ]] || (( w >= $2 )); do sleep 2; w=$((w + 2)); done
+        [[ "$(g status)" == "$1" ]]
+    }
+    wait_window() {   # $1 = title pattern, $2 = seconds; prints the WINDOWS line
+        local w=0; until g windows | grep -qi "$1" || (( w >= $2 )); do sleep 2; w=$((w + 2)); done
+        g windows | grep -i "$1" | head -1
+    }
     FX=$(mktemp -d)
     if "$HERE/test/elevated/build-fixtures.sh" "$FX" > "$ARTIFACTS/elevated-fixtures.log" 2>&1; then
-        # Put the fixtures where the session user can reach them.
-        ssh_guest "install -d -o $LOGIN_USER /home/$LOGIN_USER/sgtest" 2>/dev/null
-        for f in sg-test-setup.exe sg-runas.exe sg-test-app.exe sg-xadversary; do
-            scp_guest "$FX/$f" "/home/$LOGIN_USER/sgtest/$f" >/dev/null 2>&1
-        done
-        ssh_guest "chown $LOGIN_USER /home/$LOGIN_USER/sgtest/*" 2>/dev/null
+        cp "$HERE/test/elevated/guest.sh" "$FX/"
+        ssh_guest "install -d -o $LOGIN_USER -m 755 $G" 2>/dev/null
+        for f in guest.sh sg-test-setup.exe sg-runas.exe sg-xadversary; do scp_guest "$FX/$f" "$G/$f" >/dev/null 2>&1; done
+        ssh_guest "chown $LOGIN_USER $G/*; chmod 755 $G/sg-xadversary" 2>/dev/null
         word="elevatedok"
 
-        # Launch the installer as the user, through Run as administrator: its
-        # requireAdministrator manifest reaches the broker, which prompts.
-        as_user "$winecmd 'C:\\sgtest\\sg-runas.exe' 'C:\\sgtest\\sg-test-setup.exe' >/dev/null 2>&1 &" >/dev/null 2>&1
-        # Wait for the consent prompt: the compositor goes to SECURE.
-        _w=0; until [[ "$(as_user "$ctl STATUS")" == "OK secure" ]] || (( _w >= 60 )); do sleep 2; _w=$((_w+2)); done
-        if [[ "$(as_user "$ctl STATUS")" == "OK secure" ]]; then
-            echo "PASS  Run as administrator raised the consent prompt on the secure surface"
-            q screendump "$ARTIFACTS/screenshot-elevated-consent.ppm"
-        else echo "FAIL  no consent prompt (STATUS=$(as_user "$ctl STATUS"))"; RC=1; fi
-        # Approve: the prompt's focus starts on No; Alt+Y allows.
-        sleep 2; q key alt+y; sleep 2
-        _w=0; until [[ "$(as_user "$ctl STATUS")" == "OK unlocked" ]] || (( _w >= 30 )); do sleep 2; _w=$((_w+2)); done
+        # 1. Run as administrator on the installer: the consent prompt.
+        g launch
+        if wait_status "OK secure" 90; then echo "PASS  Run as administrator raised the consent prompt (secure surface)"
+        else echo "FAIL  no consent prompt (STATUS: $(g status))"; RC=1; fi
+        q screendump "$ARTIFACTS/screenshot-elevated-consent.ppm"
+        sleep 3; q key alt+y
+        wait_status "OK unlocked" 30 || { echo "FAIL  the prompt did not go away: $(g status)"; RC=1; }
 
-        # The installer's window now exists on a display of its own.
-        _w=0; while ! as_user "$ctl WINDOWS" | grep -qi 'setup\|sg test'; do
-            (( _w >= 60 )) && break; sleep 2; _w=$((_w+2)); done
-        win_line=$(as_user "$ctl WINDOWS" | grep -i 'setup\|sg test' | head -1)
-        if [[ -n "$win_line" ]]; then
-            echo "PASS  the installer appears as an elevated window: $win_line"
-            edisplay=$(echo "$win_line" | awk '{print $1}')
-            ewindow=$(echo "$win_line" | awk '{print $2}')
-            q screendump "$ARTIFACTS/screenshot-elevated-installer.ppm"
-        else echo "FAIL  no elevated installer window (WINDOWS: $(as_user "$ctl WINDOWS" | tr '\n' ' '))"; RC=1; fi
+        # 2. The installer: an elevated window of its own.
+        line=$(wait_window 'SG Test App' 120)
+        if [[ -n "$line" ]]; then
+            echo "PASS  the installer shows an elevated window of its own: $line"
+            edisplay=$(awk '{print $1}' <<<"$line"); ewindow=$(awk '{print $2}' <<<"$line")
+            [[ "$line" == *" shown focused "* ]] && echo "PASS  it is shown and has the keyboard" \
+                || { echo "FAIL  it is not shown and focused"; RC=1; }
+        else echo "FAIL  no elevated installer window; WINDOWS: $(g windows | tr '\n' ' ')"; RC=1; fi
+        sleep 3; q screendump "$ARTIFACTS/screenshot-elevated-installer.ppm"
 
-        # A session program cannot drive or read it (UIPI).
+        # 3. The session cannot reach it (UIPI): no connection to its display,
+        #    and its window is not on the session's X server to be sent to or read.
         if [[ -n "${edisplay:-}" ]]; then
-            adv=$(as_user "/home/$LOGIN_USER/sgtest/sg-xadversary :$edisplay $ewindow")
-            echo "      adversary: $(echo "$adv" | tr '\n' ' ')"
-            echo "$adv" | grep -qx 'CONNECT refused'                 && echo "PASS  a session program cannot connect to the elevated display"                 || { echo "FAIL  a session program connected to the elevated display"; RC=1; }
-            # The elevated window is not in the session X server's tree, so its
-            # id is not reachable there: XSendEvent/XGetImage cannot touch it.
-            as_user "DISPLAY=:$edisplay xdpyinfo >/dev/null 2>&1 && echo GOT || echo NONE" | grep -qx NONE                 && echo "PASS  the session cannot open the elevated display without its cookie"                 || { echo "FAIL  the session opened the elevated display"; RC=1; }
+            adv=$(g adversary "$edisplay" "$ewindow")
+            echo "      adversary: $(tr '\n' ' ' <<<"$adv")"
+            grep -qx 'CONNECT refused' <<<"$adv" && echo "PASS  a session program cannot connect to the elevated display" \
+                || { echo "FAIL  a session program connected to the elevated display"; RC=1; }
+            grep -qE '^XTEST [1-9]' <<<"$adv" && echo "PASS  (teeth) the same program's XTEST works on the session's own display" \
+                || { echo "FAIL  XTEST did not run in the session -- result meaningless"; RC=1; }
+            [[ "$(g windows | grep -c " $ewindow ")" -ge 1 ]] || { echo "FAIL  the installer window went away during the attack"; RC=1; }
         fi
 
-        # Drive the installer with the real keyboard: the typed word proves the
-        # keyboard reached the elevated window; then the pages through to done.
-        sleep 1; q type "$word"; sleep 1; q key ret     # first page: the word
-        sleep 2; q key ret                              # directory page: Install
-        sleep 4
-        # It installs to Program Files, writes the word, and adds the shortcut.
-        _w=0; until as_user "$winecmd cmd /c type 'C:\\Program Files\\SG Test App\\typed.txt' 2>NUL" | grep -q .; do
-            (( _w >= 40 )) && break; sleep 2; _w=$((_w+2)); done
-        typed=$(as_user "$winecmd cmd /c type 'C:\\Program Files\\SG Test App\\typed.txt' 2>NUL")
-        if [[ "$typed" == "$word" ]]; then echo "PASS  the real keyboard reached the elevated installer (typed.txt=$typed)"
-        else echo "FAIL  the elevated installer did not receive the keyboard (typed.txt='$typed')"; RC=1; fi
-        installed=$(as_user "$winecmd cmd /c if exist 'C:\\Program Files\\SG Test App\\sg-test-app.exe' echo YES")
-        [[ "$installed" == YES ]] && echo "PASS  the app installed to Program Files" || { echo "FAIL  not installed to Program Files"; RC=1; }
-        # The all-users Start menu shortcut, and the user can see it.
-        shortcut=$(as_user "$winecmd cmd /c if exist 'C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\SG Test App\\SG Test App.lnk' echo YES")
-        [[ "$shortcut" == YES ]] && echo "PASS  an all-users Start menu shortcut was created for the user"             || { echo "FAIL  no Start menu shortcut"; RC=1; }
-        arp=$(as_user "$winecmd reg query 'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\SGTestApp' /v DisplayName 2>NUL" | grep -c 'SG Test App')
-        [[ "$arp" -ge 1 ]] && echo "PASS  it appears in Apps & features (HKLM Uninstall)" || echo "NOTE  no Add/Remove entry (non-fatal)"
+        # 4. The real keyboard drives it: the word, then Install.
+        q type "x"; q key backspace; sleep 1         # first key after a keymap load
+        q type "$word"; sleep 1; q key ret           # first page
+        sleep 3; q key ret                           # directory page: Install
+        w=0; until g verify | grep -q INSTALLED || (( w >= 120 )); do sleep 3; w=$((w + 3)); done
+        v=$(g verify)
+        echo "      installed: $(tr '\n' ' ' <<<"$v")"
+        grep -qx "TYPED $word" <<<"$v" && echo "PASS  the real keyboard reached the elevated installer (it typed '$word')" \
+            || { echo "FAIL  the installer did not get the keyboard"; RC=1; }
+        grep -qx INSTALLED <<<"$v" && echo "PASS  it installed to Program Files" || { echo "FAIL  not installed"; RC=1; }
+        grep -qx SHORTCUT <<<"$v" && echo "PASS  the Start menu shortcut is there for the user (all users)" \
+            || { echo "FAIL  no Start menu shortcut"; RC=1; }
+        grep -qx ARP <<<"$v" && echo "PASS  it is listed in Apps & features" || { echo "FAIL  no Apps & features entry"; RC=1; }
+        w=0; while g windows | grep -qi 'SG Test App' && (( w < 60 )); do sleep 2; w=$((w + 2)); done
+        g windows | grep -qi 'SG Test App' && { echo "FAIL  the installer's window outlived it"; RC=1; } \
+            || echo "PASS  its display went with it"
 
-        # "Add someone else to this PC": the elevated account settings must show
-        # a window too -- the same B56 path. Launch sg-control's accounts page
-        # elevated and confirm an elevated window appears.
-        as_user "$winecmd 'C:\\sgtest\\sg-runas.exe' 'C:\\windows\\system32\\sg-control.exe accounts' >/dev/null 2>&1 &" >/dev/null 2>&1
-        _w=0; until [[ "$(as_user "$ctl STATUS")" == "OK secure" ]] || (( _w >= 40 )); do sleep 2; _w=$((_w+2)); done
-        if [[ "$(as_user "$ctl STATUS")" == "OK secure" ]]; then
-            sleep 2; q key alt+y; sleep 2
-            _w=0; while ! as_user "$ctl WINDOWS" | grep -qi 'account\|settings\|control\|user'; do (( _w >= 40 )) && break; sleep 2; _w=$((_w+2)); done
-            if as_user "$ctl WINDOWS" | grep -qi 'account\|settings\|control\|user'; then
-                echo "PASS  Add someone else to this PC opens an elevated window"
-            else echo "NOTE  elevated account settings did not show a window (non-fatal): $(as_user "$ctl WINDOWS" | tr '\n' ' ')"; fi
-            q screendump "$ARTIFACTS/screenshot-elevated-accounts.ppm"
-        else echo "NOTE  the account settings did not raise a consent prompt (non-fatal)"; fi
-        q key alt+F4 2>/dev/null || true
+        # 5. "Add someone else to this PC": the elevated account form.
+        g accounts
+        if wait_status "OK secure" 90; then sleep 3; q key alt+y; wait_status "OK unlocked" 30; fi
+        line=$(wait_window 'Create an account' 120)
+        if [[ -n "$line" ]]; then
+            echo "PASS  Add someone else to this PC shows its elevated form: $line"
+            q screendump "$ARTIFACTS/screenshot-elevated-adduser.ppm"
+            q type "x"; q key backspace; sleep 1
+            q type "sgnewbie"; q key tab; q key tab     # user name, (full name)
+            q type "pw24681357"; q key tab; q type "pw24681357"; q key ret
+            w=0; until ssh_guest "getent passwd sgnewbie >/dev/null" 2>/dev/null || (( w >= 60 )); do sleep 3; w=$((w + 3)); done
+            ssh_guest "getent passwd sgnewbie >/dev/null" 2>/dev/null && echo "PASS  and the account was created (sgnewbie)" \
+                || { echo "FAIL  no account created from the form"; RC=1; }
+        else echo "FAIL  Add someone else to this PC showed nothing; WINDOWS: $(g windows | tr '\n' ' ')"; RC=1; fi
     else
-        echo "NOTE  elevated-display gate skipped: could not build the fixtures (see elevated-fixtures.log)"
+        echo "FAIL  could not build the fixtures (see elevated-fixtures.log)"; RC=1
     fi
     rm -rf "$FX"
     set -e
