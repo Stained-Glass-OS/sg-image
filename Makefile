@@ -400,7 +400,7 @@ upload-iso:
 	rsync -a --partial --info=progress2 -e "$$ssh" $(ISO) $(ISO_HOST):$(ISO_DIR)/$$name.part; \
 	$$ssh $(ISO_HOST) "cd $(ISO_DIR) && echo '$$sum  $$name.part' | sha256sum -c --quiet - && mv $$name.part $$name \
 	  && { grep -v ' $$name\$$' SHA256SUMS 2>/dev/null || true; echo '$$sum  $$name'; } > SHA256SUMS.new && mv SHA256SUMS.new SHA256SUMS \
-	  && ln -sfn $$name sg-live-latest.iso"; \
+	  && ln -sfn $$name sg-live-latest.iso && sg-iso-index"; \
 	echo "uploaded https://freesoft.page/iso/$$name (sha256 $$sum)"
 
 # Remote Desktop (E1): sign in to the image over RDP from this machine with a

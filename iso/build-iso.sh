@@ -104,8 +104,21 @@ ln "$ROOT_CACHE" "$W/iso/live/root.erofs" 2>/dev/null || cp "$ROOT_CACHE" "$W/is
 
 # --- the ISO -------------------------------------------------------------------------
 log "writing $OUT"
+NOTICE='Stained Glass OS is NOT Microsoft Windows.
+
+It is an independent, free and open-source operating system designed to be
+compatible with Windows programs. It is not a Microsoft product, contains no
+Microsoft code, and is not affiliated with, endorsed by, or sponsored by
+Microsoft Corporation in any way. Windows is a trademark of Microsoft
+Corporation.
+
+Project and source: https://freesoft.page -- https://github.com/Stained-Glass-OS'
+printf '%s\n' "$NOTICE" > "$W/iso/NOTICE.txt"
 cat > "$W/iso/README.txt" <<'EOF'
 Stained Glass OS -- live and installation medium (UEFI).
+
+Stained Glass OS is not Microsoft Windows and is not affiliated with Microsoft;
+see NOTICE.txt.
 
 Boot it (a DVD, a virtual machine's CD drive, or a USB stick written with
 dd or any image writer) and choose "Stained Glass OS (live: try or install)".
