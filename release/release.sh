@@ -61,6 +61,16 @@ exec 9>"$LOCK"
 log "waiting for the image lock"
 flock 9
 log "holding the image lock"
+# The gates' budgets assume a machine that is not saturated: with other work
+# building Wine trees (load 75-90 on 12 cores) a first boot took 11 minutes and
+# the gate gave up. Wait, up to an hour, for the load to come down.
+limit=$(( $(nproc) * 3 / 2 ))
+for _ in $(seq 1 120); do
+    load=$(cut -d' ' -f1 /proc/loadavg); load=${load%.*}
+    (( load < limit )) && break
+    log "load $load (limit $limit): waiting for the machine to calm down"
+    sleep 30
+done
 gate() { "$@"; }
 
 step image     gate make image
