@@ -276,7 +276,9 @@ SPEECH_CACHE := $(BUILD)/speech-cache
 speech: staged-debs
 	@rm -rf $(EXTRA_TREE)/var/lib/stained-glass-speech
 	speech-model/build-deb.sh $(SG_SESSION) $(SPEECH_CACHE) $(EXTRA_TREE)/opt/sg-packages
-	@echo "sg-speech-model-parakeet $$(cat speech-model/build-deb.sh $(SG_SESSION)/speech/sgspeech.py | sha256sum | cut -c1-40)" \
+	@# Its source is the pinned file list (names, sizes, SHA-256s) and the
+	@# packaging script -- not the rest of sgspeech.py, which changes with code.
+	@echo "sg-speech-model-parakeet $$( { cat speech-model/build-deb.sh; SG_SPEECH_LIB=$(SG_SESSION)/speech python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import sgspeech; print(sgspeech.MODEL_NAME, sgspeech.FILES)' $(SG_SESSION)/speech; } | sha256sum | cut -c1-40)" \
 	  >> $(EXTRA_TREE)/opt/sg-packages/SOURCES
 
 # --- package repository --------------------------------------------------------
