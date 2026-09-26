@@ -17,7 +17,7 @@ SG_WINE     ?= ../wine-sg
 SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 
-.PHONY: net-test fileaccess-test token-test procagent-test elevate-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
+.PHONY: print-test net-test fileaccess-test token-test procagent-test elevate-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
 
 all: image
 
@@ -330,6 +330,11 @@ d3d-test:
 # The bundled Windows applications (PowerShell 7, Python), in the guest.
 apps-test:
 	SG_GUEST_CHECK=apps test/boot-test.sh
+
+# Printing: a Windows program prints to the Print to PDF printer (CUPS,
+# cups-pdf, sg-session's sg-print-setup) and the PDF lands in Documents.
+print-test:
+	SG_GUEST_CHECK=print test/boot-test.sh
 
 # Users' file access against Unix's verdict (ADR 0013).
 fileaccess-test:

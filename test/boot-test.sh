@@ -203,6 +203,18 @@ case "${SG_GUEST_CHECK:-session}" in
             runuser -u $LOGIN_USER -- /usr/bin/sg-apps-check"
         CHECK_NAME="sg-apps-check (PowerShell, Python)"
         ;;
+    print)
+        # Printing as a person does it: Notepad prints to the Print to PDF
+        # printer (CUPS, cups-pdf) and the PDF lands in their Documents. As
+        # the session user, once the prefix and their profile exist.
+        CHECK_CMD="for i in \$(seq 1 $CHECK_TIMEOUT); do \
+            [ -e /var/lib/stained-glass/prefix/.sg-initialized ] && break; sleep 1; done; \
+            [ -e /var/lib/stained-glass/prefix/.sg-initialized ] \
+              || { echo 'FAIL  prefix was still initializing after ${CHECK_TIMEOUT}s'; exit 1; }; \
+            PAM_TYPE=open_session PAM_USER=$LOGIN_USER /usr/libexec/stained-glass/sg-profile-create; \
+            runuser -u $LOGIN_USER -- /usr/bin/sg-print-check"
+        CHECK_NAME="sg-print-check (Print to PDF)"
+        ;;
     fileaccess)
         # ADR 0013's gate runs as root: it acts as the session user and as
         # SYSTEM, comparing what Unix allows each with what Wine lets them do.
