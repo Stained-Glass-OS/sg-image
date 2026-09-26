@@ -69,12 +69,25 @@ if [[ "$(ssh_guest "stat -c '%U:%G %a' /run/stained-glass-oobe/oobed.sock" 2>/de
     pass "its service's socket is the login screen's alone (root:sgsetup 660)"
 else fail "oobed socket: $(ssh_guest 'ls -l /run/stained-glass-oobe/' 2>&1)"; fi
 
+# What is on the screen, not only in the X server: a pixel of the card's art
+# panel (a stale or black frame was the first image's bug: the compositor's
+# GL renderer on software rasterisation).
+px() { convert "$ART/oobe-$1.ppm" -format "%[fx:int(255*p{$2,$3}.r)] %[fx:int(255*p{$2,$3}.g)] %[fx:int(255*p{$2,$3}.b)]" info: 2>/dev/null; }
+is_art() { local c; c=$(px "$1" 200 600); set -- $c; [[ -n "${3:-}" ]] && (( $1 > 40 && $1 < 80 && $2 < 45 && $3 > 90 && $3 < 140 )); }
 wait_for 'sg-oobe: state' 1 60
 sleep 3; qmp key shift; sleep 1; shot region
+if is_art region; then pass "the first-run setup is on the screen (its art panel: $(px region 200 600))"
+else fail "the screen does not show the first-run setup: pixel $(px region 200 600)"; fi
 set +e
 choose u 'United Kingdom'
 qmp key ret
-wait_for 'page keyboard$' && shot keyboard
+wait_for 'page keyboard$' && sleep 2 && shot keyboard
+# The heading changed with the page: the screen follows the window (a stale
+# frame keeps the region page's).
+if [[ "$(convert "$ART/oobe-region.ppm" -crop 500x60+580+140 +repage -format '%#' info: 2>/dev/null)" != \
+      "$(convert "$ART/oobe-keyboard.ppm" -crop 500x60+580+140 +repage -format '%#' info: 2>/dev/null)" ]]; then
+    pass "the screen follows the page (the heading changed)"
+else fail "the screen still shows the region page's heading on the keyboard page"; fi
 qmp key ret                                   # Yes: US
 wait_for 'page second-keyboard$' && shot second-keyboard
 qmp key ret                                   # Add layout
@@ -111,6 +124,9 @@ until ssh_guest "journalctl -b -t sg-login --no-pager -o cat | grep -q 'greeter 
     sleep 3; t=$(( t + 3 ))
 done
 sleep 2; shot login
+if [[ "$(convert "$ART/oobe-login.ppm" -format '%[fx:int(1000*mean)]' info: 2>/dev/null)" -gt 30 ]]; then
+    pass "the login screen is on the screen, not black"
+else fail "the login screen is black"; fi
 ssh_guest "journalctl -b -t sg-oobe -u 'sg-oobed@*' --no-pager -o cat" > "$ART/oobe.log" 2>&1
 
 check=$(ssh_guest 'set +e
