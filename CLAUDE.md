@@ -104,6 +104,36 @@ sitting in CI would mask real regressions. Run it on purpose.
 
 See [`stained-glass/docs/s2-wineserver-analysis.md`](https://github.com/Stained-Glass-OS/stained-glass/blob/main/docs/s2-wineserver-analysis.md).
 
+## The elevated-display gate (ADR 0012, bug B56)
+
+`make elevated-test` (`SG_GUEST_CHECK=elevated`) signs in and, with QMP driving
+the real keyboard, proves that "Run as administrator" now shows a window. It
+builds three fixtures on the host (`test/elevated/build-fixtures.sh`; needs
+`makensis` and the mingw cross compiler): a real NSIS installer that demands
+administrator rights (`sg-test-setup.exe`), a `runas` launcher, and a
+session-side X attacker (`sg-xadversary`). Then:
+
+1. the user launches the installer through Run as administrator; the consent
+   prompt appears on the secure surface (compositor `STATUS` = secure), and
+   Alt+Y approves it;
+2. the installer appears as an **elevated window of its own** (`sg-lockctl
+   WINDOWS` lists it, with its display number); a screenshot shows it composited
+   into the desktop;
+3. a session program **cannot** connect to that display without its cookie, and
+   the elevated window is not in the session X server's tree (so XSendEvent and
+   XGetImage cannot reach it) -- UIPI;
+4. the real keyboard drives the installer (the typed word lands in
+   `typed.txt`), which installs to Program Files with an **all-users Start menu
+   shortcut the user can see** and an Apps & features entry;
+5. "Add someone else to this PC" (the elevated account settings) likewise shows
+   an elevated window.
+
+The mechanism itself is proven headlessly and faster by sg-compositor's `make
+test-elevated` (the real `sg-elevated-run` as `sgsystem` against the real
+compositor, with a session adversary and mutants) and sg-session's `make
+test-consent`; this gate is the end-to-end proof in the booted image. The image
+carries `libxtst6` so the attacker's XTEST runs.
+
 ## The live entry and the install gate
 
 Every image is also its own installation media. `mkosi.postoutput` gives each

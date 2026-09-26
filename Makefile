@@ -17,7 +17,7 @@ SG_WINE     ?= ../wine-sg
 SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 
-.PHONY: print-test net-test fileaccess-test token-test procagent-test elevate-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
+.PHONY: print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d clean distclean
 
 all: image
 
@@ -351,6 +351,16 @@ procagent-test:
 # "Run as administrator" runs as the SYSTEM account, only after consent (ADR 0012).
 elevate-test:
 	SG_SKIP_LOGIN=1 SG_GUEST_CHECK=elevate test/boot-test.sh
+
+# Elevated programs get a display of their own (ADR 0012, bug B56): a real GUI
+# installer that demands administrator rights runs through the consent prompt
+# and shows its window, usable with the real keyboard and out of the session's
+# reach. Signs in (no SG_SKIP_LOGIN) and drives the prompt and installer with
+# QMP; needs makensis and the mingw cross compiler on the host to build the
+# fixtures. Installs to Program Files with a Start menu shortcut for the user;
+# also "Add someone else to this PC".
+elevated-test:
+	SG_GUEST_CHECK=elevated test/boot-test.sh
 
 # Machine Group Policy: an admin's policy binds every user, a user cannot override.
 policy-test:
