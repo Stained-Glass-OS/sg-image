@@ -421,7 +421,8 @@ iso-test:
 	SG_LIVE_ISO=$(ISO) SG_LIVE_ISO_AS=cdrom SG_INSTALL_SCENARIO=dualboot test/install-test.sh
 	ISO=$(ISO) test/ventoy-test.sh
 
-# Put the ISO on https://freesoft.page/iso/ as sg-live-DATE-REV.iso, with its
+# Put the ISO on https://freesoft.page/iso/ as sg-live-DATE-TIME-REV.iso (UTC;
+# a rebuild of the same sg-image revision with newer packages gets its own name), with its
 # SHA-256 in SHA256SUMS and sg-live-latest.iso pointing at it. release.sh does
 # this only after the ISO install gates pass. Only the newest ISO is kept (the
 # server's disk is small): the others go once the new one is verified.
@@ -430,7 +431,7 @@ ISO_DIR  ?= /srv/www/iso
 .PHONY: upload-iso
 upload-iso:
 	@test -f $(ISO) || { echo "no $(ISO) -- run 'make iso'"; exit 2; }
-	@set -e; name=sg-live-$$(date -u +%Y%m%d)-$$(git rev-parse --short HEAD).iso; \
+	@set -e; name=sg-live-$$(date -u +%Y%m%d-%H%M)-$$(git rev-parse --short HEAD).iso; \
 	ssh="ssh -i $$HOME/.ssh/sg -o BatchMode=yes"; \
 	sum=$$(sha256sum < $(ISO) | cut -d' ' -f1); \
 	rsync -a --partial --info=progress2 -e "$$ssh" $(ISO) $(ISO_HOST):$(ISO_DIR)/$$name.part; \
