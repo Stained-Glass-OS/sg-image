@@ -54,7 +54,14 @@ step() { # name, command...
     fi
     grep -E "GATE (PASS|FAIL)|^FAIL" "$L/$name.log" | tail -4 || true
 }
-gate() { flock "$LOCK" "$@"; }
+# The VM gates share one image lock with everyone's gate runs. Take it once,
+# for the whole release: flock does not queue in order, so releasing it
+# between steps let other work in between image and boot gate for an hour.
+exec 9>"$LOCK"
+log "waiting for the image lock"
+flock 9
+log "holding the image lock"
+gate() { "$@"; }
 
 step image     gate make image
 step boot-test gate make boot-test

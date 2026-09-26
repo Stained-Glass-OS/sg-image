@@ -348,7 +348,7 @@ if [[ "${SG_GUEST_CHECK:-session}" == session ]]; then
     if [[ "$st" == "MODEL installed install ok installed root " ]]; then
         echo "PASS  the speech model is installed from its package (sg-speech-model-parakeet), root-owned"
     else
-        echo "FAIL  the speech model is not baked in as expected: $st"
+        echo "FAIL  the speech model is not installed as expected: $st"
         RC=1
     fi
     if command -v espeak-ng >/dev/null; then
@@ -389,13 +389,19 @@ if [[ "${SG_GUEST_CHECK:-session}" == session && $RC -eq 0 && "${SG_TEST_LOCK:-1
     # password's first characters. Warm up with a throwaway key and clear it,
     # then type the password. Retry the whole exchange a few times: a dropped
     # key means a wrong password, and the greeter simply re-prompts.
+    # Whatever is already in the box (a warm-up key, or a key still repeating
+    # from the Win+L that locked) is selected and deleted first. Unlocking can
+    # take a while on software rendering: poll for it, do not guess.
     for _try in 1 2 3; do
         python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "x" >/dev/null
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" key ctrl+a >/dev/null
         python3 "$HERE/test/qmp.py" "$QMP_SOCK" key backspace >/dev/null
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" key end >/dev/null
+        for _b in $(seq 48); do python3 "$HERE/test/qmp.py" "$QMP_SOCK" key backspace >/dev/null; done
         sleep 1
         python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "$(cat "$LAB_PASSWORD_FILE")" >/dev/null
         python3 "$HERE/test/qmp.py" "$QMP_SOCK" key ret >/dev/null
-        sleep 5
+        _w=0; until [[ "$(lock_status)" == "OK unlocked" ]] || (( _w >= 30 )); do sleep 2; _w=$((_w + 2)); done
         [[ "$(lock_status)" == "OK unlocked" ]] && break
     done
     if [[ "$(lock_status)" == "OK unlocked" ]]; then echo "PASS  the password typed at the lock screen unlocks"
