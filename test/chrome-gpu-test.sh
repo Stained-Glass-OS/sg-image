@@ -17,8 +17,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-CHROME_DIR=${CHROME_DIR:?set CHROME_DIR to an unpacked Chrome-bin}
-[[ -f "$CHROME_DIR/chrome.exe" ]] || { echo "chrome-gpu-test: no chrome.exe in $CHROME_DIR" >&2; exit 2; }
+# Any portable program can be run the same way: APP_DIR (copied to the
+# guest's /var/tmp/chrome), APP_EXE in it and APP_ARGS (default: Chrome).
+APP_DIR=${APP_DIR:-${CHROME_DIR:?set CHROME_DIR to an unpacked Chrome-bin (or APP_DIR)}}
+APP_EXE=${APP_EXE:-chrome.exe}
+APP_ARGS=${APP_ARGS:---no-first-run --no-default-browser-check --enable-logging=stderr --v=0}
+CHROME_DIR=$APP_DIR
+[[ -f "$CHROME_DIR/$APP_EXE" ]] || { echo "chrome-gpu-test: no $APP_EXE in $CHROME_DIR" >&2; exit 2; }
 WAIT=${CHROME_WAIT:-240}
 SAMPLE=${CHROME_SAMPLE:-15}
 URL=${CHROME_URL:-https://www.example.com/}
@@ -36,7 +41,7 @@ set -e
 tar -C "$(dirname "$CHROME_DIR")" -cf - "$(basename "$CHROME_DIR")" | \
     ssh -i "\$SG_SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -p "\$SG_SSH_PORT" root@127.0.0.1 \
     'mkdir -p /var/tmp/chrome && tar -C /var/tmp/chrome -xf - && chmod -R a+rX /var/tmp/chrome && chmod 1777 /tmp && \
-     printf "@echo off\r\nZ:\\\\\\\\var\\\\\\\\tmp\\\\\\\\chrome\\\\\\\\$(basename "$CHROME_DIR")\\\\\\\\chrome.exe --no-first-run --no-default-browser-check --enable-logging=stderr --v=0 $URL > Z:\\\\\\\\tmp\\\\\\\\chrome-run.txt 2>&1\r\n" > /var/tmp/chrome/run.bat && \
+     printf "@echo off\r\n\"Z:\\\\\\\\var\\\\\\\\tmp\\\\\\\\chrome\\\\\\\\$(basename "$CHROME_DIR")\\\\\\\\$APP_EXE\" $APP_ARGS $URL > Z:\\\\\\\\tmp\\\\\\\\chrome-run.txt 2>&1\r\n" > /var/tmp/chrome/run.bat && \
      echo "chrome copied: \$(du -sh /var/tmp/chrome | cut -f1)"'
 PREEOF
 chmod +x "$PRE"
@@ -62,14 +67,14 @@ python3 "$HERE/test/qmp.py" "$QMP" key ret >/dev/null
 for (( t = SAMPLE; t <= WAIT; t += SAMPLE )); do
     sleep "$SAMPLE"
     guest "echo \"t=${t}s free=\$(free -m | awk '/Mem:/{print \$7}')MB\"; \
-           ps -u sguser -o rss=,args= | grep -a 'chrome.exe' | grep -v grep | \
+           ps -u sguser -o rss=,args= | grep -a "$APP_EXE" | grep -v grep | \
            sed -E 's/.*--type=([a-z-]+).*/\\1/; t; s/.*/browser/' | sort | uniq -c | tr '\n' ' '; \
-           echo; ps -u sguser -o rss=,args= | grep -a 'chrome.exe' | grep -v grep | \
+           echo; ps -u sguser -o rss=,args= | grep -a "$APP_EXE" | grep -v grep | \
            awk '{ t = \"browser\"; if (match(\$0, /--type=[a-z-]+/)) t = substr(\$0, RSTART + 7, RLENGTH - 7); \
                   printf \"  %-16s %6d MB\\n\", t, \$1 / 1024 }'" >> "$ART/chrome-memory.txt" 2>&1
 done
 
-guest "cat /var/tmp/chrome/run.bat; echo \"chrome processes now: \$(ps -u sguser -o args= | grep -ac 'chrome.exe')\"; \
+guest "cat /var/tmp/chrome/run.bat; echo \"chrome processes now: \$(ps -u sguser -o args= | grep -ac '$APP_EXE')\"; \
        echo \"gpu process exits: \$(grep -ac 'GPU process exited unexpectedly' /tmp/chrome-run.txt)\"; \
        echo \"couldn't create surface: \$(grep -ac \"Couldn't create surface\" /tmp/chrome-run.txt)\"; \
        echo \"fatal: \$(grep -ac 'FATAL' /tmp/chrome-run.txt)\"; \
@@ -77,4 +82,5 @@ guest "cat /var/tmp/chrome/run.bat; echo \"chrome processes now: \$(ps -u sguser
        journalctl -b -k -o cat --no-pager | grep 'Out of memory: Killed' | cut -c1-140; \
        echo \"crash dumps: \$(find / -xdev -path '*Crashpad/reports/*' -type f 2>/dev/null | wc -l)\"; \
        grep -aE 'FATAL|GPU process exited|Couldn.t create surface' /tmp/chrome-run.txt | tail -5 | cut -c1-200" > "$ART/chrome-result.txt" 2>&1
+python3 "$HERE/test/qmp.py" "$QMP" screendump "$ART/chrome-screen.ppm" >/dev/null 2>&1 || true
 cat "$ART/chrome-memory.txt" "$ART/chrome-result.txt"
