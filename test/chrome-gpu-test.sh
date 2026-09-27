@@ -28,6 +28,7 @@ WAIT=${CHROME_WAIT:-240}
 SAMPLE=${CHROME_SAMPLE:-15}
 URL=${CHROME_URL:-https://www.example.com/}
 ART="$HERE/build/artifacts"
+mkdir -p "$ART"
 KEY="$HERE/build/ssh/id_ed25519"
 PORT=${SG_SSH_PORT:-2222}
 guest() { ssh -i "$KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -p "$PORT" root@127.0.0.1 "$@"; }
@@ -81,6 +82,8 @@ guest "cat /var/tmp/chrome/run.bat; echo \"chrome processes now: \$(ps -u sguser
        echo \"oom kills: \$(journalctl -b -k -o cat --no-pager | grep -c 'Out of memory: Killed')\"; \
        journalctl -b -k -o cat --no-pager | grep 'Out of memory: Killed' | cut -c1-140; \
        echo \"crash dumps: \$(find / -xdev -path '*Crashpad/reports/*' -type f 2>/dev/null | wc -l)\"; \
-       grep -aE 'FATAL|GPU process exited|Couldn.t create surface' /tmp/chrome-run.txt | tail -5 | cut -c1-200" > "$ART/chrome-result.txt" 2>&1
+       grep -aE 'FATAL|GPU process exited|Couldn.t create surface' /tmp/chrome-run.txt | tail -5 | cut -c1-200; \
+       echo '--- the end of its log:'; tail -15 /tmp/chrome-run.txt | cut -c1-200" > "$ART/chrome-result.txt" 2>&1
+guest "cat /tmp/chrome-run.txt" > "$ART/chrome-run.txt" 2>/dev/null || true
 python3 "$HERE/test/qmp.py" "$QMP" screendump "$ART/chrome-screen.ppm" >/dev/null 2>&1 || true
 cat "$ART/chrome-memory.txt" "$ART/chrome-result.txt"
