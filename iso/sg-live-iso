@@ -55,7 +55,7 @@ find_medium() {
 }
 
 # The .iso file on a partition: each file system is mounted read-only once and
-# stays mounted (under /run/sg-host) while the file is in use. Sets $dev (not
+# stays mounted (under /run/initramfs/sg-host) while the file is in use. Sets $dev (not
 # run in a subshell: it remembers what it has searched).
 searched=" "
 find_iso_file() {
@@ -69,7 +69,7 @@ find_iso_file() {
         case "$t" in exfat|vfat|ntfs|ntfs3|ext4|ext3|ext2|btrfs|xfs|f2fs) ;; *) continue ;; esac
         searched="$searched$d "
         [ "$t" = ntfs ] && t=ntfs3
-        mp=/run/sg-host/${b##*/}
+        mp=/run/initramfs/sg-host/${b##*/}
         mkdir -p "$mp"
         mount -t "$t" -o ro "$d" "$mp" 2>/dev/null || { rmdir "$mp"; continue; }
         while IFS= read -r f; do
@@ -99,10 +99,18 @@ for i in $(seq 1 240); do
 done
 [ -n "$dev" ] || { say "no Stained Glass medium (label SGLIVE, or its .iso file on a partition) was found"; exit 1; }
 
-mkdir -p /run/sg-iso /run/sg-esp
-mount -t iso9660 -o ro "$dev" /run/sg-iso || { say "cannot mount $dev"; exit 1; }
+# Everything the root image stands on is mounted under /run/initramfs, which
+# systemd leaves alone at shutdown (as it does the initrd's own mounts): the
+# running system must not unmount the medium, or on a Ventoy stick the exFAT
+# holding the .iso file, from under its root -- that ended in endless erofs
+# read errors instead of powering off. /run/sg-iso and /run/sg-esp, which the
+# installer uses, point there.
+mkdir -p /run/initramfs/sg-iso /run/initramfs/sg-esp
+ln -sfn /run/initramfs/sg-iso /run/sg-iso
+ln -sfn /run/initramfs/sg-esp /run/sg-esp
+mount -t iso9660 -o ro "$dev" /run/initramfs/sg-iso || { say "cannot mount $dev"; exit 1; }
 [ -f /run/sg-iso/live/root.erofs ] || { say "$dev has no live/root.erofs"; exit 1; }
 loop=$(losetup -r -f --show /run/sg-iso/live/root.erofs) || { say "cannot attach the root image"; exit 1; }
-mount -t vfat -o ro /run/sg-iso/boot/efi.img /run/sg-esp 2>/dev/null \
+mount -t vfat -o ro /run/sg-iso/boot/efi.img /run/initramfs/sg-esp 2>/dev/null \
     || say "cannot mount the medium's system partition image (installing will not work)"
 say "live medium $dev, root image on $loop"

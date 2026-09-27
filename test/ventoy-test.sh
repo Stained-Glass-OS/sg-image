@@ -8,7 +8,9 @@
 # Here: the kernel, initrds and options of the ISO's live entry, booted
 # directly (-kernel), with one disk: exFAT, holding ventoy/sg-live.iso and a
 # decoy Stained Glass ISO from another build. Passes when the initrd picks the
-# real file and the live system comes up.
+# real file and the live system comes up -- and, pressing the power button,
+# shuts down cleanly: no 90 s stop job, the medium not unmounted from under
+# the root (erofs read errors on real hardware), powered off within 2 min.
 #
 #   ISO=build/sg-live.iso test/ventoy-test.sh
 #
@@ -67,7 +69,7 @@ qemu-system-x86_64 -machine q35,accel=$accel -m 4096 -smp 4 -nographic -nic none
     -kernel "$W/vmlinuz" -initrd "$W/initrd" \
     -append "$options systemd.show_status=yes loglevel=6" \
     -drive file="$W/stick.img",format=raw,if=virtio \
-    -serial file:"$OUT/serial.log" -monitor none -display none >/dev/null 2>&1 &
+    -serial file:"$OUT/serial.log" -monitor none -display none -qmp "unix:$W/qmp.sock,server,nowait" >/dev/null 2>&1 &
 QPID=$!
 rc=1
 for _ in $(seq 1 180); do
@@ -79,7 +81,18 @@ for _ in $(seq 1 180); do
     if grep -q "Reached target emergency.target\|You are in emergency mode" "$OUT/serial.log" 2>/dev/null; then break; fi
     kill -0 "$QPID" 2>/dev/null || break
 done
-kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null || :; QPID=""
+down=1
+if [[ $rc = 0 ]]; then
+    # the power button, once the login screen (Setup) is up
+    for _ in $(seq 1 60); do grep -q 'Started greetd.service' "$OUT/serial.log" && break; sleep 2; done
+    sleep 20
+    python3 -c "
+import sys; sys.path.insert(0, '$(dirname "$0")')
+from qmp import QMP
+q = QMP('$W/qmp.sock'); q.command('system_powerdown'); q.close()"
+    for _ in $(seq 1 60); do kill -0 "$QPID" 2>/dev/null || { down=0; break; }; sleep 2; done
+fi
+kill "$QPID" 2>/dev/null || :; wait "$QPID" 2>/dev/null || :; QPID=""
 
 s=$(sed 's/\x1b\[[0-9;]*m//g' "$OUT/serial.log")
 fail=0
@@ -89,5 +102,15 @@ if grep -q "sg-live-iso: found /ventoy/old" <<<"$s"; then log "FAIL  it booted a
 else log "PASS  another release's ISO on the stick was passed by"; fi
 if [[ $rc = 0 ]]; then log "PASS  the live system runs from it (its live account was made)"
 else log "FAIL  the live system did not come up (serial log: $OUT/serial.log)"; fail=1; fi
+if [[ $rc = 0 ]]; then
+    if [[ $down = 0 ]] && grep -q 'reboot: Power down' <<<"$s"; then log "PASS  the power button shuts it down (within 2 min)"
+    else log "FAIL  it did not power off within 2 min of the power button"; fail=1; fi
+    if grep -q 'A stop job is running\|stop running (' <<<"$s"; then log "FAIL  shutdown waited on a stop job: $(grep -o 'Job [^ ]*/stop' <<<"$s" | sort -u | tr '\n' ' ')"; fail=1
+    else log "PASS  no stop job held the shutdown"; fi
+    if grep -qE 'Unmounted run-(initramfs-)?sg\\x2d(host|iso)' <<<"$s"; then log "FAIL  shutdown unmounted the medium from under the root"; fail=1
+    else log "PASS  the medium stays mounted under the root until power-off"; fi
+    if grep -qi 'erofs.*error\|I/O error' <<<"$s"; then log "FAIL  read errors during shutdown: $(grep -i 'erofs.*error\|I/O error' <<<"$s" | head -2 | tr '\n' ';')"; fail=1
+    else log "PASS  no read errors"; fi
+fi
 [[ $fail = 0 ]] && log "RESULT: PASS" || log "RESULT: FAIL"
 exit $fail
