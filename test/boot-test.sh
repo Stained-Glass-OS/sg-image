@@ -108,6 +108,11 @@ cp "$OVMF_VARS_SRC" "$RUN_VARS"
 log "booting: accel=$ACCEL mem=${MEM}M cpus=$CPUS ssh=localhost:$SSH_PORT"
 rm -f "$QMP_SOCK"
 
+if [[ "${SG_GPU:-}" == virgl ]]; then
+    SG_DISPLAY_ARGS=(-device virtio-vga-gl -display "egl-headless,rendernode=${SG_RENDER_NODE:-/dev/dri/renderD128}")
+else
+    SG_DISPLAY_ARGS=(-device virtio-vga -display none)
+fi
 # shellcheck disable=SC2054  # the commas are inside quoted QEMU arguments
 qemu_args=(
     -machine "q35,accel=$ACCEL"
@@ -119,8 +124,9 @@ qemu_args=(
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22"
     -device virtio-net-pci,netdev=net0
     # virtio-gpu gives the compositor a real DRM device without a host GPU.
-    -device virtio-vga
-    -display none
+    # SG_GPU=virgl instead passes OpenGL through to this machine's GPU
+    # (virtio-vga-gl, rendered headless on the host's render node).
+    "${SG_DISPLAY_ARGS[@]}"
     -serial "file:$SERIAL_LOG"
     -qmp "unix:$QMP_SOCK,server,nowait"
     -no-reboot
@@ -172,6 +178,12 @@ case "${SG_GUEST_CHECK:-session}" in
         # X display and inspects that user's Wine processes.
         CHECK_CMD="SG_CHECK_TIMEOUT=$CHECK_TIMEOUT runuser -u $LOGIN_USER -- /usr/bin/sg-session-check"
         CHECK_NAME="sg-session-check"
+        ;;
+    custom)
+        # A check the caller supplies (SG_CHECK_CMD, run as root in the guest
+        # after sign-in), for one-off investigations on the same machinery.
+        CHECK_CMD="${SG_CHECK_CMD:?SG_GUEST_CHECK=custom needs SG_CHECK_CMD}"
+        CHECK_NAME="${SG_CHECK_NAME:-custom check}"
         ;;
     d3d)
         # The D3D gate runs as the session user: it creates Direct3D devices,

@@ -442,6 +442,14 @@ upload-iso:
 	  && sg-iso-index"; \
 	echo "uploaded https://freesoft.page/iso/$$name (sha256 $$sum)"
 
+# Chrome in a signed-in session, started from Run as a person does, with its
+# memory sampled: GPU-process deaths, OOM kills, crash dumps. Chrome is the
+# user's to supply (CHROME_DIR, the enterprise MSI unpacked); SG_GPU=virgl
+# gives the guest this machine's GPU. An investigation, not a release gate.
+.PHONY: chrome-gpu-test
+chrome-gpu-test:
+	test/chrome-gpu-test.sh
+
 # Remote Desktop (E1): sign in to the image over RDP from this machine with a
 # real FreeRDP client; a remote session, its own lock screen, reconnect.
 .PHONY: rdp-test

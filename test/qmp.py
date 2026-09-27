@@ -52,7 +52,9 @@ class QMP:
 # letters and digits are their own qcode; everything else is spelled out here.
 # Only characters the lab credentials use are supported, on purpose: an
 # unsupported character should fail loudly, not be typed as something else.
-QCODES = {"-": "minus", " ": "spc", ".": "dot", "_": ("shift", "minus")}
+QCODES = {"-": "minus", " ": "spc", ".": "dot", "_": ("shift", "minus"),
+          # paths and URLs, for gates that type a command into Run (US layout)
+          ":": ("shift", "semicolon"), "\\": "backslash", "/": "slash", "=": "equal"}
 
 
 def key_list(ch):
