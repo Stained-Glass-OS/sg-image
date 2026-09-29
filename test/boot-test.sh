@@ -392,6 +392,18 @@ if [[ "${SG_GUEST_CHECK:-session}" == session ]]; then
     fi
 fi
 
+# One Debian source: mkosi's build-time <release>.sources (deb-src, the -debug
+# archive, "main" twice) is not left beside debian.sources -- apt warned
+# "Target Packages ... is configured multiple times" on every update (David
+# 2026-09-29).
+st=$(ssh_guest "ls /etc/apt/sources.list.d/; grep -hE '^URIs:.*deb\.debian\.org/debian\$' /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null | wc -l" 2>/dev/null | tr '\n' ' ')
+if [[ "$st" == "debian.sources stained-glass.sources 1 " ]]; then
+    echo "PASS  apt has one Debian source (debian.sources) and ours, no duplicate from the build"
+else
+    echo "FAIL  apt sources: $st"
+    RC=1
+fi
+
 # Voice typing's model comes installed (make speech: the package
 # sg-speech-model-parakeet), root-owned so no user or SYSTEM can swap it, and it recognises
 # speech -- a sentence spoken by espeak-ng on the host, when that is there.

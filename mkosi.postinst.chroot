@@ -180,4 +180,10 @@ if chgrp sgwine "$SEED" 2>/dev/null; then chmod 0640 "$SEED"; else chmod 0644 "$
 echo "[sg-image] prefix built in $(( $(date +%s) - t0 ))s: $(du -sh "$SG_ROOT" | cut -f1) packed into $(du -h "$SEED" | cut -f1)"
 rm -rf "${SG_ROOT:?}"/* "${SG_ROOT:?}"/.[!.]* /run/stained-glass /var/log/stained-glass/* /tmp/.wine-* 2>/dev/null || true
 
+# mkosi leaves its own build-time apt configuration (<release>.sources: deb-src,
+# the -debug archive, "main" twice) beside ours; apt then warned "Target
+# Packages ... is configured multiple times" on every update. debian.sources
+# (mkosi.extra) is the machine's Debian source.
+rm -f /etc/apt/sources.list.d/trixie.sources /etc/apt/sources.list.d/*.sources.dpkg-* 2>/dev/null || true
+
 echo "[sg-image] done"
