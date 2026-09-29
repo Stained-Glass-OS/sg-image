@@ -378,6 +378,20 @@ if [[ "${SG_GUEST_CHECK:-session}" == session ]]; then
     fi
 fi
 
+# SG Office comes installed (sg-office, built from sg-shell): its programs, Get
+# SG Office and its payload, its file types in the system prefix -- and no
+# LibreOffice binary in the image (the user fetches The Document Foundation's
+# installer; we never redistribute it).
+if [[ "${SG_GUEST_CHECK:-session}" == session ]]; then
+    st=$(ssh_guest "dpkg-query -W -f '\${Status}' sg-office; echo; for f in sg-documents64 sg-spreadsheets64 sg-presentations64 sg-office-setup64; do test -f /usr/libexec/stained-glass/shell/\$f.exe && echo \$f; done | wc -l; test -f /usr/share/sg-office/payload/office.ini && echo payload; test -f /var/lib/stained-glass/state/defaults/89-sg-office-types.reg.sha256 && echo types; test -e '/var/lib/stained-glass/prefix/drive_c/Program Files/LibreOffice' && echo BUNDLED-LIBREOFFICE; true" 2>/dev/null | tr '\n' ' ')
+    if [[ "$st" == "install ok installed 4 payload types " ]]; then
+        echo "PASS  SG Office is installed: its programs, Get SG Office, its payload, its file types (no LibreOffice binary)"
+    else
+        echo "FAIL  SG Office is not installed as expected: $st"
+        RC=1
+    fi
+fi
+
 # Voice typing's model comes installed (make speech: the package
 # sg-speech-model-parakeet), root-owned so no user or SYSTEM can swap it, and it recognises
 # speech -- a sentence spoken by espeak-ng on the host, when that is there.
