@@ -4,7 +4,7 @@
 #   d3d-deb/build-deb.sh PAYLOAD_DIR OUT_DIR
 #
 # PAYLOAD_DIR is what `make d3d` stages: DXVK (the pinned release, with our
-# dxgi.dll -- dxvk/patches) and VKD3D-Proton, as PE DLLs, and a VERSION line.
+# dxgi.dll and d3d11.dll -- dxvk/patches) and VKD3D-Proton, as PE DLLs, and a VERSION line.
 # Packaged under /opt/sg-d3d, where sg-session's sg-install-d3d copies them
 # into the machine's Wine prefix (at the next boot when the version changed).
 # A package, so installed machines get a fixed DXVK with their updates, not
@@ -36,7 +36,7 @@ Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: DXVK; VKD3D-Proton
 Source: https://github.com/doitsujin/dxvk
  https://github.com/HansKristian-Work/vkd3d-proton
-Comment: DXVK's dxgi.dll is rebuilt with Stained Glass OS's patches, shipped
+Comment: DXVK's dxgi.dll and d3d11.dll are rebuilt with Stained Glass OS's patches, shipped
  beside it in /opt/sg-d3d/dxvk/patches.
 
 Files: opt/sg-d3d/dxvk/*
@@ -59,8 +59,9 @@ Section: misc
 Priority: optional
 Description: Direct3D for Stained Glass OS's Windows side (DXVK, VKD3D-Proton)
  DXVK (Direct3D 8-11) and VKD3D-Proton (Direct3D 12) as Windows DLLs, which
- sg-session installs into the machine's Wine prefix. DXVK's dxgi.dll is built
- with Stained Glass OS's patches (swap chains for composition).
+ sg-session installs into the machine's Wine prefix. DXVK's dxgi.dll and
+ d3d11.dll are built with Stained Glass OS's patches (swap chains for
+ composition, context states for WebGPU).
 CTRL
 
 mkdir -p "$OUT"

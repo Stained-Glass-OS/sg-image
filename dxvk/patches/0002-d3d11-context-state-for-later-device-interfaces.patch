@@ -1,0 +1,31 @@
+From: Stained Glass OS <ke7oxh@gmail.com>
+Subject: [PATCH] d3d11: context states for the later device interfaces
+
+CreateDeviceContextState took only ID3D10Device, ID3D10Device1,
+ID3D11Device and ID3D11Device1 as the emulated interface. Chromium's WebGPU
+(Dawn) asks for ID3D11Device5 and then ID3D11Device3, which Windows
+accepts, so Chrome and Edge had no WebGPU and Graphite under DXVK.
+---
+diff --git a/src/d3d11/d3d11_device.cpp b/src/d3d11/d3d11_device.cpp
+index 97df7a0..a4b8b66 100644
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -1326,10 +1326,17 @@ namespace dxvk {
+     if (!pFeatureLevels || !FeatureLevels)
+       return E_INVALIDARG;
+ 
++    // Stained Glass OS: the later device interfaces too. Chromium's WebGPU
++    // (Dawn) asks for ID3D11Device5, then ID3D11Device3, and failed here
++    // ("CreateDeviceContextState E_INVALIDARG"), as it does not on Windows.
+     if (EmulatedInterface != __uuidof(ID3D10Device)
+      && EmulatedInterface != __uuidof(ID3D10Device1)
+      && EmulatedInterface != __uuidof(ID3D11Device)
+-     && EmulatedInterface != __uuidof(ID3D11Device1))
++     && EmulatedInterface != __uuidof(ID3D11Device1)
++     && EmulatedInterface != __uuidof(ID3D11Device2)
++     && EmulatedInterface != __uuidof(ID3D11Device3)
++     && EmulatedInterface != __uuidof(ID3D11Device4)
++     && EmulatedInterface != __uuidof(ID3D11Device5))
+       return E_INVALIDARG;
+ 
+     D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL();

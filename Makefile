@@ -17,7 +17,7 @@ SG_WINE     ?= ../wine-sg
 SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 
-.PHONY: splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test clean distclean
+.PHONY: splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
 
 all: image
 
@@ -134,9 +134,10 @@ VKD3D_VERSION := 3.0.1
 VKD3D_SHA256  := 3cf2315522af5e43605ef6d3c41dad91387040bf97199934f3f7ab76caaa2f0c
 DXVK_VERSION  := 3.1.1
 DXVK_SHA256   := 40565b4a724aadc4433fa4e010b4b23916d9b1f1baeee64e17186db94f54e608
-# DXVK's dxgi.dll is rebuilt from this commit of the tag with dxvk/patches
-# (swap chains for composition: Qt Quick and Chromium windows were black under
-# DXVK); the rest of DXVK is the release above.
+# DXVK's dxgi.dll and d3d11.dll are rebuilt from this commit of the tag with
+# dxvk/patches (swap chains for composition: Qt Quick and Chromium windows
+# were black under DXVK; context states Chromium's WebGPU asks for); the rest
+# of DXVK is the release above.
 DXVK_COMMIT   := b1a1c99ab52b687cf950d62c88bc2fa316b41663
 
 # Staged here and packaged as sg-d3d (d3d-deb/build-deb.sh), installed in the
@@ -183,6 +184,10 @@ d3d-deb: staged-debs d3d
 # test; WINE= a current wine-sg: DirectComposition is wine-sg's).
 dcomp-test: d3d
 	@test/dcomp-test.sh
+
+# Context states Chromium's WebGPU asks for (dxvk/patches/0002).
+ctxstate-test: d3d
+	@test/ctxstate-test.sh
 
 # --- bundled Windows applications -------------------------------------------
 
