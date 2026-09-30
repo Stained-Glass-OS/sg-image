@@ -35,6 +35,11 @@ for tree in "$SRCDIR/mkosi.extra" "$SRCDIR/build/extra-tree" "${OUTPUTDIR:-/none
     [ -d "$tree/usr/share/plymouth/themes/stained-glass" ] && cp -r "$tree/usr/share/plymouth/themes/stained-glass/." "$S/usr/share/plymouth/themes/stained-glass/"
     [ -f "$tree/etc/plymouth/plymouthd.conf" ] && cp "$tree/etc/plymouth/plymouthd.conf" "$S/etc/plymouth/"
 done
+# ... and when no tree is reachable here (the sandbox shows neither), draw it:
+# the picture is made by our own script from the source, as the Makefile does.
+[ -f "$S/usr/share/plymouth/themes/stained-glass/diamond.png" ] \
+    || python3 "$SRCDIR/splash/make-splash.py" "$S/usr/share/plymouth/themes/stained-glass/diamond.png" 192 \
+    || echo "mkosi.postoutput: could not draw diamond.png" >&2
 [ -f "$S/usr/share/plymouth/themes/stained-glass/stained-glass.plymouth" ] && [ -f "$S/etc/plymouth/plymouthd.conf" ] \
     && [ -f "$S/usr/share/plymouth/themes/stained-glass/diamond.png" ] \
     || { echo "mkosi.postoutput: the splash theme is missing" >&2; exit 1; }
