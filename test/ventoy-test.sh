@@ -77,7 +77,10 @@ for _ in $(seq 1 180); do
     # The live system's own setup (sg-live.service, in the root file system
     # the initrd attached) makes its "live" account: the ISO file is the
     # root. Reaching the login screen is boot-test's and iso-test's job.
-    if grep -q 'acct="live"' "$OUT/serial.log" 2>/dev/null; then rc=0; break; fi
+    # sg-live-setup says so on the console (sg-session 0.1.0-75); useradd's
+    # audit record is the older sign, dropped by the kernel's rate limit in a
+    # busy boot.
+    if grep -q 'sg-live-setup: made the live account\|acct="live"' "$OUT/serial.log" 2>/dev/null; then rc=0; break; fi
     if grep -q "Reached target emergency.target\|You are in emergency mode" "$OUT/serial.log" 2>/dev/null; then break; fi
     kill -0 "$QPID" 2>/dev/null || break
 done
