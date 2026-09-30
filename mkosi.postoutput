@@ -19,6 +19,36 @@ export MTOOLS_SKIP_CHECK=1
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+
+# --- the splash in the initrd ---------------------------------------------------
+# Plymouth itself is in the default initrd (mkosi.conf InitrdPackages); our theme
+# and plymouthd.conf ride in a small initrd of their own, loaded after mkosi's
+# (a later archive's files win), so the Stained Glass splash shows from the
+# first second instead of text until the root file system is up.
+S="$tmp/splash"
+mkdir -p "$S/usr/share/plymouth/themes/stained-glass" "$S/etc/plymouth"
+for tree in "$SRCDIR/mkosi.extra" "$SRCDIR/build/extra-tree"; do
+    [ -d "$tree/usr/share/plymouth/themes/stained-glass" ] && cp -r "$tree/usr/share/plymouth/themes/stained-glass/." "$S/usr/share/plymouth/themes/stained-glass/"
+    [ -f "$tree/etc/plymouth/plymouthd.conf" ] && cp "$tree/etc/plymouth/plymouthd.conf" "$S/etc/plymouth/"
+done
+[ -f "$S/usr/share/plymouth/themes/stained-glass/stained-glass.plymouth" ] && [ -f "$S/etc/plymouth/plymouthd.conf" ] \
+    || { echo "mkosi.postoutput: the splash theme is missing" >&2; exit 1; }
+ln -s stained-glass/stained-glass.plymouth "$S/usr/share/plymouth/themes/default.plymouth"
+(cd "$S" && find . -mindepth 1 | LC_ALL=C sort | cpio -o -H newc --quiet --owner=0:0) > "$tmp/sg-splash.initrd"
+# beside the entry's own initrds, in its entry-token directory: sg-install copies
+# that directory (not loader/) and rewrites its paths for the installed disk
+for e in $(mdir -b -i "$ESP" ::/loader/entries); do
+    case "$e" in *.conf) ;; *) continue ;; esac
+    case "$e" in *-live.conf) continue ;; esac
+    mtype -i "$ESP" "$e" | tr -d '\r' > "$tmp/entry"
+    tok=$(sed -n 's#^linux /\([^/]*\)/.*#\1#p' "$tmp/entry" | head -1)
+    [ -n "$tok" ] || { echo "mkosi.postoutput: $e has no linux line" >&2; exit 1; }
+    mcopy -o -i "$ESP" "$tmp/sg-splash.initrd" "::/$tok/sg-splash.initrd"
+    grep -q "^initrd /$tok/sg-splash.initrd" "$tmp/entry" || echo "initrd /$tok/sg-splash.initrd" >> "$tmp/entry"
+    mcopy -o -i "$ESP" "$tmp/entry" "$e"
+    echo "mkosi.postoutput: splash initrd in ${e##*/} (/$tok)"
+done
+
 n=0
 for e in $(mdir -b -i "$ESP" ::/loader/entries); do
     case "$e" in *.conf) ;; *) continue ;; esac

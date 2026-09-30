@@ -392,6 +392,18 @@ if [[ "${SG_GUEST_CHECK:-session}" == session ]]; then
     fi
 fi
 
+# The splash from the first second (David 2026-09-29: hide the Linux boot
+# text behind a loading screen): the boot entry loads sg-splash.initrd; Plymouth
+# and our theme are in the initrds; and the splash started in the initrd, before
+# the switch to the real root (it only started after it, text until then).
+st=$(ssh_guest 'E=$(bootctl --print-boot-path 2>/dev/null || bootctl --print-esp-path 2>/dev/null); f=$(ls "$E"/loader/entries/*.conf 2>/dev/null | grep -v -- -live.conf | head -1); grep -c "^initrd /[^/]*/sg-splash.initrd" "$f"; for i in $(sed -n "s/^initrd //p" "$f"); do zstd -dc "$E$i" 2>/dev/null || cat "$E$i"; done | cpio -t 2>/dev/null | grep -cE "^usr/(s)?bin/plymouthd$|themes/stained-glass/stained-glass.script$"; journalctl -b -o cat --no-pager | awk "/Plymouth Boot Screen/{if(!p)p=NR} /Switching root/{if(!r)r=NR} END{print (p && r && p < r) ? \"early\" : \"late\"}"' 2>/dev/null | tr '\n' ' ')
+if [[ "$st" == "1 2 early " ]]; then
+    echo "PASS  the splash is in the initrd: Plymouth and our theme, shown before the switch to the real root"
+else
+    echo "FAIL  boot splash: $st (want: entry loads sg-splash.initrd, plymouthd + theme in the initrds, splash before switch-root)"
+    RC=1
+fi
+
 # One Debian source: mkosi's build-time <release>.sources (deb-src, the -debug
 # archive, "main" twice) is not left beside debian.sources -- apt warned
 # "Target Packages ... is configured multiple times" on every update (David
