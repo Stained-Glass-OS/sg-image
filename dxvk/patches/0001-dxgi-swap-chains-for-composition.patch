@@ -1,0 +1,645 @@
+From: Stained Glass OS <ke7oxh@gmail.com>
+Subject: [PATCH] dxgi: swap chains for composition
+
+CreateSwapChainForComposition made no swap chain (or, with
+dxgi.enableDummyCompositionSwapchain, one that never showed), so programs
+that draw with DirectComposition -- Qt Quick windows (Audacity 4),
+Chromium's swap-chain output -- showed a black or empty window when DXVK
+provides Direct3D. As in Wine's own dxgi on Stained Glass OS: the back
+buffer is an ordinary Direct3D 11 texture; DirectComposition names the
+window and offset that show it through IWineDXGICompositionSwapChain
+(wine-sg patch 0191); Present reads the frame back and draws it there with
+GDI. Direct3D 11 devices only.
+
+diff --git a/src/dxgi/dxgi_composition.cpp b/src/dxgi/dxgi_composition.cpp
+new file mode 100644
+index 0000000..2e0b77a
+--- /dev/null
++++ b/src/dxgi/dxgi_composition.cpp
+@@ -0,0 +1,431 @@
++#include "dxgi_composition.h"
++#include "dxgi_factory.h"
++
++namespace dxvk {
++
++  DxgiCompositionSwapChain::DxgiCompositionSwapChain(
++          DxgiFactory*                pFactory,
++          ID3D11Device*               pDevice,
++    const DXGI_SWAP_CHAIN_DESC1*      pDesc)
++  : m_factory(pFactory), m_device(pDevice), m_desc(*pDesc) {
++    m_device->GetImmediateContext(&m_context);
++    if (!m_desc.BufferCount)
++      m_desc.BufferCount = 2;
++  }
++
++
++  DxgiCompositionSwapChain::~DxgiCompositionSwapChain() {
++    if (m_latencyEvent)
++      CloseHandle(m_latencyEvent);
++  }
++
++
++  HRESULT DxgiCompositionSwapChain::Init() {
++    return CreateBuffers();
++  }
++
++
++  HRESULT DxgiCompositionSwapChain::CreateBuffers() {
++    D3D11_TEXTURE2D_DESC desc = { };
++    desc.Width = std::max(m_desc.Width, 1u);
++    desc.Height = std::max(m_desc.Height, 1u);
++    desc.MipLevels = 1;
++    desc.ArraySize = 1;
++    desc.Format = m_desc.Format;
++    desc.SampleDesc.Count = 1;
++    desc.Usage = D3D11_USAGE_DEFAULT;
++    desc.BindFlags = D3D11_BIND_RENDER_TARGET;
++    if (m_desc.BufferUsage & DXGI_USAGE_SHADER_INPUT)
++      desc.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
++    if (m_desc.BufferUsage & DXGI_USAGE_UNORDERED_ACCESS)
++      desc.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
++
++    m_buffer = nullptr;
++    m_staging = nullptr;
++
++    HRESULT hr = m_device->CreateTexture2D(&desc, nullptr, &m_buffer);
++    if (FAILED(hr)) {
++      Logger::err(str::format("DxgiCompositionSwapChain: Failed to create back buffer, hr ", hr));
++      return hr;
++    }
++
++    desc.Usage = D3D11_USAGE_STAGING;
++    desc.BindFlags = 0;
++    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
++    hr = m_device->CreateTexture2D(&desc, nullptr, &m_staging);
++    if (FAILED(hr))
++      Logger::err(str::format("DxgiCompositionSwapChain: Failed to create staging buffer, hr ", hr));
++    return hr;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::QueryInterface(REFIID riid, void** ppvObject) {
++    if (ppvObject == nullptr)
++      return E_POINTER;
++
++    *ppvObject = nullptr;
++
++    if (riid == __uuidof(IUnknown)
++     || riid == __uuidof(IDXGIObject)
++     || riid == __uuidof(IDXGIDeviceSubObject)
++     || riid == __uuidof(IDXGISwapChain)
++     || riid == __uuidof(IDXGISwapChain1)
++     || riid == __uuidof(IDXGISwapChain2)
++     || riid == __uuidof(IDXGISwapChain3)
++     || riid == __uuidof(IDXGISwapChain4)) {
++      *ppvObject = ref(static_cast<IDXGISwapChain4*>(this));
++      return S_OK;
++    }
++
++    if (riid == __uuidof(IWineDXGICompositionSwapChain)) {
++      AddRef();
++      *ppvObject = static_cast<IWineDXGICompositionSwapChain*>(this);
++      return S_OK;
++    }
++
++    return E_NOINTERFACE;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::set_target(HWND window, int x, int y) {
++    std::lock_guard<std::mutex> lock(m_mutex);
++    m_window = window;
++    m_x = x;
++    m_y = y;
++    return S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetParent(REFIID riid, void** ppParent) {
++    return m_factory->QueryInterface(riid, ppParent);
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetDevice(REFIID riid, void** ppDevice) {
++    return m_device->QueryInterface(riid, ppDevice);
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::Present(UINT SyncInterval, UINT Flags) {
++    if (Flags & DXGI_PRESENT_TEST)
++      return S_OK;
++
++    m_presents++;
++
++    if (!m_buffer || !m_staging)
++      return S_OK;
++
++    /* the frame, read back */
++    m_context->CopyResource(m_staging.ptr(), m_buffer.ptr());
++
++    D3D11_MAPPED_SUBRESOURCE map;
++    if (FAILED(m_context->Map(m_staging.ptr(), 0, D3D11_MAP_READ, 0, &map)))
++      return S_OK;
++
++    UINT w = std::max(m_desc.Width, 1u), h = std::max(m_desc.Height, 1u);
++    bool rgba = m_desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM || m_desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
++    bool bgra = m_desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || m_desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
++
++    {
++      std::lock_guard<std::mutex> lock(m_mutex);
++      m_frame.resize(size_t(w) * h);
++      m_frameWidth = w;
++      m_frameHeight = h;
++      for (UINT y = 0; y < h; y++) {
++        const uint32_t* src = reinterpret_cast<const uint32_t*>(static_cast<const char*>(map.pData) + size_t(y) * map.RowPitch);
++        uint32_t* dst = &m_frame[size_t(y) * w];
++        if (bgra) {
++          std::memcpy(dst, src, size_t(w) * 4);
++        } else if (rgba) {
++          for (UINT x = 0; x < w; x++) {
++            uint32_t p = src[x];
++            dst[x] = (p & 0xff00ff00u) | ((p & 0xffu) << 16) | ((p >> 16) & 0xffu);
++          }
++        } else {
++          /* other formats are not drawn: say so once, show grey */
++          if (m_presents == 1)
++            Logger::warn(str::format("DxgiCompositionSwapChain: Format ", m_desc.Format, " not drawn"));
++          std::fill(dst, dst + w, 0xff808080u);
++        }
++      }
++    }
++
++    m_context->Unmap(m_staging.ptr(), 0);
++    Draw();
++    return S_OK;
++  }
++
++
++  void DxgiCompositionSwapChain::Draw() {
++    std::lock_guard<std::mutex> lock(m_mutex);
++
++    if (!m_window || !IsWindow(m_window) || m_frame.empty())
++      return;
++
++    HDC dc = GetDCEx(m_window, nullptr, DCX_CACHE | DCX_CLIPSIBLINGS);
++    if (!dc)
++      return;
++
++    BITMAPINFO bmi = { };
++    bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
++    bmi.bmiHeader.biWidth = LONG(m_frameWidth);
++    bmi.bmiHeader.biHeight = -LONG(m_frameHeight);
++    bmi.bmiHeader.biPlanes = 1;
++    bmi.bmiHeader.biBitCount = 32;
++    bmi.bmiHeader.biCompression = BI_RGB;
++
++    SetDIBitsToDevice(dc, m_x, m_y, m_frameWidth, m_frameHeight,
++      0, 0, 0, m_frameHeight, m_frame.data(), &bmi, DIB_RGB_COLORS);
++    ReleaseDC(m_window, dc);
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetBuffer(UINT Buffer, REFIID riid, void** ppSurface) {
++    if (!ppSurface)
++      return DXGI_ERROR_INVALID_CALL;
++    *ppSurface = nullptr;
++    if (Buffer >= m_desc.BufferCount || !m_buffer)
++      return DXGI_ERROR_INVALID_CALL;
++    /* the one texture stands for every buffer: a composition swap chain's
++     * back buffer keeps its contents across presents */
++    return m_buffer->QueryInterface(riid, ppSurface);
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::SetFullscreenState(BOOL Fullscreen, IDXGIOutput* pTarget) {
++    return Fullscreen ? DXGI_ERROR_INVALID_CALL : S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetFullscreenState(BOOL* pFullscreen, IDXGIOutput** ppTarget) {
++    if (pFullscreen)
++      *pFullscreen = FALSE;
++    if (ppTarget)
++      *ppTarget = nullptr;
++    return S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetDesc(DXGI_SWAP_CHAIN_DESC* pDesc) {
++    if (!pDesc)
++      return E_INVALIDARG;
++    *pDesc = { };
++    pDesc->BufferDesc.Width = m_desc.Width;
++    pDesc->BufferDesc.Height = m_desc.Height;
++    pDesc->BufferDesc.Format = m_desc.Format;
++    pDesc->BufferDesc.Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
++    pDesc->SampleDesc = m_desc.SampleDesc;
++    pDesc->BufferUsage = m_desc.BufferUsage;
++    pDesc->BufferCount = m_desc.BufferCount;
++    pDesc->OutputWindow = nullptr;
++    pDesc->Windowed = TRUE;
++    pDesc->SwapEffect = m_desc.SwapEffect;
++    pDesc->Flags = m_desc.Flags;
++    return S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::ResizeBuffers(UINT BufferCount, UINT Width, UINT Height,
++          DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
++    if (BufferCount)
++      m_desc.BufferCount = BufferCount;
++    if (Width)
++      m_desc.Width = Width;
++    if (Height)
++      m_desc.Height = Height;
++    if (NewFormat != DXGI_FORMAT_UNKNOWN)
++      m_desc.Format = NewFormat;
++    m_desc.Flags = SwapChainFlags;
++    return CreateBuffers();
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::ResizeTarget(const DXGI_MODE_DESC* pNewTargetParameters) {
++    return DXGI_ERROR_INVALID_CALL;   /* no window of its own */
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetContainingOutput(IDXGIOutput** ppOutput) {
++    InitReturnPtr(ppOutput);
++    return DXGI_ERROR_UNSUPPORTED;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetFrameStatistics(DXGI_FRAME_STATISTICS* pStats) {
++    return DXGI_ERROR_FRAME_STATISTICS_DISJOINT;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetLastPresentCount(UINT* pLastPresentCount) {
++    if (!pLastPresentCount)
++      return E_INVALIDARG;
++    *pLastPresentCount = m_presents;
++    return S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetDesc1(DXGI_SWAP_CHAIN_DESC1* pDesc) {
++    if (!pDesc)
++      return E_INVALIDARG;
++    *pDesc = m_desc;
++    return S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetFullscreenDesc(DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pDesc) {
++    return DXGI_ERROR_INVALID_CALL;   /* as on Windows, for composition */
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetHwnd(HWND* pHwnd) {
++    if (pHwnd)
++      *pHwnd = nullptr;
++    return DXGI_ERROR_INVALID_CALL;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetCoreWindow(REFIID refiid, void** ppUnk) {
++    InitReturnPtr(ppUnk);
++    return DXGI_ERROR_INVALID_CALL;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::Present1(UINT SyncInterval, UINT PresentFlags,
++          const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
++    return Present(SyncInterval, PresentFlags);
++  }
++
++
++  BOOL STDMETHODCALLTYPE DxgiCompositionSwapChain::IsTemporaryMonoSupported() {
++    return FALSE;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetRestrictToOutput(IDXGIOutput** ppRestrictToOutput) {
++    InitReturnPtr(ppRestrictToOutput);
++    return S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::SetBackgroundColor(const DXGI_RGBA* pColor) {
++    if (!pColor)
++      return E_INVALIDARG;
++    m_background = *pColor;
++    return S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetBackgroundColor(DXGI_RGBA* pColor) {
++    if (!pColor)
++      return E_INVALIDARG;
++    *pColor = m_background;
++    return S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::SetRotation(DXGI_MODE_ROTATION Rotation) {
++    return Rotation == DXGI_MODE_ROTATION_IDENTITY || Rotation == DXGI_MODE_ROTATION_UNSPECIFIED
++      ? S_OK : DXGI_ERROR_INVALID_CALL;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetRotation(DXGI_MODE_ROTATION* pRotation) {
++    if (!pRotation)
++      return E_INVALIDARG;
++    *pRotation = DXGI_MODE_ROTATION_IDENTITY;
++    return S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::SetSourceSize(UINT Width, UINT Height) {
++    if (!Width || !Height || Width > m_desc.Width || Height > m_desc.Height)
++      return E_INVALIDARG;
++    return S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetSourceSize(UINT* pWidth, UINT* pHeight) {
++    if (pWidth)
++      *pWidth = m_desc.Width;
++    if (pHeight)
++      *pHeight = m_desc.Height;
++    return S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::SetMaximumFrameLatency(UINT MaxLatency) {
++    if (!MaxLatency)
++      return E_INVALIDARG;
++    m_latency = MaxLatency;
++    return S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetMaximumFrameLatency(UINT* pMaxLatency) {
++    if (!pMaxLatency)
++      return E_INVALIDARG;
++    *pMaxLatency = m_latency;
++    return S_OK;
++  }
++
++
++  HANDLE STDMETHODCALLTYPE DxgiCompositionSwapChain::GetFrameLatencyWaitableObject() {
++    /* presents complete at once: always signalled */
++    if (!m_latencyEvent)
++      m_latencyEvent = CreateEventW(nullptr, TRUE, TRUE, nullptr);
++    HANDLE handle = nullptr;
++    DuplicateHandle(GetCurrentProcess(), m_latencyEvent, GetCurrentProcess(), &handle,
++      0, FALSE, DUPLICATE_SAME_ACCESS);
++    return handle;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::SetMatrixTransform(const DXGI_MATRIX_3X2_F* pMatrix) {
++    if (!pMatrix)
++      return E_INVALIDARG;
++    m_matrix = *pMatrix;
++    return S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetMatrixTransform(DXGI_MATRIX_3X2_F* pMatrix) {
++    if (!pMatrix)
++      return E_INVALIDARG;
++    *pMatrix = m_matrix;
++    return S_OK;
++  }
++
++
++  UINT STDMETHODCALLTYPE DxgiCompositionSwapChain::GetCurrentBackBufferIndex() {
++    return 0;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::CheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE ColorSpace,
++          UINT* pColorSpaceSupport) {
++    if (!pColorSpaceSupport)
++      return E_INVALIDARG;
++    *pColorSpaceSupport = ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709
++      ? DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT : 0;
++    return S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::SetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace) {
++    return ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709 ? S_OK : E_INVALIDARG;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::ResizeBuffers1(UINT BufferCount, UINT Width, UINT Height,
++          DXGI_FORMAT Format, UINT SwapChainFlags, const UINT* pCreationNodeMask,
++          IUnknown* const* ppPresentQueue) {
++    return ResizeBuffers(BufferCount, Width, Height, Format, SwapChainFlags);
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiCompositionSwapChain::SetHDRMetaData(DXGI_HDR_METADATA_TYPE Type,
++          UINT Size, void* pMetaData) {
++    return Type == DXGI_HDR_METADATA_TYPE_NONE ? S_OK : DXGI_ERROR_UNSUPPORTED;
++  }
++
++}
+diff --git a/src/dxgi/dxgi_composition.h b/src/dxgi/dxgi_composition.h
+new file mode 100644
+index 0000000..c124ed6
+--- /dev/null
++++ b/src/dxgi/dxgi_composition.h
+@@ -0,0 +1,138 @@
++#pragma once
++
++#include <mutex>
++
++#include "dxgi_object.h"
++
++#include <d3d11.h>
++
++/**
++ * \brief Wine's composition swap chain target (Stained Glass OS)
++ *
++ * The private interface wine-sg's DirectComposition uses to tell a swap
++ * chain made by CreateSwapChainForComposition which window shows it and at
++ * what offset, when the visual holding it is committed. The same interface
++ * and IID as Wine's own dxgi (include/wine/winedxgi.idl).
++ */
++MIDL_INTERFACE("7c3f5d2e-9a41-4b8e-b6d3-2f0e8a1c5b94")
++IWineDXGICompositionSwapChain : public IUnknown {
++  virtual HRESULT STDMETHODCALLTYPE set_target(HWND window, int x, int y) = 0;
++};
++
++#ifndef _MSC_VER
++__CRT_UUID_DECL(IWineDXGICompositionSwapChain, 0x7c3f5d2e,0x9a41,0x4b8e,0xb6,0xd3,0x2f,0x0e,0x8a,0x1c,0x5b,0x94);
++#endif
++
++namespace dxvk {
++
++  class DxgiFactory;
++
++  /**
++   * \brief A swap chain for composition (Stained Glass OS)
++   *
++   * CreateSwapChainForComposition made no swap chain at all, so a program
++   * that draws with DirectComposition -- Qt Quick windows, Chromium's
++   * swap-chain output -- showed nothing when DXVK provides Direct3D. As in
++   * wine-sg's dxgi: the back buffer is an ordinary texture, DirectComposition
++   * names the window and offset that show it, and Present reads the frame
++   * back and draws it there with GDI.
++   */
++  class DxgiCompositionSwapChain : public DxgiObject<IDXGISwapChain4>, public IWineDXGICompositionSwapChain {
++
++  public:
++
++    DxgiCompositionSwapChain(
++            DxgiFactory*                pFactory,
++            ID3D11Device*               pDevice,
++      const DXGI_SWAP_CHAIN_DESC1*      pDesc);
++
++    ~DxgiCompositionSwapChain();
++
++    HRESULT Init();
++
++    ULONG STDMETHODCALLTYPE AddRef() final { return DxgiObject<IDXGISwapChain4>::AddRef(); }
++    ULONG STDMETHODCALLTYPE Release() final { return DxgiObject<IDXGISwapChain4>::Release(); }
++
++    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) final;
++
++    /* IWineDXGICompositionSwapChain */
++    HRESULT STDMETHODCALLTYPE set_target(HWND window, int x, int y) final;
++
++    /* IDXGIObject, IDXGIDeviceSubObject */
++    HRESULT STDMETHODCALLTYPE GetParent(REFIID riid, void** ppParent) final;
++    HRESULT STDMETHODCALLTYPE GetDevice(REFIID riid, void** ppDevice) final;
++
++    /* IDXGISwapChain */
++    HRESULT STDMETHODCALLTYPE Present(UINT SyncInterval, UINT Flags) final;
++    HRESULT STDMETHODCALLTYPE GetBuffer(UINT Buffer, REFIID riid, void** ppSurface) final;
++    HRESULT STDMETHODCALLTYPE SetFullscreenState(BOOL Fullscreen, IDXGIOutput* pTarget) final;
++    HRESULT STDMETHODCALLTYPE GetFullscreenState(BOOL* pFullscreen, IDXGIOutput** ppTarget) final;
++    HRESULT STDMETHODCALLTYPE GetDesc(DXGI_SWAP_CHAIN_DESC* pDesc) final;
++    HRESULT STDMETHODCALLTYPE ResizeBuffers(UINT BufferCount, UINT Width, UINT Height,
++            DXGI_FORMAT NewFormat, UINT SwapChainFlags) final;
++    HRESULT STDMETHODCALLTYPE ResizeTarget(const DXGI_MODE_DESC* pNewTargetParameters) final;
++    HRESULT STDMETHODCALLTYPE GetContainingOutput(IDXGIOutput** ppOutput) final;
++    HRESULT STDMETHODCALLTYPE GetFrameStatistics(DXGI_FRAME_STATISTICS* pStats) final;
++    HRESULT STDMETHODCALLTYPE GetLastPresentCount(UINT* pLastPresentCount) final;
++
++    /* IDXGISwapChain1 */
++    HRESULT STDMETHODCALLTYPE GetDesc1(DXGI_SWAP_CHAIN_DESC1* pDesc) final;
++    HRESULT STDMETHODCALLTYPE GetFullscreenDesc(DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pDesc) final;
++    HRESULT STDMETHODCALLTYPE GetHwnd(HWND* pHwnd) final;
++    HRESULT STDMETHODCALLTYPE GetCoreWindow(REFIID refiid, void** ppUnk) final;
++    HRESULT STDMETHODCALLTYPE Present1(UINT SyncInterval, UINT PresentFlags,
++            const DXGI_PRESENT_PARAMETERS* pPresentParameters) final;
++    BOOL STDMETHODCALLTYPE IsTemporaryMonoSupported() final;
++    HRESULT STDMETHODCALLTYPE GetRestrictToOutput(IDXGIOutput** ppRestrictToOutput) final;
++    HRESULT STDMETHODCALLTYPE SetBackgroundColor(const DXGI_RGBA* pColor) final;
++    HRESULT STDMETHODCALLTYPE GetBackgroundColor(DXGI_RGBA* pColor) final;
++    HRESULT STDMETHODCALLTYPE SetRotation(DXGI_MODE_ROTATION Rotation) final;
++    HRESULT STDMETHODCALLTYPE GetRotation(DXGI_MODE_ROTATION* pRotation) final;
++
++    /* IDXGISwapChain2 */
++    HRESULT STDMETHODCALLTYPE SetSourceSize(UINT Width, UINT Height) final;
++    HRESULT STDMETHODCALLTYPE GetSourceSize(UINT* pWidth, UINT* pHeight) final;
++    HRESULT STDMETHODCALLTYPE SetMaximumFrameLatency(UINT MaxLatency) final;
++    HRESULT STDMETHODCALLTYPE GetMaximumFrameLatency(UINT* pMaxLatency) final;
++    HANDLE STDMETHODCALLTYPE GetFrameLatencyWaitableObject() final;
++    HRESULT STDMETHODCALLTYPE SetMatrixTransform(const DXGI_MATRIX_3X2_F* pMatrix) final;
++    HRESULT STDMETHODCALLTYPE GetMatrixTransform(DXGI_MATRIX_3X2_F* pMatrix) final;
++
++    /* IDXGISwapChain3 */
++    UINT STDMETHODCALLTYPE GetCurrentBackBufferIndex() final;
++    HRESULT STDMETHODCALLTYPE CheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE ColorSpace,
++            UINT* pColorSpaceSupport) final;
++    HRESULT STDMETHODCALLTYPE SetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace) final;
++    HRESULT STDMETHODCALLTYPE ResizeBuffers1(UINT BufferCount, UINT Width, UINT Height,
++            DXGI_FORMAT Format, UINT SwapChainFlags, const UINT* pCreationNodeMask,
++            IUnknown* const* ppPresentQueue) final;
++
++    /* IDXGISwapChain4 */
++    HRESULT STDMETHODCALLTYPE SetHDRMetaData(DXGI_HDR_METADATA_TYPE Type, UINT Size, void* pMetaData) final;
++
++  private:
++
++    HRESULT CreateBuffers();
++    void Draw();
++
++    Com<DxgiFactory, false>     m_factory;
++    Com<ID3D11Device>           m_device;
++    Com<ID3D11DeviceContext>    m_context;
++    Com<ID3D11Texture2D>        m_buffer;
++    Com<ID3D11Texture2D>        m_staging;
++    DXGI_SWAP_CHAIN_DESC1       m_desc;
++    DXGI_RGBA                   m_background = { 0.0f, 0.0f, 0.0f, 1.0f };
++    DXGI_MATRIX_3X2_F           m_matrix = { 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
++    UINT                        m_latency = 1;
++    UINT                        m_presents = 0;
++    HANDLE                      m_latencyEvent = nullptr;
++
++    std::mutex                  m_mutex;      /* the target and the last frame */
++    HWND                        m_window = nullptr;
++    int                         m_x = 0, m_y = 0;
++    std::vector<uint32_t>       m_frame;      /* the last presented frame, BGRA top-down */
++    UINT                        m_frameWidth = 0, m_frameHeight = 0;
++
++  };
++
++}
+diff --git a/src/dxgi/dxgi_factory.cpp b/src/dxgi/dxgi_factory.cpp
+index d89409e..470f411 100644
+--- a/src/dxgi/dxgi_factory.cpp
++++ b/src/dxgi/dxgi_factory.cpp
+@@ -1,6 +1,7 @@
+ #include <algorithm>
+ 
+ #include "dxgi_factory.h"
++#include "dxgi_composition.h"
+ #include "dxgi_surface.h"
+ #include "dxgi_swapchain.h"
+ #include "dxgi_swapchain_dispatcher.h"
+@@ -287,8 +288,24 @@ namespace dxvk {
+     InitReturnPtr(ppSwapChain);
+ 
+     if (!m_options->enableDummyCompositionSwapchain) {
+-      Logger::err("DxgiFactory::CreateSwapChainForComposition: Not implemented");
+-      return E_NOTIMPL;
++      /* Stained Glass OS: a composition swap chain DirectComposition can
++       * show (wine-sg's dcomp names its window), Direct3D 11 devices */
++      if (!ppSwapChain || !pDesc || !pDevice)
++        return DXGI_ERROR_INVALID_CALL;
++
++      Com<ID3D11Device> d3d11;
++      if (FAILED(pDevice->QueryInterface(__uuidof(ID3D11Device), reinterpret_cast<void**>(&d3d11)))) {
++        Logger::err("DxgiFactory::CreateSwapChainForComposition: Not implemented for this device");
++        return E_NOTIMPL;
++      }
++
++      Com<DxgiCompositionSwapChain> swapchain = new DxgiCompositionSwapChain(this, d3d11.ptr(), pDesc);
++      HRESULT hr = swapchain->Init();
++      if (FAILED(hr))
++        return hr;
++
++      *ppSwapChain = swapchain.ref();
++      return S_OK;
+     }
+ 
+     Logger::warn("DxgiFactory::CreateSwapChainForComposition: Creating dummy swap chain");
+diff --git a/src/dxgi/meson.build b/src/dxgi/meson.build
+index a9ed5e7..1533ce2 100644
+--- a/src/dxgi/meson.build
++++ b/src/dxgi/meson.build
+@@ -11,6 +11,7 @@ dxgi_src = [
+   'dxgi_output.cpp',
+   'dxgi_surface.cpp',
+   'dxgi_swapchain.cpp',
++  'dxgi_composition.cpp',
+ ]
+ 
+ dxgi_ld_args      = []
