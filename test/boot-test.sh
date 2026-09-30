@@ -139,6 +139,16 @@ qemu_args+=(-smbios "type=11,value=io.systemd.credential.binary:ssh.authorized_k
 qemu-system-x86_64 "${qemu_args[@]}" &
 QEMU_PID=$!
 
+# The screen while the machine starts, every two seconds until ssh is up: the
+# splash check below looks for our splash among these frames.
+mkdir -p "$QMP_DIR/frames"
+( sleep 2; n=0
+  while kill -0 "$QEMU_PID" 2>/dev/null && [[ ! -e "$QMP_DIR/frames/stop" ]] && (( n < 90 )); do
+      python3 "$HERE/test/qmp.py" "$QMP_SOCK" screendump "$QMP_DIR/frames/$(printf %03d $n).ppm" >/dev/null 2>&1 || true
+      n=$((n + 1)); sleep 2
+  done ) &
+FRAMES_PID=$!
+
 ssh_guest() {
     ssh -i "$SSH_KEY" \
         -o StrictHostKeyChecking=no \
@@ -166,6 +176,10 @@ until ssh_guest true 2>/dev/null; do
     sleep 5
 done
 log "ssh is up after $(( BOOT_TIMEOUT - (deadline - SECONDS) ))s"
+# the splash stays until the login screen (plymouth-quit waits for the prefix):
+# keep watching a little longer, then give QMP back to the checks
+sleep 6
+touch "$QMP_DIR/frames/stop"; wait "$FRAMES_PID" 2>/dev/null || true
 
 # --- the actual check ------------------------------------------------------
 # Which guest-side check to run is selectable so the same QEMU, ssh and QMP
@@ -403,6 +417,25 @@ if [[ "$st" == "1 1 early " ]]; then
     echo "PASS  the splash is in the initrd: Plymouth and our theme, shown before the switch to the real root"
 else
     echo "FAIL  boot splash: $st (want: entry loads sg-splash.initrd, our theme in it, splash before switch-root)"
+    RC=1
+fi
+
+# ... and the splash was on the screen, not Plymouth's text fallback: with a
+# serial console on the command line (console=ttyS0, ours) Plymouth forced its
+# text "details" mode and never drew the theme unless told
+# plymouth.ignore-serial-consoles (found 2026-09-30).
+if python3 "$HERE/test/splash-frames.py" "$QMP_DIR"/frames/*.ppm; then
+    echo "PASS  the boot showed the splash (the diamond on its background), not text"
+else
+    echo "FAIL  no frame of the boot showed the splash"
+    cp "$QMP_DIR"/frames/0[0-2]?.ppm "$ARTIFACTS/" 2>/dev/null || true
+    RC=1
+fi
+st=$(ssh_guest 'systemctl show -p After plymouth-reboot.service plymouth-poweroff.service plymouth-quit.service | grep -c "user.slice\|sg-prefix-init"; dpkg -s plymouth-label >/dev/null 2>&1 && echo label' 2>/dev/null | tr '\n' ' ')
+if [[ "$st" == "3 label " ]]; then
+    echo "PASS  the shutdown splash waits for the sessions, the boot splash for the login screen, and can write words"
+else
+    echo "FAIL  splash ordering/label: $st (want: 3 label)"
     RC=1
 fi
 

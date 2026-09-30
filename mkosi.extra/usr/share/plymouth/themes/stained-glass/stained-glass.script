@@ -22,6 +22,37 @@ fun refresh_callback ()
 }
 Plymouth.SetRefreshFunction(refresh_callback);
 
+# What the machine is doing, under the diamond, as a PC says it: nothing while
+# it starts; "Restarting", "Shutting down"; and while updates install at a
+# restart, "Working on updates  45%" and not to turn it off (the offline update
+# reports its progress to Plymouth).
+status_sprite = Sprite();
+note_sprite = Sprite();
+fun show_status (text, note)
+{
+    img = Image.Text(text, 0.92, 0.92, 0.92, 1, "Sans 15");
+    status_sprite.SetImage(img);
+    status_sprite.SetX(Window.GetX() + Window.GetWidth() / 2 - img.GetWidth() / 2);
+    status_sprite.SetY(Window.GetY() + Window.GetHeight() / 2 + diamond.image.GetHeight() / 2 + 48);
+    nimg = Image.Text(note, 0.7, 0.7, 0.7, 1, "Sans 11");
+    note_sprite.SetImage(nimg);
+    note_sprite.SetX(Window.GetX() + Window.GetWidth() / 2 - nimg.GetWidth() / 2);
+    note_sprite.SetY(Window.GetY() + Window.GetHeight() / 2 + diamond.image.GetHeight() / 2 + 84);
+}
+mode = Plymouth.GetMode();
+if (mode == "shutdown")
+    show_status("Shutting down", "");
+else if (mode == "reboot")
+    show_status("Restarting", "");
+else if (mode == "updates" || mode == "system-upgrade" || mode == "firmware-upgrade")
+    show_status("Working on updates", "Don't turn off your computer");
+
+fun update_callback (progress)
+{
+    show_status("Working on updates  " + Math.Int(progress) + "%", "Don't turn off your computer");
+}
+Plymouth.SetSystemUpdateFunction(update_callback);
+
 # Nothing here asks for a password (no encrypted disks); a message from the
 # system (an offline update) is shown under the diamond.
 message_sprite = Sprite();
@@ -30,6 +61,6 @@ fun message_callback (text)
     img = Image.Text(text, 0.85, 0.85, 0.85);
     message_sprite.SetImage(img);
     message_sprite.SetX(Window.GetX() + Window.GetWidth() / 2 - img.GetWidth() / 2);
-    message_sprite.SetY(Window.GetY() + Window.GetHeight() / 2 + diamond.image.GetHeight() / 2 + 40);
+    message_sprite.SetY(Window.GetY() + Window.GetHeight() / 2 + diamond.image.GetHeight() / 2 + 120);
 }
 Plymouth.SetMessageFunction(message_callback);
