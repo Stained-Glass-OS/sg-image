@@ -17,7 +17,7 @@ SG_WINE     ?= ../wine-sg
 SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 
-.PHONY: splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d dcomp-test clean distclean
+.PHONY: splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test clean distclean
 
 all: image
 
@@ -139,12 +139,16 @@ DXVK_SHA256   := 40565b4a724aadc4433fa4e010b4b23916d9b1f1baeee64e17186db94f54e60
 # DXVK); the rest of DXVK is the release above.
 DXVK_COMMIT   := b1a1c99ab52b687cf950d62c88bc2fa316b41663
 
-D3D_DIR   := $(EXTRA_TREE)/opt/sg-d3d
+# Staged here and packaged as sg-d3d (d3d-deb/build-deb.sh), installed in the
+# image and published on the apt site: installed machines get a fixed DXVK
+# with their updates, not only machines made from a new image.
+D3D_DIR   := $(BUILD)/d3d-payload
 D3D_CACHE := $(BUILD)/d3d-cache
 
 d3d: $(D3D_DIR)/VERSION
 
 $(D3D_DIR)/VERSION: Makefile dxvk/build-dxgi.sh $(wildcard dxvk/patches/*.patch)
+	@rm -rf $(EXTRA_TREE)/opt/sg-d3d
 	@mkdir -p $(D3D_CACHE) $(D3D_DIR)
 	@rm -rf $(D3D_DIR)/dxvk $(D3D_DIR)/vkd3d-proton
 	@set -e; \
@@ -168,6 +172,12 @@ $(D3D_DIR)/VERSION: Makefile dxvk/build-dxgi.sh $(wildcard dxvk/patches/*.patch)
 	@dxvk/build-dxgi.sh $(DXVK_VERSION) $(DXVK_COMMIT) $(abspath $(D3D_CACHE)) $(abspath $(D3D_DIR)/dxvk)
 	@echo "vkd3d-proton $(VKD3D_VERSION), dxvk $(DXVK_VERSION)+sg$$(cat dxvk/patches/*.patch | sha256sum | cut -c1-8)" > $@
 	@echo "staged D3D: $$(cat $@)"
+
+# The package, beside the other staged debs (staged-debs clears them first).
+d3d-deb: staged-debs d3d
+	d3d-deb/build-deb.sh $(D3D_DIR) $(EXTRA_TREE)/opt/sg-packages
+	@echo "sg-d3d $$( { cat d3d-deb/build-deb.sh $(D3D_DIR)/VERSION; } | sha256sum | cut -c1-40)" \
+	  >> $(EXTRA_TREE)/opt/sg-packages/SOURCES
 
 # A composition swap chain made through our DXVK shows in its window (host
 # test; WINE= a current wine-sg: DirectComposition is wine-sg's).
@@ -312,7 +322,7 @@ repo: staged-debs
 repo-check: repo
 	repo/check-repo.sh $(BUILD)/apt
 
-publish: staged-debs speech
+publish: staged-debs speech d3d-deb
 	repo/publish.sh $(REPO_DEBS)
 
 # --- the boot splash ---------------------------------------------------------
@@ -328,7 +338,7 @@ $(SPLASH_PNG): splash/make-splash.py
 
 # --- image -----------------------------------------------------------------
 
-image: staged-debs d3d apps addons speech splash
+image: staged-debs d3d-deb apps addons speech splash
 	@# Older builds put the gate key in the extra tree: it must never ship.
 	rm -f $(EXTRA_TREE)/root/.ssh/authorized_keys
 	mkosi --force --image-version=$$(date -u +%Y%m%d)-$$(git rev-parse --short HEAD)$$(git diff --quiet HEAD -- . 2>/dev/null || echo -dirty)

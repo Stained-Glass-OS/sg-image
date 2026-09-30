@@ -12,7 +12,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -u
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-DXVK=${1:-$HERE/build/extra-tree/opt/sg-d3d/dxvk/x64}
+DXVK=${1:-$HERE/build/d3d-payload/dxvk/x64}
 WINE=${WINE:-/opt/wine-sg/bin/wine}
 WINESERVER=${WINESERVER:-$(dirname "$WINE")/wineserver}
 for t in Xvfb x86_64-w64-mingw32-g++; do command -v "$t" >/dev/null || { echo "SKIP: $t missing"; exit 77; }; done
