@@ -439,6 +439,17 @@ else
     RC=1
 fi
 
+# Debian's sysctl defaults (linux-sysctl-defaults, a Recommends): a Wine
+# process maps every DLL section on its own, and big programs and games run
+# past the kernel's default of 65530 mappings.
+st=$(ssh_guest 'cat /proc/sys/vm/max_map_count' 2>/dev/null | tr -d '\n')
+if [[ "$st" == 1048576 ]]; then
+    echo "PASS  vm.max_map_count is Debian's 1048576"
+else
+    echo "FAIL  vm.max_map_count is '$st' (want 1048576: linux-sysctl-defaults)"
+    RC=1
+fi
+
 # One Debian source: mkosi's build-time <release>.sources (deb-src, the -debug
 # archive, "main" twice) is not left beside debian.sources -- apt warned
 # "Target Packages ... is configured multiple times" on every update (David
