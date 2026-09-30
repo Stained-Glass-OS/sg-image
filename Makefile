@@ -332,14 +332,19 @@ publish: staged-debs speech d3d-deb
 
 # --- the boot splash ---------------------------------------------------------
 
-# The Plymouth theme's picture, drawn by splash/make-splash.py (our own art,
-# nothing binary committed); the theme itself is in mkosi.extra.
-SPLASH_PNG := $(EXTRA_TREE)/usr/share/plymouth/themes/stained-glass/diamond.png
+# The Plymouth theme is sg-session's (its splash/: the script, and pictures it
+# draws at build time), so installed machines get it with their updates. The
+# image's boot entries carry it in an initrd of their own (mkosi.postoutput),
+# which reads it from the extra tree: taken here from the staged package.
+SPLASH_DIR := $(EXTRA_TREE)/usr/share/plymouth/themes/stained-glass
 
-splash: $(SPLASH_PNG)
-$(SPLASH_PNG): splash/make-splash.py
-	@mkdir -p $(dir $@)
-	python3 splash/make-splash.py $@ 192
+splash: staged-debs
+	@deb=$$(ls -t $(EXTRA_TREE)/opt/sg-packages/sg-session_*_amd64.deb | head -1); \
+	  test -n "$$deb" || { echo "splash: no staged sg-session package"; exit 1; }; \
+	  rm -rf $(SPLASH_DIR); mkdir -p $(EXTRA_TREE); \
+	  dpkg-deb --fsys-tarfile "$$deb" | tar -x -C $(EXTRA_TREE) ./usr/share/plymouth/themes/stained-glass \
+	  && test -f $(SPLASH_DIR)/stained-glass.script && test -f $(SPLASH_DIR)/diamond.png \
+	  || { echo "splash: $$deb has no Stained Glass theme"; exit 1; }
 
 # --- image -----------------------------------------------------------------
 
