@@ -27,14 +27,23 @@ trap 'rm -rf "$tmp"' EXIT
 # first second instead of text until the root file system is up.
 S="$tmp/splash"
 mkdir -p "$S/usr/share/plymouth/themes/stained-glass" "$S/etc/plymouth"
-for tree in "$SRCDIR/mkosi.extra" "$SRCDIR/build/extra-tree"; do
+# The picture is generated into the extra tree, which lives in the output
+# directory: reached as $OUTPUTDIR -- $SRCDIR/build may be a symlink the
+# sandbox cannot follow (the release worktrees'), and then the initrd had the
+# script but no diamond.png: a blank splash.
+for tree in "$SRCDIR/mkosi.extra" "$SRCDIR/build/extra-tree" "${OUTPUTDIR:-/nonexistent}/extra-tree"; do
     [ -d "$tree/usr/share/plymouth/themes/stained-glass" ] && cp -r "$tree/usr/share/plymouth/themes/stained-glass/." "$S/usr/share/plymouth/themes/stained-glass/"
     [ -f "$tree/etc/plymouth/plymouthd.conf" ] && cp "$tree/etc/plymouth/plymouthd.conf" "$S/etc/plymouth/"
 done
 [ -f "$S/usr/share/plymouth/themes/stained-glass/stained-glass.plymouth" ] && [ -f "$S/etc/plymouth/plymouthd.conf" ] \
+    && [ -f "$S/usr/share/plymouth/themes/stained-glass/diamond.png" ] \
     || { echo "mkosi.postoutput: the splash theme is missing" >&2; exit 1; }
 ln -s stained-glass/stained-glass.plymouth "$S/usr/share/plymouth/themes/default.plymouth"
-(cd "$S" && find . -mindepth 1 | LC_ALL=C sort | cpio -o -H newc --quiet --owner=0:0) > "$tmp/sg-splash.initrd"
+# Its name must not contain "splash" (or "rhgb"): Plymouth looks for the
+# "splash" argument with strstr and checks only the first match, so
+# initrd=\...\sg-splash.initrd on the command line hid the real "splash"
+# after it -- Plymouth showed text all through the boot (found 2026-09-30).
+(cd "$S" && find . -mindepth 1 | LC_ALL=C sort | cpio -o -H newc --quiet --owner=0:0) > "$tmp/sg-theme.initrd"
 # beside the entry's own initrds, in its entry-token directory: sg-install copies
 # that directory (not loader/) and rewrites its paths for the installed disk
 for e in $(mdir -b -i "$ESP" ::/loader/entries); do
@@ -43,8 +52,8 @@ for e in $(mdir -b -i "$ESP" ::/loader/entries); do
     mtype -i "$ESP" "$e" | tr -d '\r' > "$tmp/entry"
     tok=$(sed -n 's#^linux /\([^/]*\)/.*#\1#p' "$tmp/entry" | head -1)
     [ -n "$tok" ] || { echo "mkosi.postoutput: $e has no linux line" >&2; exit 1; }
-    mcopy -o -i "$ESP" "$tmp/sg-splash.initrd" "::/$tok/sg-splash.initrd"
-    grep -q "^initrd /$tok/sg-splash.initrd" "$tmp/entry" || echo "initrd /$tok/sg-splash.initrd" >> "$tmp/entry"
+    mcopy -o -i "$ESP" "$tmp/sg-theme.initrd" "::/$tok/sg-theme.initrd"
+    grep -q "^initrd /$tok/sg-theme.initrd" "$tmp/entry" || echo "initrd /$tok/sg-theme.initrd" >> "$tmp/entry"
     mcopy -o -i "$ESP" "$tmp/entry" "$e"
     echo "mkosi.postoutput: splash initrd in ${e##*/} (/$tok)"
 done

@@ -407,16 +407,16 @@ if [[ "${SG_GUEST_CHECK:-session}" == session ]]; then
 fi
 
 # The splash from the first second (David 2026-09-29: hide the Linux boot
-# text behind a loading screen): the boot entry loads sg-splash.initrd; Plymouth
+# text behind a loading screen): the boot entry loads sg-theme.initrd; Plymouth
 # and our theme are in the initrds; and the splash started in the initrd, before
 # the switch to the real root (it only started after it, text until then) --
 # which proves Plymouth is in mkosi's initrd. Each initrd is listed on its own:
 # one cpio -t stops at the first archive's end.
-st=$(ssh_guest 'E=$(bootctl --print-boot-path 2>/dev/null || bootctl --print-esp-path 2>/dev/null); f=$(ls "$E"/loader/entries/*.conf 2>/dev/null | grep -v -- -live.conf | head -1); grep -c "^initrd /[^/]*/sg-splash.initrd" "$f"; for i in $(sed -n "s/^initrd //p" "$f"); do { zstd -dc "$E$i" 2>/dev/null || cat "$E$i"; } | cpio -t 2>/dev/null; done | grep -c "themes/stained-glass/stained-glass.script$"; journalctl -b -o cat --no-pager | awk "/Plymouth Boot Screen/{if(!p)p=NR} /Switching root/{if(!r)r=NR} END{print (p && r && p < r) ? \"early\" : \"late\"}"' 2>/dev/null | tr '\n' ' ')
-if [[ "$st" == "1 1 early " ]]; then
+st=$(ssh_guest 'E=$(bootctl --print-boot-path 2>/dev/null || bootctl --print-esp-path 2>/dev/null); f=$(ls "$E"/loader/entries/*.conf 2>/dev/null | grep -v -- -live.conf | head -1); grep -c "^initrd /[^/]*/sg-theme.initrd" "$f"; for i in $(sed -n "s/^initrd //p" "$f"); do { zstd -dc "$E$i" 2>/dev/null || cat "$E$i"; } | cpio -t 2>/dev/null; done | grep -cE "themes/stained-glass/(stained-glass.script|diamond.png)$"; journalctl -b -o cat --no-pager | awk "/Plymouth Boot Screen/{if(!p)p=NR} /Switching root/{if(!r)r=NR} END{print (p && r && p < r) ? \"early\" : \"late\"}"' 2>/dev/null | tr '\n' ' ')
+if [[ "$st" == "1 2 early " ]]; then
     echo "PASS  the splash is in the initrd: Plymouth and our theme, shown before the switch to the real root"
 else
-    echo "FAIL  boot splash: $st (want: entry loads sg-splash.initrd, our theme in it, splash before switch-root)"
+    echo "FAIL  boot splash: $st (want: entry loads sg-theme.initrd, our theme in it, splash before switch-root)"
     RC=1
 fi
 
