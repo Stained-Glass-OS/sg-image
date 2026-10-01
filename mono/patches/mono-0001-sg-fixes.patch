@@ -1,0 +1,461 @@
+diff --git a/mcs/class/Mono.Security/Mono.Security.X509/X509Store.wincrypto.cs b/mcs/class/Mono.Security/Mono.Security.X509/X509Store.wincrypto.cs
+index 10d764b6..2503f2a1 100644
+--- a/mcs/class/Mono.Security/Mono.Security.X509/X509Store.wincrypto.cs
++++ b/mcs/class/Mono.Security/Mono.Security.X509/X509Store.wincrypto.cs
+@@ -88,6 +88,28 @@ internal struct CERT_CONTEXT
+ 		[DllImport ("crypt32")]
+ 		internal static extern IntPtr CertEnumCertificatesInStore (SafeCertStoreHandle hCertStore, IntPtr pPrevCertContext);
+ 
++		// Stained Glass OS: writes to the system store, through crypt32, as
++		// .NET does on Windows (athenaNet Device Manager's service adds its
++		// localhost root certificate with X509Store.Add).
++		const uint X509_PKCS7_ENCODING = 0x00010001;
++		const uint CERT_STORE_ADD_REPLACE_EXISTING = 3;
++		const uint CERT_FIND_EXISTING = 0x000D0000;
++
++		[DllImport ("crypt32", SetLastError = true)]
++		internal static extern bool CertAddEncodedCertificateToStore (SafeCertStoreHandle hCertStore, uint dwCertEncodingType, byte[] pbCertEncoded, uint cbCertEncoded, uint dwAddDisposition, IntPtr ppCertContext);
++
++		[DllImport ("crypt32", SetLastError = true)]
++		internal static extern IntPtr CertCreateCertificateContext (uint dwCertEncodingType, byte[] pbCertEncoded, uint cbCertEncoded);
++
++		[DllImport ("crypt32")]
++		internal static extern bool CertFreeCertificateContext (IntPtr pCertContext);
++
++		[DllImport ("crypt32", SetLastError = true)]
++		internal static extern IntPtr CertFindCertificateInStore (SafeCertStoreHandle hCertStore, uint dwCertEncodingType, uint dwFindFlags, uint dwFindType, IntPtr pvFindPara, IntPtr pPrevCertContext);
++
++		[DllImport ("crypt32", SetLastError = true)]
++		internal static extern bool CertDeleteCertificateFromStore (IntPtr pCertContext);
++
+ 		private string _name;
+ 		private StoreLocation _location;
+ 		private SafeCertStoreHandle _handle; 
+@@ -153,7 +175,12 @@ public string Name {
+ 
+ 		public void Clear () 
+ 		{
+-			throw new NotImplementedException ("Mono.Security.X509.X509Store.Clear()");
++			IntPtr cert_context;
++			// deleting frees the context; the first one again until none is left
++			while ((cert_context = CertEnumCertificatesInStore (_handle, IntPtr.Zero)) != IntPtr.Zero) {
++				if (!CertDeleteCertificateFromStore (cert_context))
++					throw new CryptographicException (Marshal.GetLastWin32Error ());
++			}
+ 		}
+ 
+ 		public void Close ()
+@@ -163,7 +190,10 @@ public void Close ()
+ 
+ 		public void Import (X509Certificate certificate) 
+ 		{
+-			throw new NotImplementedException ("Mono.Security.X509.X509Store.Import(X509Certificate)");
++			byte[] raw = certificate.RawData;
++			if (!CertAddEncodedCertificateToStore (_handle, X509_PKCS7_ENCODING, raw, (uint)raw.Length,
++			                                       CERT_STORE_ADD_REPLACE_EXISTING, IntPtr.Zero))
++				throw new CryptographicException (Marshal.GetLastWin32Error ());
+ 		}
+ 
+ 		public void Import (X509Crl crl) 
+@@ -173,7 +203,20 @@ public void Import (X509Crl crl)
+ 
+ 		public void Remove (X509Certificate certificate) 
+ 		{
+-			throw new NotImplementedException ("Mono.Security.X509.X509Store.Remove(X509Certificate)");
++			byte[] raw = certificate.RawData;
++			IntPtr wanted = CertCreateCertificateContext (X509_PKCS7_ENCODING, raw, (uint)raw.Length);
++			IntPtr found;
++
++			if (wanted == IntPtr.Zero)
++				throw new CryptographicException (Marshal.GetLastWin32Error ());
++			try {
++				found = CertFindCertificateInStore (_handle, X509_PKCS7_ENCODING, 0, CERT_FIND_EXISTING, wanted, IntPtr.Zero);
++				// not in the store: nothing to remove, as on .NET
++				if (found != IntPtr.Zero && !CertDeleteCertificateFromStore (found))
++					throw new CryptographicException (Marshal.GetLastWin32Error ());
++			} finally {
++				CertFreeCertificateContext (wanted);
++			}
+ 		}
+ 
+ 		public void Remove (X509Crl crl) 
+diff --git a/mcs/class/System.Configuration/System.Configuration/SectionInfo.cs b/mcs/class/System.Configuration/System.Configuration/SectionInfo.cs
+index 3a19ea27..d884efaf 100644
+--- a/mcs/class/System.Configuration/System.Configuration/SectionInfo.cs
++++ b/mcs/class/System.Configuration/System.Configuration/SectionInfo.cs
+@@ -181,8 +181,16 @@ public override void ReadData (Configuration config, XmlReader reader, bool over
+ 				object ctx = allowExeDefinition != ConfigurationAllowExeDefinition.MachineToApplication ? (object) allowExeDefinition : (object) allowDefinition;
+ 				throw new ConfigurationErrorsException ("The section <" + Name + "> can't be defined in this configuration file (the allowed definition context is '" + ctx + "').", reader);
+ 			}
+-			if (config.GetSectionXml (this) != null)
++			if (config.GetSectionXml (this) != null) {
++				// Stained Glass OS: a section the runtime ignores (<startup>)
++				// may appear twice, as .NET allows (athenaNet Device Manager's
++				// tray app config has two); the first stays
++				if (TypeName != null && TypeName.StartsWith ("System.Configuration.IgnoreSection", StringComparison.Ordinal)) {
++					reader.Skip ();
++					return;
++				}
+ 				ThrowException ("The section <" + Name + "> is defined more than once in the same configuration file.", reader);
++			}
+ 			config.SetSectionXml (this, reader.ReadOuterXml ());
+ 		}
+ 		
+diff --git a/mcs/class/System.Core/System.Diagnostics.Eventing.Reader/SgEventLog.cs b/mcs/class/System.Core/System.Diagnostics.Eventing.Reader/SgEventLog.cs
+new file mode 100644
+index 00000000..4014513d
+--- /dev/null
++++ b/mcs/class/System.Core/System.Diagnostics.Eventing.Reader/SgEventLog.cs
+@@ -0,0 +1,234 @@
++//
++// System.Diagnostics.Eventing.Reader: the event log reader's types (Stained
++// Glass OS). Mono had none of them, and a program that names one does not load
++// at all -- athenaNet Device Manager's Windows service ("Could not load type of
++// field 'WindowsService.Apollo:watcher'") and its tray program's log export.
++//
++// There are no Windows event logs to read here: a watcher is never told of a
++// new record, a query finds none, a session knows no logs, and an export
++// writes an empty file. Programs that only watch or export go on working.
++//
++// Copyright (C) 2026 Stained Glass OS contributors
++// Licensed under the MIT license, as Mono's class libraries are.
++//
++
++using System;
++using System.Collections.Generic;
++using System.Globalization;
++using System.IO;
++using System.Security;
++
++namespace System.Diagnostics.Eventing.Reader
++{
++	public enum PathType
++	{
++		LogName = 1,
++		FilePath = 2
++	}
++
++	public enum SessionAuthentication
++	{
++		Default = 0,
++		Negotiate = 1,
++		Kerberos = 2,
++		Ntlm = 3
++	}
++
++	[Serializable]
++	public class EventLogException : Exception
++	{
++		public EventLogException () { }
++		public EventLogException (string message) : base (message) { }
++		public EventLogException (string message, Exception innerException) : base (message, innerException) { }
++		protected EventLogException (int errorCode) : base (string.Format (CultureInfo.InvariantCulture, "The event log reported error {0}.", errorCode)) { HResult = errorCode; }
++		protected EventLogException (System.Runtime.Serialization.SerializationInfo serializationInfo, System.Runtime.Serialization.StreamingContext streamingContext) : base (serializationInfo, streamingContext) { }
++	}
++
++	[Serializable]
++	public class EventLogNotFoundException : EventLogException
++	{
++		public EventLogNotFoundException () { }
++		public EventLogNotFoundException (string message) : base (message) { }
++		public EventLogNotFoundException (string message, Exception innerException) : base (message, innerException) { }
++		protected EventLogNotFoundException (System.Runtime.Serialization.SerializationInfo serializationInfo, System.Runtime.Serialization.StreamingContext streamingContext) : base (serializationInfo, streamingContext) { }
++	}
++
++	[Serializable]
++	public class EventLogReadingException : EventLogException
++	{
++		public EventLogReadingException () { }
++		public EventLogReadingException (string message) : base (message) { }
++		public EventLogReadingException (string message, Exception innerException) : base (message, innerException) { }
++		protected EventLogReadingException (System.Runtime.Serialization.SerializationInfo serializationInfo, System.Runtime.Serialization.StreamingContext streamingContext) : base (serializationInfo, streamingContext) { }
++	}
++
++	public class EventBookmark
++	{
++		internal EventBookmark () { }
++	}
++
++	public class EventLogQuery
++	{
++		public EventLogQuery (string path, PathType pathType) : this (path, pathType, null) { }
++
++		public EventLogQuery (string path, PathType pathType, string query)
++		{
++			if (path == null && query == null)
++				throw new ArgumentNullException ("path");
++			Path = path;
++			PathType = pathType;
++			Query = query;
++			Session = EventLogSession.GlobalSession;
++		}
++
++		internal string Path { get; private set; }
++		internal PathType PathType { get; private set; }
++		internal string Query { get; private set; }
++		public bool ReverseDirection { get; set; }
++		public EventLogSession Session { get; set; }
++		public bool TolerateQueryErrors { get; set; }
++	}
++
++	public abstract class EventRecord : IDisposable
++	{
++		protected EventRecord () { }
++		public abstract byte[] ToXmlBytes ();
++		public abstract string ToXml ();
++		public abstract string FormatDescription ();
++		public abstract int Id { get; }
++		public abstract byte? Version { get; }
++		public abstract int? Qualifiers { get; }
++		public abstract byte? Level { get; }
++		public abstract int? Task { get; }
++		public abstract short? Opcode { get; }
++		public abstract long? Keywords { get; }
++		public abstract long? RecordId { get; }
++		public abstract string ProviderName { get; }
++		public abstract Guid? ProviderId { get; }
++		public abstract string LogName { get; }
++		public abstract int? ProcessId { get; }
++		public abstract int? ThreadId { get; }
++		public abstract string MachineName { get; }
++		public abstract DateTime? TimeCreated { get; }
++		public abstract Guid? ActivityId { get; }
++		public abstract Guid? RelatedActivityId { get; }
++		public abstract EventBookmark Bookmark { get; }
++		public abstract string LevelDisplayName { get; }
++		public abstract string OpcodeDisplayName { get; }
++		public abstract string TaskDisplayName { get; }
++		public abstract IEnumerable<string> KeywordsDisplayNames { get; }
++		public void Dispose () { Dispose (true); GC.SuppressFinalize (this); }
++		protected virtual void Dispose (bool disposing) { }
++	}
++
++	public sealed class EventRecordWrittenEventArgs : EventArgs
++	{
++		internal EventRecordWrittenEventArgs (EventRecord record, Exception exception)
++		{
++			EventRecord = record;
++			EventException = exception;
++		}
++
++		public EventRecord EventRecord { get; private set; }
++		public Exception EventException { get; private set; }
++	}
++
++	public class EventLogSession : IDisposable
++	{
++		static readonly EventLogSession global = new EventLogSession ();
++
++		public EventLogSession () { }
++		public EventLogSession (string server) { }
++		public EventLogSession (string server, string domain, string user, SecureString password, SessionAuthentication logOnType) { }
++
++		public static EventLogSession GlobalSession {
++			get { return global; }
++		}
++
++		public IEnumerable<string> GetLogNames () { return new string[0]; }
++		public IEnumerable<string> GetProviderNames () { return new string[0]; }
++		public void CancelCurrentOperations () { }
++
++		public void ClearLog (string logName) { ClearLog (logName, null); }
++		public void ClearLog (string logName, string backupPath)
++		{
++			if (logName == null)
++				throw new ArgumentNullException ("logName");
++			if (backupPath != null)
++				ExportLog (logName, PathType.LogName, null, backupPath);
++		}
++
++		public void ExportLog (string path, PathType pathType, string query, string targetFilePath)
++		{
++			ExportLog (path, pathType, query, targetFilePath, false);
++		}
++
++		// an export has no records to write: the file the caller asked for, empty
++		public void ExportLog (string path, PathType pathType, string query, string targetFilePath, bool tolerateQueryErrors)
++		{
++			if (path == null)
++				throw new ArgumentNullException ("path");
++			if (targetFilePath == null)
++				throw new ArgumentNullException ("targetFilePath");
++			File.WriteAllBytes (targetFilePath, new byte[0]);
++		}
++
++		public void ExportLogAndMessages (string path, PathType pathType, string query, string targetFilePath)
++		{
++			ExportLogAndMessages (path, pathType, query, targetFilePath, false, CultureInfo.CurrentCulture);
++		}
++
++		public void ExportLogAndMessages (string path, PathType pathType, string query, string targetFilePath, bool tolerateQueryErrors, CultureInfo targetCultureInfo)
++		{
++			ExportLog (path, pathType, query, targetFilePath, tolerateQueryErrors);
++		}
++
++		public void Dispose () { Dispose (true); GC.SuppressFinalize (this); }
++		protected virtual void Dispose (bool disposing) { }
++	}
++
++	public class EventLogReader : IDisposable
++	{
++		public EventLogReader (string path) : this (new EventLogQuery (path, PathType.LogName)) { }
++		public EventLogReader (string path, PathType pathType) : this (new EventLogQuery (path, pathType)) { }
++		public EventLogReader (EventLogQuery eventQuery) : this (eventQuery, null) { }
++		public EventLogReader (EventLogQuery eventQuery, EventBookmark bookmark)
++		{
++			if (eventQuery == null)
++				throw new ArgumentNullException ("eventQuery");
++		}
++
++		public int BatchSize { get; set; }
++		public EventRecord ReadEvent () { return null; }
++		public EventRecord ReadEvent (TimeSpan timeout) { return null; }
++		public void Seek (EventBookmark bookmark) { }
++		public void Seek (EventBookmark bookmark, long offset) { }
++		public void Seek (SeekOrigin origin, long offset) { }
++		public void CancelReading () { }
++		public void Dispose () { Dispose (true); GC.SuppressFinalize (this); }
++		protected virtual void Dispose (bool disposing) { }
++	}
++
++	public class EventLogWatcher : IDisposable
++	{
++		public EventLogWatcher (string path) : this (new EventLogQuery (path, PathType.LogName)) { }
++		public EventLogWatcher (EventLogQuery eventQuery) : this (eventQuery, null, false) { }
++		public EventLogWatcher (EventLogQuery eventQuery, EventBookmark bookmark) : this (eventQuery, bookmark, false) { }
++		public EventLogWatcher (EventLogQuery eventQuery, EventBookmark bookmark, bool readExistingEvents)
++		{
++			if (eventQuery == null)
++				throw new ArgumentNullException ("eventQuery");
++		}
++
++		// no record is ever written to a log here, so EventRecordWritten never fires
++		public event EventHandler<EventRecordWrittenEventArgs> EventRecordWritten {
++			add { }
++			remove { }
++		}
++
++		public bool Enabled { get; set; }
++
++		public void Dispose () { Dispose (true); GC.SuppressFinalize (this); }
++		protected virtual void Dispose (bool disposing) { Enabled = false; }
++	}
++}
+diff --git a/mcs/class/System.Core/win32_net_4_x_System.Core.dll.sources b/mcs/class/System.Core/win32_net_4_x_System.Core.dll.sources
+index d3c3a8a5..8305c2a5 100644
+--- a/mcs/class/System.Core/win32_net_4_x_System.Core.dll.sources
++++ b/mcs/class/System.Core/win32_net_4_x_System.Core.dll.sources
+@@ -48,3 +48,4 @@ System.IO.Pipes/AnonymousPipeServerStream.Windows.cs
+ ../../../external/corefx/src/System.IO.Pipes/src/System/IO/Pipes/PipeCompletionSource.cs
+ ../../../external/corefx/src/System.IO.Pipes/src/System/IO/Pipes/PipeStream.Windows.cs
+ ../../../external/corefx/src/System.IO.Pipes/src/System/IO/Pipes/ReadWriteCompletionSource.cs
++System.Diagnostics.Eventing.Reader/SgEventLog.cs
+diff --git a/mcs/class/System/System.Security.Cryptography.X509Certificates/X509Store.cs b/mcs/class/System/System.Security.Cryptography.X509Certificates/X509Store.cs
+index 31797078..b8464863 100644
+--- a/mcs/class/System/System.Security.Cryptography.X509Certificates/X509Store.cs
++++ b/mcs/class/System/System.Security.Cryptography.X509Certificates/X509Store.cs
+@@ -121,7 +121,16 @@ public X509Store (string storeName, StoreLocation storeLocation)
+ 
+ 		// properties
+ 
++		// Stained Glass OS: a new collection on each call, as .NET's: a
++		// program may Remove certificates while it enumerates this
++		// (athenaNet Device Manager's service: "Collection was modified")
+ 		public X509Certificate2Collection Certificates {
++			get {
++				return new X509Certificate2Collection (InnerList);
++			}
++		}
++
++		X509Certificate2Collection InnerList {
+ 			get {
+ 				if (list == null)
+ 					list = new X509Certificate2Collection ();
+@@ -182,7 +191,7 @@ public void Add (X509Certificate2 certificate)
+ 					store.Import (new MX.X509Certificate (certificate.RawData));
+ 				}
+ 				finally {
+-					Certificates.Add (certificate);
++					InnerList.Add (certificate);
+ 				}
+ 			}
+ 		}
+@@ -207,7 +216,7 @@ public void AddRange (X509Certificate2Collection certificates)
+ 						store.Import (new MX.X509Certificate (certificate.RawData));
+ 					}
+ 					finally {
+-						Certificates.Add (certificate);
++						InnerList.Add (certificate);
+ 					}
+ 				}
+ 			}
+@@ -255,7 +264,7 @@ public void Open (OpenFlags flags)
+ 			foreach (MX.X509Certificate x in store.Certificates) {
+ 				var cert2 = new X509Certificate2 (x.RawData);
+ 				cert2.Impl.PrivateKey = x.RSA;
+-				Certificates.Add (cert2);
++				InnerList.Add (cert2);
+ 			}
+ 		}
+ 
+@@ -276,7 +285,7 @@ public void Remove (X509Certificate2 certificate)
+ 				store.Remove (new MX.X509Certificate (certificate.RawData));
+ 			}
+ 			finally {
+-				Certificates.Remove (certificate);
++				InnerList.Remove (certificate);
+ 			}
+ 		}
+ 
+@@ -308,7 +317,7 @@ public void RemoveRange (X509Certificate2Collection certificates)
+ 					store.Remove (new MX.X509Certificate (certificate.RawData));
+ 			}
+ 			finally {
+-				Certificates.RemoveRange (certificates);
++				InnerList.RemoveRange (certificates);
+ 			}
+ 		}
+ 
+diff --git a/mcs/class/corlib/System/Environment.cs b/mcs/class/corlib/System/Environment.cs
+index aac713c4..d5f9da95 100644
+--- a/mcs/class/corlib/System/Environment.cs
++++ b/mcs/class/corlib/System/Environment.cs
+@@ -350,8 +350,38 @@ public static string UserDomainName {
+ 		/// Gets a flag indicating whether the process is in interactive mode
+ 		/// </summary>
+ 		[MonoTODO ("Currently always returns false, regardless of interactive state")]
++		// Stained Glass OS: as .NET decides it on Windows -- false when the
++		// process's window station is not visible (a service's). A .NET
++		// service that runs as a console program when UserInteractive
++		// (athenaNet Device Manager's) otherwise waited for a key it never
++		// got and stopped.
++		[StructLayout (LayoutKind.Sequential)]
++		struct USEROBJECTFLAGS {
++			public int fInherit;
++			public int fReserved;
++			public int dwFlags;
++		}
++
++		[DllImport ("user32.dll")]
++		static extern IntPtr GetProcessWindowStation ();
++
++		[DllImport ("user32.dll")]
++		static extern bool GetUserObjectInformationW (IntPtr hObj, int nIndex, ref USEROBJECTFLAGS pvInfo, int nLength, out int lpnLengthNeeded);
++
+ 		public static bool UserInteractive {
+ 			get {
++				const int UOI_FLAGS = 1, WSF_VISIBLE = 1;
++				if (!IsRunningOnWindows)
++					return true;
++				try {
++					IntPtr winsta = GetProcessWindowStation ();
++					USEROBJECTFLAGS flags = new USEROBJECTFLAGS ();
++					int needed;
++					if (winsta != IntPtr.Zero &&
++					    GetUserObjectInformationW (winsta, UOI_FLAGS, ref flags, Marshal.SizeOf (flags), out needed))
++						return (flags.dwFlags & WSF_VISIBLE) != 0;
++				} catch (Exception) {
++				}
+ 				return true;
+ 			}
+ 		}

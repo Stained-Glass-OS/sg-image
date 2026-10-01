@@ -18,7 +18,7 @@ SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 
-.PHONY: mono-config-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
+.PHONY: mono-config-test mono-fork-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
 
 all: image
 
@@ -303,8 +303,16 @@ $(APPS_DIR)/VERSION: Makefile
 # pinned; Wine's own addons.c pins only the MSIs, so these are the tarballs'
 # measured on download from dl.winehq.org. Licences: Wine Mono is MIT, with some
 # components under their own free licences; Wine Gecko is MPL-2.0.
+#
+# Wine Mono is our build of it: upstream 9.4.0 with mono/patches (what the
+# athenaNet Device Manager and SQL Server Compact need; mono/patches/README),
+# built by mono/build-wine-mono.sh and served from the project's server. The
+# upstream tarball (dl.winehq.org, sha256 fd772219...bf13858) is what it
+# replaces; test/mono-fork-test.sh tells them apart.
 MONO_VERSION       := 9.4.0
-MONO_SHA256        := fd772219aacf46b825fa891a647af4a9ddf8439320101c231918b2037bf13858
+MONO_BUILD         := sg1
+MONO_URL           := https://freesoft.page/addons/wine-mono-$(MONO_VERSION)-$(MONO_BUILD)-x86.tar.xz
+MONO_SHA256        := 882a32e7b126dfca5702968382cca34815ce092bf0b4f6b9b51ad29c1071b6ab
 GECKO_VERSION      := 2.47.4
 GECKO_X86_SHA256   := 2cfc8d5c948602e21eff8a78613e1826f2d033df9672cace87fed56e8310afb6
 GECKO_X64_SHA256   := fd88fc7e537d058d7a8abf0c1ebc90c574892a466de86706a26d254710a82814
@@ -318,10 +326,10 @@ $(ADDONS_DIR)/.sg-addons: Makefile mono/mono-fixes.sh
 	@rm -rf $(ADDONS_DIR)/mono $(ADDONS_DIR)/gecko
 	@mkdir -p $(ADDONS_CACHE) $(ADDONS_DIR)/mono $(ADDONS_DIR)/gecko
 	@set -e; c=$(CURDIR)/$(ADDONS_CACHE); d=$(CURDIR)/$(ADDONS_DIR); \
-	m=wine-mono-$(MONO_VERSION)-x86.tar.xz; \
+	m=wine-mono-$(MONO_VERSION)-$(MONO_BUILD)-x86.tar.xz; \
 	g32=wine-gecko-$(GECKO_VERSION)-x86.tar.xz; \
 	g64=wine-gecko-$(GECKO_VERSION)-x86_64.tar.xz; \
-	[ -f $$c/$$m ]   || curl -sSL --retry 3 -o $$c/$$m   https://dl.winehq.org/wine/wine-mono/$(MONO_VERSION)/$$m; \
+	[ -f $$c/$$m ]   || curl -sSL --retry 3 -o $$c/$$m   $(MONO_URL); \
 	[ -f $$c/$$g32 ] || curl -sSL --retry 3 -o $$c/$$g32 https://dl.winehq.org/wine/wine-gecko/$(GECKO_VERSION)/$$g32; \
 	[ -f $$c/$$g64 ] || curl -sSL --retry 3 -o $$c/$$g64 https://dl.winehq.org/wine/wine-gecko/$(GECKO_VERSION)/$$g64; \
 	echo "$(MONO_SHA256)  $$c/$$m" | sha256sum -c - ; \
@@ -332,13 +340,18 @@ $(ADDONS_DIR)/.sg-addons: Makefile mono/mono-fixes.sh
 	tar -C $$d/gecko -xJf $$c/$$g32; \
 	tar -C $$d/gecko -xJf $$c/$$g64; \
 	chmod -R u=rwX,go=rX $$d/mono $$d/gecko
-	@echo "wine-mono $(MONO_VERSION), wine-gecko $(GECKO_VERSION)" > $@
+	@echo "wine-mono $(MONO_VERSION)-$(MONO_BUILD), wine-gecko $(GECKO_VERSION)" > $@
 	@echo "staged addons: $$(cat $@)"
 
 # Wine Mono with the image's fixes runs a WinForms program's .config
 # (Greenshot's DpiAwareness section); test/mono-config-test.sh.
 mono-config-test: addons
 	sh test/mono-config-test.sh
+
+# Our Wine Mono's fixes (mono/patches): event log types, the certificate
+# store, <startup> twice, UserInteractive in a service, NDP v4 InstallPath.
+mono-fork-test: addons
+	sh test/mono-fork-test.sh
 
 # --- voice typing's speech model ---------------------------------------------
 

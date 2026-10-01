@@ -1,0 +1,24 @@
+Our changes to Wine Mono 9.4.0 (all MIT, as Mono's class libraries are),
+built by ../build-wine-mono.sh into the tarball the Makefile pins:
+
+wine-mono-0001-ndp4-installpath.patch
+    The support MSI also writes NDP\v4\Client and \Full InstallPath (both
+    registry views). SQL Server Compact 3.5 SP2's installer edits
+    [InstallPath]\CONFIG\machine.config and stopped with 1603 without them.
+
+mono-0001-sg-fixes.patch
+    System.Core: System.Diagnostics.Eventing.Reader (EventLogWatcher,
+      EventLogSession, EventLogReader...), our own; there are no event logs
+      to read, but programs that name the types load (athenaNet Device
+      Manager's service and tray program).
+    WineMono.Security: X509Store Import/Remove/Clear through crypt32 (were
+      NotImplementedException): X509Store.Add/Remove reach the system store.
+    System: X509Store.Certificates is a new collection each call, as .NET's
+      (Remove while enumerating: "Collection was modified").
+    System.Configuration: a section the runtime ignores (<startup>) may
+      appear twice in a .config, as .NET allows.
+    corlib: Environment.UserInteractive is false in a window station that is
+      not visible (a service's), as .NET decides it (was always true: a .NET
+      service that runs as a console program when interactive stopped).
+
+test/mono-fork-test.sh checks each.
