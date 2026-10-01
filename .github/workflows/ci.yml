@@ -154,7 +154,9 @@ jobs:
               done
               git config --global --add safe.directory "*"
               status=0
-              make -C sg-image staged-debs || status=$?
+              # SG Office's editors build for hours from their own repository:
+              # CI's image leaves SG Office out (SG_NO_OFFICE)
+              make -C sg-image staged-debs SG_NO_OFFICE=1 || status=$?
               chown -R "$HOST_UID:$HOST_GID" .
               exit $status'
 

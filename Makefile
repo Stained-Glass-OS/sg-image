@@ -47,7 +47,7 @@ staged-debs: $(SSH_KEY) lab-password
 	@# beside the .deb): a rebuild of an unchanged, already-published version
 	@# keeps the published build instead of being refused.
 	@for p in wine-sg:$(SG_WINE) sg-compositor:$(SG_COMPOSITOR) sg-shell:$(SG_SHELL) sg-office:$(SG_SHELL) sg-session:$(SG_SESSION) sg-office-editors:$(SG_OFFICE); do \
-	  d=$${p#*:}; c=$$(git -C $$d rev-parse HEAD); \
+	  d=$${p#*:}; [ -d "$$d" ] || continue; c=$$(git -C $$d rev-parse HEAD); \
 	  git -C $$d diff --quiet HEAD -- . 2>/dev/null || c=$$c-dirty; \
 	  echo "$${p%%:*} $$c"; done > $(EXTRA_TREE)/opt/sg-packages/SOURCES
 	@echo "staged for the image:"; ls -1 $(EXTRA_TREE)/opt/sg-packages/
@@ -97,15 +97,20 @@ shell-deb:
 # are incremental (its build trees live under /var/tmp/sgoffice) -- then its
 # package gate: the .deb installed into a scratch root and the program's gate
 # run as installed. sg-shell's sg-office depends on it.
+# SG_NO_OFFICE=1 (CI: the editors take hours to build) leaves SG Office out:
+# no editors, and sg-shell's sg-office package, which needs them, unstaged.
 office-deb:
-	@test -d $(SG_OFFICE) || { \
+	@if [ "$(SG_NO_OFFICE)" = 1 ]; then \
+		rm -f $(EXTRA_TREE)/opt/sg-packages/sg-office_*.deb; \
+		echo "SG_NO_OFFICE=1: SG Office left out of this image"; exit 0; fi; \
+	test -d $(SG_OFFICE) || { \
 		echo "sg-office checkout not found at $(SG_OFFICE)."; \
 		echo "clone it beside this repo, or set SG_OFFICE=/path/to/sg-office"; \
-		exit 1; }
-	$(MAKE) -C $(SG_OFFICE) deb
-	$(MAKE) -C $(SG_OFFICE) test-deb
-	@mkdir -p $(EXTRA_TREE)/opt/sg-packages
-	@cp "$$(ls $(SG_OFFICE)/../sg-office-editors_*_amd64.deb | sort -V | tail -1)" $(EXTRA_TREE)/opt/sg-packages/
+		echo "(or SG_NO_OFFICE=1 for an image without SG Office)"; \
+		exit 1; }; \
+	$(MAKE) -C $(SG_OFFICE) deb && $(MAKE) -C $(SG_OFFICE) test-deb && \
+	mkdir -p $(EXTRA_TREE)/opt/sg-packages && \
+	cp "$$(ls $(SG_OFFICE)/../sg-office-editors_*_amd64.deb | sort -V | tail -1)" $(EXTRA_TREE)/opt/sg-packages/
 
 compositor-deb:
 	@test -d $(SG_COMPOSITOR) || { \
