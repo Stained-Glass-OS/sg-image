@@ -161,6 +161,12 @@ DXVK_SHA256   := 40565b4a724aadc4433fa4e010b4b23916d9b1f1baeee64e17186db94f54e60
 # were black under DXVK; context states Chromium's WebGPU asks for); the rest
 # of DXVK is the release above.
 DXVK_COMMIT   := b1a1c99ab52b687cf950d62c88bc2fa316b41663
+# ICU for Windows programs (Windows 10 has it in System32: icuuc.dll, icuin.dll,
+# icu.dll -- Qt 6's Windows builds and winget use it), built with mingw-w64 from
+# Debian's ICU source (icu/build-icu.sh), in the same package.
+ICU_VERSION   := 76.1
+ICU_SHA256    := dfacb46bfe4747410472ce3e1144bf28a102feeaa4e3875bac9b4c6cf30f4f3e
+ICU_URL       := https://deb.debian.org/debian/pool/main/i/icu/icu_$(ICU_VERSION).orig.tar.gz
 
 # Staged here and packaged as sg-d3d (d3d-deb/build-deb.sh), installed in the
 # image and published on the apt site: installed machines get a fixed DXVK
@@ -170,10 +176,10 @@ D3D_CACHE := $(BUILD)/d3d-cache
 
 d3d: $(D3D_DIR)/VERSION
 
-$(D3D_DIR)/VERSION: Makefile dxvk/build-dxgi.sh $(wildcard dxvk/patches/*.patch)
+$(D3D_DIR)/VERSION: Makefile dxvk/build-dxgi.sh $(wildcard dxvk/patches/*.patch) icu/build-icu.sh
 	@rm -rf $(EXTRA_TREE)/opt/sg-d3d
 	@mkdir -p $(D3D_CACHE) $(D3D_DIR)
-	@rm -rf $(D3D_DIR)/dxvk $(D3D_DIR)/vkd3d-proton
+	@rm -rf $(D3D_DIR)/dxvk $(D3D_DIR)/vkd3d-proton $(D3D_DIR)/icu
 	@set -e; \
 	v=$(D3D_CACHE)/vkd3d-proton-$(VKD3D_VERSION).tar.zst; \
 	d=$(D3D_CACHE)/dxvk-$(DXVK_VERSION).tar.gz; \
@@ -193,7 +199,16 @@ $(D3D_DIR)/VERSION: Makefile dxvk/build-dxgi.sh $(wildcard dxvk/patches/*.patch)
 	@cp licenses/vkd3d-proton.LICENSE $(D3D_DIR)/vkd3d-proton/LICENSE
 	@cp licenses/dxvk.LICENSE $(D3D_DIR)/dxvk/LICENSE
 	@dxvk/build-dxgi.sh $(DXVK_VERSION) $(DXVK_COMMIT) $(abspath $(D3D_CACHE)) $(abspath $(D3D_DIR)/dxvk)
-	@echo "vkd3d-proton $(VKD3D_VERSION), dxvk $(DXVK_VERSION)+sg$$(cat dxvk/patches/*.patch | sha256sum | cut -c1-8)" > $@
+	@set -e; \
+	i=$(D3D_CACHE)/icu_$(ICU_VERSION).orig.tar.gz; \
+	[ -f $$i ] || curl -sSL --retry 3 -o $$i $(ICU_URL); \
+	echo "$(ICU_SHA256)  $$i" | sha256sum -c - ; \
+	c=$(D3D_CACHE)/icu-$(ICU_VERSION)-$$(sha256sum icu/build-icu.sh | cut -c1-8); \
+	[ -f $$c/x86_64/icuuc.dll ] || { rm -rf $$c; icu/build-icu.sh $$i $$c x86_64; }; \
+	mkdir -p $(D3D_DIR)/icu/x64; \
+	cp $$c/x86_64/*.dll $(D3D_DIR)/icu/x64/; \
+	cp licenses/icu.LICENSE $(D3D_DIR)/icu/LICENSE
+	@echo "vkd3d-proton $(VKD3D_VERSION), dxvk $(DXVK_VERSION)+sg$$(cat dxvk/patches/*.patch | sha256sum | cut -c1-8), icu $(ICU_VERSION)" > $@
 	@echo "staged D3D: $$(cat $@)"
 
 # The package, beside the other staged debs (staged-debs clears them first).
