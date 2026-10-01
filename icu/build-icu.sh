@@ -33,8 +33,15 @@ for a in $ARCHS; do
     command -v "$cxx" >/dev/null || { echo "build-icu: $host-g++ is missing" >&2; exit 1; }
     b="$W/$a"
     mkdir "$b"
+    # posix-threads compilers link winpthread: statically, so the DLLs import
+    # only system DLLs -- a search directory first in line whose pthread
+    # import libraries are the static archive
+    sp="$W/static-pthread-$a"
+    mkdir "$sp"
+    wp=$("$cc" -print-file-name=libwinpthread.a)
+    if [ -f "$wp" ]; then ln -s "$wp" "$sp/libpthread.dll.a"; ln -s "$wp" "$sp/libwinpthread.dll.a"; fi
     (cd "$b" && CC="$cc" CXX="$cxx" CPPFLAGS="-DU_DISABLE_RENAMING=1" CFLAGS="-O2" CXXFLAGS="-O2" \
-        LDFLAGS="-static-libgcc -static-libstdc++ -Wl,--exclude-libs,ALL" \
+        LDFLAGS="-L$sp -static-libgcc -static-libstdc++ -Wl,--exclude-libs,ALL" \
         sh "$S/configure" --host="$host" --with-cross-build="$W/native" --enable-shared --disable-static \
         --disable-tests --disable-samples --disable-extras --disable-tools --disable-icuio --disable-layoutex \
         --with-data-packaging=library >/dev/null && nice make -j"$J" >/dev/null)
