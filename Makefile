@@ -18,7 +18,7 @@ SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 
-.PHONY: splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
+.PHONY: mono-config-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
 
 all: image
 
@@ -314,7 +314,7 @@ ADDONS_CACHE := $(BUILD)/addons-cache
 
 addons: $(ADDONS_DIR)/.sg-addons
 
-$(ADDONS_DIR)/.sg-addons: Makefile
+$(ADDONS_DIR)/.sg-addons: Makefile mono/mono-fixes.sh
 	@rm -rf $(ADDONS_DIR)/mono $(ADDONS_DIR)/gecko
 	@mkdir -p $(ADDONS_CACHE) $(ADDONS_DIR)/mono $(ADDONS_DIR)/gecko
 	@set -e; c=$(CURDIR)/$(ADDONS_CACHE); d=$(CURDIR)/$(ADDONS_DIR); \
@@ -328,11 +328,17 @@ $(ADDONS_DIR)/.sg-addons: Makefile
 	echo "$(GECKO_X86_SHA256)  $$c/$$g32" | sha256sum -c - ; \
 	echo "$(GECKO_X64_SHA256)  $$c/$$g64" | sha256sum -c - ; \
 	tar -C $$d/mono -xJf $$c/$$m; \
+	sh mono/mono-fixes.sh $$d/mono; \
 	tar -C $$d/gecko -xJf $$c/$$g32; \
 	tar -C $$d/gecko -xJf $$c/$$g64; \
 	chmod -R u=rwX,go=rX $$d/mono $$d/gecko
 	@echo "wine-mono $(MONO_VERSION), wine-gecko $(GECKO_VERSION)" > $@
 	@echo "staged addons: $$(cat $@)"
+
+# Wine Mono with the image's fixes runs a WinForms program's .config
+# (Greenshot's DpiAwareness section); test/mono-config-test.sh.
+mono-config-test: addons
+	sh test/mono-config-test.sh
 
 # --- voice typing's speech model ---------------------------------------------
 
