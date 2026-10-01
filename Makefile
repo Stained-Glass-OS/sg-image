@@ -16,8 +16,9 @@ SG_SESSION  ?= ../sg-session
 SG_WINE     ?= ../wine-sg
 SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
+SG_OFFICE   ?= ../sg-office
 
-.PHONY: splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
+.PHONY: splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
 
 all: image
 
@@ -41,11 +42,11 @@ $(SSH_KEY):
 staged-debs: $(SSH_KEY) lab-password
 	@mkdir -p $(EXTRA_TREE)/opt/sg-packages
 	@rm -f $(EXTRA_TREE)/opt/sg-packages/*.deb
-	$(MAKE) wine-deb compositor-deb shell-deb session-deb
+	$(MAKE) wine-deb compositor-deb shell-deb session-deb office-deb
 	@# The source each package was built from (repo/build-repo.sh publishes it
 	@# beside the .deb): a rebuild of an unchanged, already-published version
 	@# keeps the published build instead of being refused.
-	@for p in wine-sg:$(SG_WINE) sg-compositor:$(SG_COMPOSITOR) sg-shell:$(SG_SHELL) sg-office:$(SG_SHELL) sg-session:$(SG_SESSION); do \
+	@for p in wine-sg:$(SG_WINE) sg-compositor:$(SG_COMPOSITOR) sg-shell:$(SG_SHELL) sg-office:$(SG_SHELL) sg-session:$(SG_SESSION) sg-office-editors:$(SG_OFFICE); do \
 	  d=$${p#*:}; c=$$(git -C $$d rev-parse HEAD); \
 	  git -C $$d diff --quiet HEAD -- . 2>/dev/null || c=$$c-dirty; \
 	  echo "$${p%%:*} $$c"; done > $(EXTRA_TREE)/opt/sg-packages/SOURCES
@@ -89,6 +90,22 @@ shell-deb:
 	@# SG Office (built from sg-shell's source): its programs, Get SG Office and
 	@# its registrations -- no LibreOffice binary (users fetch that themselves)
 	@cp "$$(ls -t $(SG_SHELL)/../sg-office_*_all.deb | head -1)" $(EXTRA_TREE)/opt/sg-packages/
+
+# SG Office's editors (package sg-office-editors, based on ONLYOFFICE): built
+# from source by the sg-office repository's debian/rules -- its engines in a
+# rootless trixie build root, niced, -j3; a first build takes hours, later ones
+# are incremental (its build trees live under /var/tmp/sgoffice) -- then its
+# package gate: the .deb installed into a scratch root and the program's gate
+# run as installed. sg-shell's sg-office depends on it.
+office-deb:
+	@test -d $(SG_OFFICE) || { \
+		echo "sg-office checkout not found at $(SG_OFFICE)."; \
+		echo "clone it beside this repo, or set SG_OFFICE=/path/to/sg-office"; \
+		exit 1; }
+	$(MAKE) -C $(SG_OFFICE) deb
+	$(MAKE) -C $(SG_OFFICE) test-deb
+	@mkdir -p $(EXTRA_TREE)/opt/sg-packages
+	@cp "$$(ls $(SG_OFFICE)/../sg-office-editors_*_amd64.deb | sort -V | tail -1)" $(EXTRA_TREE)/opt/sg-packages/
 
 compositor-deb:
 	@test -d $(SG_COMPOSITOR) || { \
