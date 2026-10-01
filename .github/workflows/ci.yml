@@ -175,7 +175,7 @@ jobs:
 
       - name: Boot gate
         working-directory: sg-image
-        run: make boot-test
+        run: SG_NO_OFFICE=1 make boot-test
 
       - name: Upload gate artifacts
         # The screenshot is the point. Upload it whether or not the gate passed.
