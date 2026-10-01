@@ -11,16 +11,16 @@
 # Programs are compiled here with Mono's own mcs.exe, under Wine; the image's
 # addons tree is the Mono that runs them.
 #
-#   test/mono-fork-test.sh [WINE]     (needs make addons first)
+#   test/mono-fork-test.sh [WINE]     (needs make mono-deb first)
 # Mutation: the official wine-mono 9.4.0 tarball staged instead fails every
 # check but the ProductCode one (the probe does not load: no EventLogWatcher).
 set -u
 HERE=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 WINE=${1:-/opt/wine-sg/bin/wine}
 WINESERVER="$(dirname "$WINE")/wineserver"
-MONO=$(ls -d "$HERE"/build/extra-tree/usr/share/wine/mono/wine-mono-* 2>/dev/null | head -1)
+MONO=$(ls -d "${SG_MONO_DIR:-$HERE/build/mono-deb-root/usr/share/wine/mono}"/wine-mono-* 2>/dev/null | head -1)
 [ -x "$WINE" ] || { echo "SKIP: no wine at $WINE"; exit 77; }
-[ -n "$MONO" ] || { echo "SKIP: no staged Wine Mono (make addons)"; exit 77; }
+[ -n "$MONO" ] || { echo "SKIP: no packaged Wine Mono (make mono-deb)"; exit 77; }
 command -v x86_64-w64-mingw32-gcc >/dev/null || { echo "SKIP: mingw-w64 not installed"; exit 77; }
 command -v msiinfo >/dev/null || { echo "SKIP: msitools not installed"; exit 77; }
 unset DISPLAY WAYLAND_DISPLAY

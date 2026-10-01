@@ -18,7 +18,7 @@ SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 
-.PHONY: mono-config-test mono-fork-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
+.PHONY: mono-config-test mono-fork-test mono-deb splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
 
 all: image
 
@@ -322,36 +322,60 @@ ADDONS_CACHE := $(BUILD)/addons-cache
 
 addons: $(ADDONS_DIR)/.sg-addons
 
-$(ADDONS_DIR)/.sg-addons: Makefile mono/mono-fixes.sh
+$(ADDONS_DIR)/.sg-addons: Makefile
+	@# Wine Mono is the sg-wine-mono package now (mono-deb): an older build's
+	@# loose copy must not stay in the extra tree beside it.
 	@rm -rf $(ADDONS_DIR)/mono $(ADDONS_DIR)/gecko
-	@mkdir -p $(ADDONS_CACHE) $(ADDONS_DIR)/mono $(ADDONS_DIR)/gecko
+	@mkdir -p $(ADDONS_CACHE) $(ADDONS_DIR)/gecko
 	@set -e; c=$(CURDIR)/$(ADDONS_CACHE); d=$(CURDIR)/$(ADDONS_DIR); \
-	m=wine-mono-$(MONO_VERSION)-$(MONO_BUILD)-x86.tar.xz; \
 	g32=wine-gecko-$(GECKO_VERSION)-x86.tar.xz; \
 	g64=wine-gecko-$(GECKO_VERSION)-x86_64.tar.xz; \
-	[ -f $$c/$$m ]   || curl -sSL --retry 3 -o $$c/$$m   $(MONO_URL); \
 	[ -f $$c/$$g32 ] || curl -sSL --retry 3 -o $$c/$$g32 https://dl.winehq.org/wine/wine-gecko/$(GECKO_VERSION)/$$g32; \
 	[ -f $$c/$$g64 ] || curl -sSL --retry 3 -o $$c/$$g64 https://dl.winehq.org/wine/wine-gecko/$(GECKO_VERSION)/$$g64; \
-	echo "$(MONO_SHA256)  $$c/$$m" | sha256sum -c - ; \
 	echo "$(GECKO_X86_SHA256)  $$c/$$g32" | sha256sum -c - ; \
 	echo "$(GECKO_X64_SHA256)  $$c/$$g64" | sha256sum -c - ; \
-	tar -C $$d/mono -xJf $$c/$$m; \
-	sh mono/mono-fixes.sh $$d/mono; \
 	tar -C $$d/gecko -xJf $$c/$$g32; \
 	tar -C $$d/gecko -xJf $$c/$$g64; \
-	chmod -R u=rwX,go=rX $$d/mono $$d/gecko
-	@echo "wine-mono $(MONO_VERSION)-$(MONO_BUILD), wine-gecko $(GECKO_VERSION)" > $@
+	chmod -R u=rwX,go=rX $$d/gecko
+	@echo "wine-gecko $(GECKO_VERSION)" > $@
 	@echo "staged addons: $$(cat $@)"
+
+# Wine Mono as the Debian package sg-wine-mono (mono/build-deb.sh): installed
+# in the image and published on the apt site, so machines installed before a
+# Mono fix get it with their updates (sg-session depends on it). Rebuilt every
+# time (staged-debs clears the staging directory); the tarball is cached.
+MONO_TARBALL := $(ADDONS_CACHE)/wine-mono-$(MONO_VERSION)-$(MONO_BUILD)-x86.tar.xz
+MONO_ROOT    := $(BUILD)/mono-deb-root
+
+$(MONO_TARBALL):
+	@mkdir -p $(ADDONS_CACHE)
+	curl -sSL --retry 3 -o $@.part $(MONO_URL)
+	echo "$(MONO_SHA256)  $@.part" | sha256sum -c -
+	mv $@.part $@
+
+mono-deb: staged-debs $(MONO_TARBALL)
+	@echo "$(MONO_SHA256)  $(MONO_TARBALL)" | sha256sum -c - >/dev/null
+	mono/build-deb.sh $(MONO_TARBALL) $(EXTRA_TREE)/opt/sg-packages
+	@# Its source: the tarball, the fixes and the packaging script.
+	@echo "sg-wine-mono $$( { echo $(MONO_SHA256); cat mono/mono-fixes.sh mono/build-deb.sh; } | sha256sum | cut -c1-40)" \
+	  >> $(EXTRA_TREE)/opt/sg-packages/SOURCES
+
+# The package's tree, for the gates below (no other package is built)
+$(MONO_ROOT)/.done: $(MONO_TARBALL) mono/build-deb.sh mono/mono-fixes.sh
+	@rm -rf $(MONO_ROOT) $(BUILD)/mono-deb
+	mono/build-deb.sh $(MONO_TARBALL) $(BUILD)/mono-deb
+	dpkg-deb -x $(BUILD)/mono-deb/sg-wine-mono_*_all.deb $(MONO_ROOT)
+	@touch $@
 
 # Wine Mono with the image's fixes runs a WinForms program's .config
 # (Greenshot's DpiAwareness section); test/mono-config-test.sh.
-mono-config-test: addons
-	sh test/mono-config-test.sh
+mono-config-test: $(MONO_ROOT)/.done
+	SG_MONO_DIR=$(MONO_ROOT)/usr/share/wine/mono sh test/mono-config-test.sh
 
 # Our Wine Mono's fixes (mono/patches): event log types, the certificate
 # store, <startup> twice, UserInteractive in a service, NDP v4 InstallPath.
-mono-fork-test: addons
-	sh test/mono-fork-test.sh
+mono-fork-test: $(MONO_ROOT)/.done
+	SG_MONO_DIR=$(MONO_ROOT)/usr/share/wine/mono sh test/mono-fork-test.sh
 
 # --- voice typing's speech model ---------------------------------------------
 
@@ -394,7 +418,7 @@ repo: staged-debs
 repo-check: repo
 	repo/check-repo.sh $(BUILD)/apt
 
-publish: staged-debs speech d3d-deb
+publish: staged-debs speech d3d-deb mono-deb
 	repo/publish.sh $(REPO_DEBS)
 
 # --- the boot splash ---------------------------------------------------------
@@ -419,7 +443,7 @@ splash: staged-debs
 
 # --- image -----------------------------------------------------------------
 
-image: staged-debs d3d-deb apps addons speech splash
+image: staged-debs d3d-deb apps addons mono-deb speech splash
 	@# Older builds put the gate key in the extra tree: it must never ship.
 	rm -f $(EXTRA_TREE)/root/.ssh/authorized_keys
 	mkosi --force --image-version=$$(date -u +%Y%m%d)-$$(git rev-parse --short HEAD)$$(git diff --quiet HEAD -- . 2>/dev/null || echo -dirty)

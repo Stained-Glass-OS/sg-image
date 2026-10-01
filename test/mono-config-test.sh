@@ -5,14 +5,14 @@
 # configuration section". The program is compiled here with Mono's own
 # mcs.exe, under Wine; the image's addons tree is the Mono that runs it.
 #
-#   test/mono-config-test.sh [WINE]     (needs make addons first)
+#   test/mono-config-test.sh [WINE]     (needs make mono-deb first)
 set -u
 HERE=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 WINE=${1:-/opt/wine-sg/bin/wine}
 WINESERVER="$(dirname "$WINE")/wineserver"
-MONO=$(ls -d "$HERE"/build/extra-tree/usr/share/wine/mono/wine-mono-* 2>/dev/null | head -1)
+MONO=$(ls -d "${SG_MONO_DIR:-$HERE/build/mono-deb-root/usr/share/wine/mono}"/wine-mono-* 2>/dev/null | head -1)
 [ -x "$WINE" ] || { echo "SKIP: no wine at $WINE"; exit 77; }
-[ -n "$MONO" ] || { echo "SKIP: no staged Wine Mono (make addons)"; exit 77; }
+[ -n "$MONO" ] || { echo "SKIP: no packaged Wine Mono (make mono-deb)"; exit 77; }
 unset DISPLAY WAYLAND_DISPLAY
 T=$(mktemp -d /var/tmp/sg-monocfg.XXXXXX)
 export HOME="$T/home" WINEPREFIX="$T/pfx" WINEDEBUG=-all WINEDLLOVERRIDES="mshtml=;winemenubuilder.exe=d"
