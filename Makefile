@@ -97,7 +97,11 @@ shell-deb:
 # are incremental (its build trees live under /var/tmp/sgoffice) -- then its
 # package gate: the .deb installed into a scratch root and the program's gate
 # run as installed. sg-shell's sg-office depends on it.
-# SG_NO_OFFICE=1 (CI: the editors take hours to build) leaves SG Office out:
+# SG_NO_OFFICE=1 (CI: the editors take hours to build) leaves SG Office out.
+# The editors deb of the checkout's version is reused when it is already
+# built (every sg-office commit bumps its changelog): the build takes hours
+# and nearly ran the host out of memory when a release re-ran it for nothing.
+# SG_OFFICE_REBUILD=1 builds it anyway.
 # no editors, and sg-shell's sg-office package, which needs them, unstaged.
 office-deb:
 	@if [ "$(SG_NO_OFFICE)" = 1 ]; then \
@@ -108,9 +112,16 @@ office-deb:
 		echo "clone it beside this repo, or set SG_OFFICE=/path/to/sg-office"; \
 		echo "(or SG_NO_OFFICE=1 for an image without SG Office)"; \
 		exit 1; }; \
-	$(MAKE) -C $(SG_OFFICE) deb && $(MAKE) -C $(SG_OFFICE) test-deb && \
+	ver=$$(dpkg-parsechangelog -l $(SG_OFFICE)/debian/changelog -SVersion) && \
+	deb=$(SG_OFFICE)/../sg-office-editors_$${ver}_amd64.deb && \
+	if [ -f "$$deb" ] && [ "$(SG_OFFICE_REBUILD)" != 1 ]; then \
+		echo "sg-office-editors $$ver already built: reusing $$deb (SG_OFFICE_REBUILD=1 rebuilds)"; \
+	else \
+		$(MAKE) -C $(SG_OFFICE) deb && $(MAKE) -C $(SG_OFFICE) test-deb; \
+	fi && test -f "$$deb" && \
 	mkdir -p $(EXTRA_TREE)/opt/sg-packages && \
-	cp "$$(ls $(SG_OFFICE)/../sg-office-editors_*_amd64.deb | sort -V | tail -1)" $(EXTRA_TREE)/opt/sg-packages/
+	rm -f $(EXTRA_TREE)/opt/sg-packages/sg-office-editors_*.deb && \
+	cp "$$deb" $(EXTRA_TREE)/opt/sg-packages/
 
 compositor-deb:
 	@test -d $(SG_COMPOSITOR) || { \
