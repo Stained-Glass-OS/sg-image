@@ -345,6 +345,10 @@ splash: staged-debs
 	  dpkg-deb --fsys-tarfile "$$deb" | tar -x -C $(EXTRA_TREE) ./usr/share/plymouth/themes/stained-glass \
 	  && test -f $(SPLASH_DIR)/stained-glass.script && test -f $(SPLASH_DIR)/diamond.png \
 	  || { echo "splash: $$deb has no Stained Glass theme"; exit 1; }
+	@# and inside the source tree, for mkosi.postoutput's initrd: build/ is a
+	@# symlink in the release worktrees, which mkosi's sandbox cannot follow
+	@rm -rf .splash && mkdir -p .splash/usr/share/plymouth/themes && \
+	  cp -r $(SPLASH_DIR) .splash/usr/share/plymouth/themes/
 
 # --- image -----------------------------------------------------------------
 

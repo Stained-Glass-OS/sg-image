@@ -4,3 +4,4 @@
 /mkosi.output/
 /.mkosi-*
 test/__pycache__/
+/.splash/

@@ -31,7 +31,7 @@ mkdir -p "$S/usr/share/plymouth/themes/stained-glass" "$S/etc/plymouth"
 # directory: reached as $OUTPUTDIR -- $SRCDIR/build may be a symlink the
 # sandbox cannot follow (the release worktrees'), and then the initrd had the
 # script but no diamond.png: a blank splash.
-for tree in "$SRCDIR/mkosi.extra" "$SRCDIR/build/extra-tree" "${OUTPUTDIR:-/nonexistent}/extra-tree"; do
+for tree in "$SRCDIR/mkosi.extra" "$SRCDIR/.splash" "$SRCDIR/build/extra-tree" "${OUTPUTDIR:-/nonexistent}/extra-tree"; do
     [ -d "$tree/usr/share/plymouth/themes/stained-glass" ] && cp -r "$tree/usr/share/plymouth/themes/stained-glass/." "$S/usr/share/plymouth/themes/stained-glass/"
     [ -f "$tree/etc/plymouth/plymouthd.conf" ] && cp "$tree/etc/plymouth/plymouthd.conf" "$S/etc/plymouth/"
 done
