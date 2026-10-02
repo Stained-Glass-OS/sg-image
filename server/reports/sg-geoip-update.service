@@ -1,0 +1,8 @@
+[Unit]
+Description=Refresh the time zone lookup's data (DB-IP city lite, GeoNames cities)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /usr/local/lib/sg-report-receiver/geoip-update.sh

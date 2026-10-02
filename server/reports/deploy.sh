@@ -10,9 +10,15 @@ id sgreports >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/s
 mkdir -p /srv/www/reports && chown sgreports:sgreports /srv/www/reports && chmod 755 /srv/www/reports'
 $SSH 'cat > /usr/local/lib/sg-report-receiver/report-receiver.py' < "$HERE/report-receiver.py"
 $SSH 'cat > /etc/systemd/system/sg-report-receiver.service' < "$HERE/sg-report-receiver.service"
+$SSH 'cat > /usr/local/lib/sg-report-receiver/geoip-update.sh' < "$HERE/geoip-update.sh"
+$SSH 'cat > /etc/systemd/system/sg-geoip-update.service' < "$HERE/sg-geoip-update.service"
+$SSH 'cat > /etc/systemd/system/sg-geoip-update.timer' < "$HERE/sg-geoip-update.timer"
 $SSH 'cat > /etc/caddy/Caddyfile.new' < "$HERE/../Caddyfile"
 $SSH 'set -e
+dpkg -s python3-maxminddb >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-maxminddb >/dev/null
 systemctl daemon-reload
+[ -s /var/lib/sg-geoip/dbip-city-lite.mmdb ] || systemctl start sg-geoip-update.service
+systemctl enable --now sg-geoip-update.timer
 systemctl enable --now sg-report-receiver.service
 systemctl restart sg-report-receiver.service
 caddy validate --config /etc/caddy/Caddyfile.new --adapter caddyfile >/dev/null

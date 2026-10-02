@@ -24,6 +24,14 @@
 #
 #   POST /api/report      body: the report      -> 201 {"id": "..."}
 #                         429 (Retry-After), 413, 415, 400 otherwise
+#   GET /api/timezone     -> {"timezone": "America/Los_Angeles", "country": "US"}
+#                         the caller's time zone by its address ("Set time
+#                         zone automatically"): DB-IP's free city database
+#                         (CC BY 4.0, GEOIP_DB, refreshed monthly) for the
+#                         place, then the zone of the nearest town of 15,000
+#                         people in its country (GeoNames' cities15000, CC BY
+#                         4.0; zone1970.tab's zones when it is missing).
+#                         Nothing is kept; 60 a day per address.
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import collections
@@ -111,6 +119,95 @@ sent = collections.defaultdict(collections.deque)   # address -> times of its re
 all_sent = collections.deque()                      # every report's time (the last day)
 
 
+GEOIP_DB = os.environ.get("SG_GEOIP_DB", "/var/lib/sg-geoip/dbip-city-lite.mmdb")
+ZONE_TAB = os.environ.get("SG_ZONE_TAB", "/usr/share/zoneinfo/zone1970.tab")
+CITIES = os.environ.get("SG_GEO_CITIES", "/var/lib/sg-geoip/cities15000.txt")
+TZ_PER_DAY = 60
+tz_asked = collections.defaultdict(collections.deque)
+_geo = {"reader": None, "mtime": 0, "zones": None, "cities": None}
+
+
+def _coord(text, deg):
+    sign = -1 if text[0] == "-" else 1
+    t = text[1:]
+    d, m, sec = int(t[:deg]), int(t[deg:deg + 2]), int(t[deg + 2:deg + 4] or 0)
+    return sign * (d + m / 60 + sec / 3600)
+
+
+def zones():
+    """country code -> [(lat, lon, zone)]: GeoNames' towns, else zone1970.tab"""
+    if _geo["cities"] is None:
+        c = collections.defaultdict(list)
+        try:
+            with open(CITIES, encoding="utf-8") as f:
+                for line in f:
+                    p = line.rstrip("\n").split("\t")
+                    if len(p) > 17 and p[17]:
+                        try:
+                            c[p[8]].append((float(p[4]), float(p[5]), p[17]))
+                        except ValueError:
+                            pass
+        except OSError:
+            pass
+        _geo["cities"] = c
+    if _geo["cities"]:
+        return _geo["cities"]
+    if _geo["zones"] is None:
+        z = collections.defaultdict(list)
+        with open(ZONE_TAB) as f:
+            for line in f:
+                if line.startswith("#"):
+                    continue
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) < 3:
+                    continue
+                c = parts[1]
+                i = max(c.rfind("+"), c.rfind("-"))
+                lat, lon = c[:i], c[i:]
+                try:
+                    la, lo = _coord(lat, 2), _coord(lon, 3)
+                except ValueError:
+                    continue
+                for cc in parts[0].split(","):
+                    z[cc].append((la, lo, parts[2]))
+        _geo["zones"] = z
+    return _geo["zones"]
+
+
+def geo_reader():
+    import maxminddb
+    try:
+        m = os.stat(GEOIP_DB).st_mtime
+    except OSError:
+        return None
+    if _geo["reader"] is None or m != _geo["mtime"]:
+        _geo["reader"] = maxminddb.open_database(GEOIP_DB)
+        _geo["mtime"] = m
+    return _geo["reader"]
+
+
+def timezone_of(address):
+    import math
+    r = geo_reader()
+    rec = r.get(address) if r else None
+    if not rec:
+        return None
+    cc = (rec.get("country") or {}).get("iso_code", "")
+    loc = rec.get("location") or {}
+    cands = zones().get(cc, [])
+    if not cands:
+        return None
+    lat, lon = loc.get("latitude"), loc.get("longitude")
+    if lat is None or lon is None or len(cands) == 1:
+        return cands[0][2], cc
+
+    def dist(c):
+        dl = math.radians(c[1] - lon)
+        a, b = math.radians(lat), math.radians(c[0])
+        return math.acos(max(-1, min(1, math.sin(a) * math.sin(b) + math.cos(a) * math.cos(b) * math.cos(dl))))
+    return min(cands, key=dist)[2], cc
+
+
 def allow(address, now):
     """None, or the seconds to wait."""
     with lock:
@@ -195,7 +292,29 @@ class Handler(BaseHTTPRequestHandler):
         return self.answer(201, {"id": rid, "url": "https://freesoft.page/reports/#" + rid})
 
     def do_GET(self):
-        self.answer(405, {"error": "reports are sent with POST"})
+        if self.path.split("?")[0] != "/api/timezone":
+            return self.answer(405, {"error": "reports are sent with POST"})
+        address = self.headers.get("X-Sg-Client-Ip") or self.client_address[0]
+        now = time.time()
+        with lock:
+            q = tz_asked[address]
+            while q and now - q[0] > 86400:
+                q.popleft()
+            if len(q) >= TZ_PER_DAY:
+                return self.answer(429, {"error": "too many questions from here today"}, {"Retry-After": "3600"})
+            q.append(now)
+            if len(tz_asked) > 5000:
+                for a in [a for a, t in tz_asked.items() if not t or now - t[-1] > 86400]:
+                    del tz_asked[a]
+        try:
+            found = timezone_of(address)
+        except Exception as e:  # noqa: BLE001 -- say so, keep serving
+            sys.stderr.write("timezone lookup failed: %s\n" % e)
+            found = None
+        if not found:
+            return self.answer(404, {"error": "no time zone known for this address"})
+        self.answer(200, {"timezone": found[0], "country": found[1],
+                          "source": "IP Geolocation by DB-IP (https://db-ip.com), CC BY 4.0"})
 
     def log_message(self, fmt, *args):
         sys.stderr.write("%s %s\n" % (self.headers.get("X-Sg-Client-Ip", "-") if hasattr(self, "headers") and self.headers else "-",

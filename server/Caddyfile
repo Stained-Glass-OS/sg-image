@@ -13,6 +13,12 @@ freesoft.page, www.freesoft.page {
 			header_up X-Sg-Client-Ip {remote_host}
 		}
 	}
+	# Set time zone automatically: the caller's zone by its address
+	handle /api/timezone {
+		reverse_proxy 127.0.0.1:8091 {
+			header_up X-Sg-Client-Ip {remote_host}
+		}
+	}
 	handle {
 		root * /srv/www
 		@listings path /apt/* /iso/*

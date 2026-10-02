@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh the time zone lookup's data monthly
+
+[Timer]
+OnCalendar=*-*-03 04:00:00
+Persistent=true
+RandomizedDelaySec=2h
+
+[Install]
+WantedBy=timers.target
