@@ -18,7 +18,7 @@ SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 
-.PHONY: mono-config-test mono-fork-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
+.PHONY: image-deps-test mono-config-test mono-fork-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
 
 all: image
 
@@ -418,6 +418,9 @@ gtk-deb: staged-debs
 gtk-theme-test:
 	sh test/gtk-theme-test.sh
 
+image-deps-test:
+	sh test/image-deps-test.sh $(EXTRA_TREE)/opt/sg-packages
+
 # --- voice typing's speech model ---------------------------------------------
 
 # Parakeet TDT 0.6B v3 (int8 ONNX, CC BY 4.0) and Silero VAD (MIT), 642 MB, as
@@ -485,6 +488,9 @@ splash: staged-debs
 # --- image -----------------------------------------------------------------
 
 image: staged-debs d3d-deb apps addons mono-deb gecko-deb gtk-deb speech splash
+	@# Our packages go in with dpkg: their dependencies must be in mkosi.conf
+	@# (or come with what is), else the build fails at its very end.
+	sh test/image-deps-test.sh $(EXTRA_TREE)/opt/sg-packages || [ $$? = 77 ]
 	@# Older builds put the gate key in the extra tree: it must never ship.
 	rm -f $(EXTRA_TREE)/root/.ssh/authorized_keys
 	mkosi --force --image-version=$$(date -u +%Y%m%d)-$$(git rev-parse --short HEAD)$$(git diff --quiet HEAD -- . 2>/dev/null || echo -dirty)
