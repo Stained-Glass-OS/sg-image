@@ -18,7 +18,7 @@ SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 
-.PHONY: mono-config-test mono-fork-test mono-deb gecko-deb gecko-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
+.PHONY: mono-config-test mono-fork-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
 
 all: image
 
@@ -400,6 +400,22 @@ mono-config-test: $(MONO_ROOT)/.done
 mono-fork-test: $(MONO_ROOT)/.done
 	SG_MONO_DIR=$(MONO_ROOT)/usr/share/wine/mono sh test/mono-fork-test.sh
 
+# --- Linux programs' look ------------------------------------------------------
+
+# sg-gtk-theme (gtk-theme/build-deb.sh): Orchis in Stained Glass purple, light
+# and dark, the system's GTK theme -- Linux programs looked plain beside the
+# Windows side (David 2026-10-01). Built from Debian's orchis-gtk-theme at a
+# pinned version (cached); installed in the image and published, and
+# sg-session depends on it, so updates carry it.
+GTK_THEME_CACHE := $(BUILD)/gtk-theme-cache
+
+gtk-deb: staged-debs
+	gtk-theme/build-deb.sh $(GTK_THEME_CACHE) $(EXTRA_TREE)/opt/sg-packages
+	@echo "sg-gtk-theme $$(cat gtk-theme/build-deb.sh | sha256sum | cut -c1-40)" >> $(EXTRA_TREE)/opt/sg-packages/SOURCES
+
+gtk-theme-test:
+	sh test/gtk-theme-test.sh
+
 # --- voice typing's speech model ---------------------------------------------
 
 # Parakeet TDT 0.6B v3 (int8 ONNX, CC BY 4.0) and Silero VAD (MIT), 642 MB, as
@@ -441,7 +457,7 @@ repo: staged-debs
 repo-check: repo
 	repo/check-repo.sh $(BUILD)/apt
 
-publish: staged-debs speech d3d-deb mono-deb gecko-deb
+publish: staged-debs speech d3d-deb mono-deb gecko-deb gtk-deb
 	repo/publish.sh $(REPO_DEBS)
 
 # --- the boot splash ---------------------------------------------------------
@@ -466,7 +482,7 @@ splash: staged-debs
 
 # --- image -----------------------------------------------------------------
 
-image: staged-debs d3d-deb apps addons mono-deb gecko-deb speech splash
+image: staged-debs d3d-deb apps addons mono-deb gecko-deb gtk-deb speech splash
 	@# Older builds put the gate key in the extra tree: it must never ship.
 	rm -f $(EXTRA_TREE)/root/.ssh/authorized_keys
 	mkosi --force --image-version=$$(date -u +%Y%m%d)-$$(git rev-parse --short HEAD)$$(git diff --quiet HEAD -- . 2>/dev/null || echo -dirty)
