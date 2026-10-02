@@ -402,16 +402,18 @@ mono-fork-test: $(MONO_ROOT)/.done
 
 # --- Linux programs' look ------------------------------------------------------
 
-# sg-gtk-theme (gtk-theme/build-deb.sh): Orchis in Stained Glass purple, light
-# and dark, the system's GTK theme -- Linux programs looked plain beside the
-# Windows side (David 2026-10-01). Built from Debian's orchis-gtk-theme at a
+# sg-gtk-theme (gtk-theme/build-deb.sh, sg-gtk3.css, sg-gtk4.css): Orchis in
+# Stained Glass purple, light and dark, made to look like the Windows side
+# (controls, menus, scroll bars, window buttons, Inter 9 pt), the system's GTK
+# theme -- Linux programs looked plain beside the Windows side (David
+# 2026-10-01). Built from Debian's orchis-gtk-theme at a
 # pinned version (cached); installed in the image and published, and
 # sg-session depends on it, so updates carry it.
 GTK_THEME_CACHE := $(BUILD)/gtk-theme-cache
 
 gtk-deb: staged-debs
 	gtk-theme/build-deb.sh $(GTK_THEME_CACHE) $(EXTRA_TREE)/opt/sg-packages
-	@echo "sg-gtk-theme $$(cat gtk-theme/build-deb.sh | sha256sum | cut -c1-40)" >> $(EXTRA_TREE)/opt/sg-packages/SOURCES
+	@echo "sg-gtk-theme $$(cat gtk-theme/build-deb.sh gtk-theme/sg-gtk3.css gtk-theme/sg-gtk4.css | sha256sum | cut -c1-40)" >> $(EXTRA_TREE)/opt/sg-packages/SOURCES
 
 gtk-theme-test:
 	sh test/gtk-theme-test.sh

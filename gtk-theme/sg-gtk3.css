@@ -1,0 +1,278 @@
+
+/* ---------------------------------------------------------------------------
+ * Stained Glass OS: the Windows side's look, on top of Orchis (GTK 3).
+ *
+ * Appended by gtk-theme/build-deb.sh to every gtk.css / gtk-dark.css; a name in double
+ * braces is the light or dark palette's colour (build-deb.sh). What it
+ * changes, and why -- each to match what Wine draws beside it (our msstyles
+ * and system colours, sg-shell theme/50-sg-colors.reg; Inter 9 pt):
+ *   - push buttons, combo boxes, text fields: white (dark: grey) with a thin
+ *     grey edge and small corners, regular weight, the purple edge on focus
+ *     and on the default button -- not Orchis's grey pills
+ *   - menus: square, one grey edge, the purple highlight with white text
+ *   - tooltips: square, light, a grey edge
+ *   - check boxes and radio buttons in the purple (Orchis's are green)
+ *   - scroll bars always shown, flat grey thumb, arrow buttons
+ *   - header bars' window buttons: wide flat boxes, Close turns red
+ *   - square window corners, as the compositor's frames are
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * ------------------------------------------------------------------------- */
+
+/* sg-sentinel: sg-gtk3-overrides */
+
+/* windows: square, like every other window on the desktop */
+decoration, .csd decoration, window.csd, .background.csd, .titlebar, .titlebar.default-decoration,
+.csd .titlebar, headerbar, .background.csd > menu, .background.popup { border-radius: 0; }
+decoration { box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28), 0 0 0 1px {{FRAME}}; }
+decoration:backdrop { box-shadow: 0 1px 6px rgba(0, 0, 0, 0.18), 0 0 0 1px {{FRAME}}; }
+
+/* header bars: the caption's white (dark: the dark caption), plain title */
+headerbar, .titlebar { background-color: {{CAPTION}}; color: {{FG}}; box-shadow: inset 0 -1px {{SEPARATOR}}; }
+headerbar:backdrop, .titlebar:backdrop { background-color: {{CAPTION}}; color: {{FG_DIM}}; }
+headerbar .title, .titlebar .title { font-weight: normal; }
+
+/* window buttons: 46 px flat boxes the bar's height, Close red under the pointer */
+headerbar button.titlebutton, .titlebar button.titlebutton,
+.titlebar.default-decoration button.titlebutton {
+  min-width: 46px; min-height: 28px; margin: 0; padding: 0;
+  border-radius: 0; background: none; box-shadow: none; color: {{FG}};
+}
+headerbar button.titlebutton:hover, .titlebar button.titlebutton:hover { background-color: {{CAPBTN_HOVER}}; }
+headerbar button.titlebutton:active, .titlebar button.titlebutton:active { background-color: {{CAPBTN_ACTIVE}}; background-size: auto; }
+headerbar button.titlebutton.close:hover, .titlebar button.titlebutton.close:hover { background-color: #E81123; color: #FFFFFF; }
+headerbar button.titlebutton.close:active, .titlebar button.titlebutton.close:active { background-color: #F1707A; color: #FFFFFF; }
+headerbar button.titlebutton:backdrop, .titlebar button.titlebutton:backdrop { color: {{FG_DIM}}; }
+headerbar { padding-right: 0; }
+headerbar > box.right, headerbar > box.end { margin-right: 0; }
+
+/* push buttons */
+button {
+  font-weight: normal;
+  border-radius: 3px;
+}
+button:not(.flat):not(.titlebutton):not(.suggested-action):not(.destructive-action):not(.circular):not(.close),
+combobox button.combo:not(.flat) {
+  border: 1px solid {{BORDER}};
+  background-color: {{BUTTON}};
+  background-image: none;
+  box-shadow: none;
+  color: {{FG}};
+}
+button:not(.flat):not(.titlebutton):not(.suggested-action):not(.destructive-action):not(.circular):not(.close):hover,
+combobox button.combo:not(.flat):hover {
+  border-color: {{ACCENT}};
+  background-color: {{BUTTON_HOVER}};
+}
+button:not(.flat):not(.titlebutton):not(.suggested-action):not(.destructive-action):not(.circular):not(.close):active,
+button:not(.flat):not(.titlebutton):not(.suggested-action):not(.destructive-action):not(.circular):not(.close):checked,
+combobox button.combo:not(.flat):active, combobox button.combo:not(.flat):checked {
+  border-color: {{ACCENT}};
+  background-color: {{BUTTON_ACTIVE}};
+  color: {{FG}};
+}
+button:not(.flat):not(.titlebutton):not(.suggested-action):not(.destructive-action):not(.circular):not(.close):disabled,
+combobox button.combo:not(.flat):disabled {
+  border-color: {{BORDER_DISABLED}};
+  background-color: {{BUTTON_DISABLED}};
+  color: {{FG_DISABLED}};
+}
+button:not(.flat):not(.titlebutton):not(.suggested-action):not(.destructive-action):not(.circular):not(.close):focus,
+button.default:not(.flat):not(.suggested-action):not(.destructive-action),
+dialog .dialog-action-area button.default, messagedialog .dialog-action-box button.default {
+  border-color: {{ACCENT}};
+  box-shadow: inset 0 0 0 1px {{ACCENT}};
+}
+button.suggested-action:not(.flat) { background-color: {{ACCENT}}; color: {{ACCENT_FG}}; border: 1px solid {{ACCENT}}; box-shadow: none; }
+button.suggested-action:not(.flat):hover { background-color: {{ACCENT_HOVER}}; border-color: {{ACCENT_HOVER}}; }
+button.flat:hover, modelbutton.flat:hover { background-color: {{FLAT_HOVER}}; }
+/* buttons joined into a row: one edge between them, corners only at the ends */
+.linked:not(.vertical) > button:not(.flat):not(:first-child), .linked:not(.vertical) > combobox:not(:first-child) > box > button.combo,
+.linked:not(.vertical) > entry:not(:first-child), .linked:not(.vertical) > spinbutton:not(:first-child) { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }
+.linked:not(.vertical) > button:not(.flat):not(:last-child), .linked:not(.vertical) > combobox:not(:last-child) > box > button.combo,
+.linked:not(.vertical) > entry:not(:last-child), .linked:not(.vertical) > spinbutton:not(:last-child) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.linked.vertical > button:not(.flat):not(:first-child), .linked.vertical > entry:not(:first-child) { border-top-left-radius: 0; border-top-right-radius: 0; margin-top: -1px; }
+.linked.vertical > button:not(.flat):not(:last-child), .linked.vertical > entry:not(:last-child) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+
+/* text fields (and spin buttons, the combo boxes with one) */
+entry, spinbutton:not(.vertical), spinbutton.vertical {
+  border: 1px solid {{BORDER}};
+  border-radius: 3px;
+  background-color: {{FIELD}};
+  box-shadow: none;
+  color: {{FG}};
+}
+spinbutton:not(.vertical) entry, spinbutton.vertical entry { border: none; background: none; box-shadow: none; }
+entry:hover, spinbutton:hover:not(.vertical) { border-color: {{BORDER_HOVER}}; }
+entry:focus, spinbutton:focus:not(.vertical), spinbutton.vertical:focus,
+entry:focus-within {
+  border-color: {{ACCENT}};
+  background-color: {{FIELD}};
+  box-shadow: inset 0 -1px {{ACCENT}};
+}
+entry:disabled, spinbutton:disabled:not(.vertical) { border-color: {{BORDER_DISABLED}}; background-color: {{BUTTON_DISABLED}}; color: {{FG_DISABLED}}; }
+entry.flat, entry.flat:focus { border-color: transparent; box-shadow: none; background-color: transparent; }
+spinbutton:not(.vertical) button, spinbutton.vertical button { border: none; border-radius: 0; background: none; box-shadow: none; }
+spinbutton:not(.vertical) button:hover, spinbutton.vertical button:hover { background-color: {{FLAT_HOVER}}; }
+entry selection, label selection, textview text selection, spinbutton selection { background-color: {{ACCENT}}; color: {{ACCENT_FG}}; }
+
+/* check boxes and radio buttons: the purple, not Orchis's green */
+check:checked, check:indeterminate, radio:checked, radio:indeterminate,
+menu menuitem check:checked, menu menuitem radio:checked,
+#MozillaGtkWidget > widget > checkbutton > check:checked, #MozillaGtkWidget > widget > radiobutton > radio:checked,
+treeview.view check:checked, treeview.view radio:checked,
+popover modelbutton.flat check:checked, popover modelbutton.flat radio:checked { color: {{ACCENT}}; }
+treeview.view check:checked:selected, treeview.view radio:checked:selected { color: {{ACCENT_FG}}; }
+switch:checked { background-color: {{ACCENT}}; }
+switch:checked slider { background-color: #FFFFFF; }
+switch, switch slider { border-radius: 9999px; }
+
+/* menus: square, one grey edge, the purple highlight */
+.background.popup { background-color: transparent; }
+menu, .menu, .context-menu, .background > menu, .background.csd > menu, .background:not(.popup) > menu {
+  margin: 0;
+  padding: 2px;
+  border: 1px solid {{MENU_BORDER}};
+  border-radius: 0;
+  background-color: {{MENU}};
+  box-shadow: none;
+}
+menu menuitem {
+  min-height: 18px;
+  padding: 3px 20px 3px 10px;
+  border-radius: 0;
+  color: {{FG}};
+}
+menu menuitem:hover, menu menuitem:hover label, menu menuitem:hover accelerator, menu menuitem:hover arrow {
+  background-color: {{ACCENT}};
+  color: {{ACCENT_FG}};
+}
+menu menuitem:hover { background-color: {{ACCENT}}; }
+menu menuitem:hover label, menu menuitem:hover accelerator, menu menuitem:hover arrow { background-color: transparent; }
+menu menuitem:disabled, menu menuitem:disabled label { color: {{FG_DISABLED}}; }
+menu menuitem:hover check:not(:checked):not(:indeterminate), menu menuitem:hover radio:not(:checked):not(:indeterminate),
+menu menuitem:hover check:checked, menu menuitem:hover radio:checked { color: {{ACCENT_FG}}; }
+menu separator, .menu separator { min-height: 1px; margin: 3px 2px; background-color: {{MENU_BORDER}}; }
+menuitem accelerator { color: {{FG_DIM}}; }
+menubar, .menubar { background-color: {{MENUBAR}}; box-shadow: none; padding: 0; }
+menubar > menuitem, .menubar > menuitem { padding: 3px 8px; border-radius: 0; color: {{FG}}; min-height: 16px; }
+menubar > menuitem:hover, .menubar > menuitem:hover { background-color: {{MENUBAR_HOVER}}; color: {{FG}}; }
+
+/* popovers (GTK's own menus): square-cornered panes, the purple highlight */
+popover.background, .csd popover.background, popover.background.menu {
+  border: 1px solid {{MENU_BORDER}};
+  border-radius: 0;
+  background-color: {{MENU}};
+}
+popover modelbutton.flat, popover.background.combo > scrolledwindow > viewport.frame > list > row.activatable { border-radius: 0; }
+popover modelbutton.flat:hover, popover.background.combo > scrolledwindow > viewport.frame > list > row.activatable:hover {
+  background-color: {{ACCENT}};
+  color: {{ACCENT_FG}};
+}
+popover modelbutton.flat:hover check, popover modelbutton.flat:hover radio,
+popover modelbutton.flat:hover check:not(:checked):not(:indeterminate):not(:disabled),
+popover modelbutton.flat:hover radio:not(:checked):not(:indeterminate):not(:disabled) { color: {{ACCENT_FG}}; }
+
+/* tooltips: square, light, a grey edge */
+tooltip, tooltip.background, .tooltip, .csd tooltip.background {
+  border: 1px solid {{TOOLTIP_BORDER}};
+  border-radius: 0;
+  background-color: {{TOOLTIP}};
+  box-shadow: none;
+  padding: 2px 4px;
+}
+tooltip label, tooltip * { color: {{FG}}; }
+tooltip decoration { border-radius: 0; box-shadow: none; background-color: transparent; }
+
+/* selections: the system's highlight */
+treeview.view:selected, treeview.view:selected:focus, row:selected, flowbox flowboxchild:selected,
+iconview.view:selected, .view:selected, .view text:selected, textview text:selected:focus, calendar:selected {
+  background-color: {{ACCENT}};
+  color: {{ACCENT_FG}};
+}
+row:selected label, row:selected image { color: {{ACCENT_FG}}; }
+
+/* scroll bars: always there, a flat grey thumb, arrow buttons at the ends */
+scrollbar {
+  -GtkScrollbar-has-backward-stepper: true;
+  -GtkScrollbar-has-forward-stepper: true;
+  background-color: {{TROUGH}};
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  transition: none;
+}
+scrollbar.vertical { border-left: 1px solid {{TROUGH}}; }
+scrollbar.horizontal { border-top: 1px solid {{TROUGH}}; }
+scrollbar slider {
+  min-width: 13px;
+  min-height: 13px;
+  margin: 0 1px;
+  border: none;
+  border-radius: 0;
+  background-color: {{THUMB}};
+  transition: none;
+}
+scrollbar.horizontal slider { margin: 1px 0; }
+scrollbar slider:hover { background-color: {{THUMB_HOVER}}; }
+scrollbar slider:active { background-color: {{THUMB_ACTIVE}}; }
+scrollbar slider:disabled { background-color: transparent; }
+scrollbar button {
+  min-width: 15px;
+  min-height: 17px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  color: {{ARROW}};
+}
+scrollbar.horizontal button { min-width: 17px; min-height: 15px; }
+scrollbar button:hover { background-color: {{THUMB}}; color: {{FG}}; }
+scrollbar button:active { background-color: {{THUMB_ACTIVE}}; color: {{TROUGH}}; }
+scrollbar button:disabled { color: {{FG_DISABLED}}; background: none; }
+scrollbar.overlay-indicator:not(.dragging):not(.hovering) { background: none; }
+scrollbar.overlay-indicator:not(.dragging):not(.hovering) slider { min-width: 4px; min-height: 4px; background-color: {{THUMB_ACTIVE}}; }
+scrollbar.overlay-indicator:not(.dragging):not(.hovering) button { min-width: 0; min-height: 0; color: transparent; }
+
+/* notebook tabs: the selected one marked in the purple */
+notebook > header tab:checked { color: {{FG}}; box-shadow: inset 0 -2px {{ACCENT}}; }
+notebook > header.bottom tab:checked { box-shadow: inset 0 2px {{ACCENT}}; }
+notebook > header.left tab:checked { box-shadow: inset -2px 0 {{ACCENT}}; }
+notebook > header.right tab:checked { box-shadow: inset 2px 0 {{ACCENT}}; }
+notebook > header tab { border-radius: 0; font-weight: normal; }
+
+/* progress and scales in the purple, thin like the Windows side's */
+progressbar progress, scale highlight, levelbar block.filled { background-color: {{ACCENT}}; }
+
+/* toolbar-like buttons: header bars' are flat until pointed at; picture
+   buttons square-cornered, not circles */
+headerbar button:not(.flat):not(.titlebutton):not(.suggested-action):not(.destructive-action):not(.circular):not(.close) {
+  border-color: transparent;
+  background-color: transparent;
+}
+headerbar button:not(.flat):not(.titlebutton):not(.suggested-action):not(.destructive-action):not(.circular):not(.close):hover { background-color: {{FLAT_HOVER}}; }
+button.image-button:not(.circular):not(.titlebutton) { border-radius: 3px; }
+
+/* radio buttons keep round pictures of their own (check boxes' are square) */
+radio { -gtk-icon-source: -gtk-recolor(url("assets/scalable/radio-unchecked-symbolic.svg")); }
+radio:checked { -gtk-icon-source: -gtk-recolor(url("assets/scalable/radio-checked-symbolic.svg")); }
+radio:indeterminate { -gtk-icon-source: -gtk-recolor(url("assets/scalable/radio-mixed-symbolic.svg")); }
+#MozillaGtkWidget > widget > radiobutton > radio, menu menuitem radio { -gtk-icon-source: -gtk-recolor(url("assets/scalable/small-radio-unchecked-symbolic.svg")); }
+#MozillaGtkWidget > widget > radiobutton > radio:checked, menu menuitem radio:checked { -gtk-icon-source: -gtk-recolor(url("assets/scalable/small-radio-checked-symbolic.svg")); }
+#MozillaGtkWidget > widget > radiobutton > radio:indeterminate, menu menuitem radio:indeterminate { -gtk-icon-source: -gtk-recolor(url("assets/scalable/small-radio-mixed-symbolic.svg")); }
+#MozillaGtkWidget > widget > checkbutton > check, menu menuitem check { border-radius: 2px; }
+
+/* stack switchers and other button rows: small corners, not a pill */
+stackswitcher > button, .linked > button { border-radius: 3px; }
+.titlebar stackswitcher, headerbar stackswitcher { border-radius: 3px; }
+.titlebar stackswitcher.linked:not(.vertical) > button:not(.suggested-action):not(.destructive-action).text-button { border-radius: 3px; }
+
+/* the Windows side's density: 28 px fields and buttons, not 32 */
+entry, spinbutton:not(.vertical) { min-height: 26px; }
+button { padding-top: 2px; padding-bottom: 2px; }
+button.titlebutton { padding: 0; }
+headerbar button.titlebutton.close:not(.suggested-action):not(.destructive-action):hover,
+headerbar button.titlebutton.close:not(.suggested-action):not(.destructive-action):hover image,
+.titlebar button.titlebutton.close:not(.suggested-action):not(.destructive-action):hover image { color: #FFFFFF; }
+menu menuitem:hover check:not(:checked):not(:indeterminate):not(:disabled),
+menu menuitem:hover radio:not(:checked):not(:indeterminate):not(:disabled) { color: {{ACCENT_FG}}; }
