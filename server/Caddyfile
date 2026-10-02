@@ -1,0 +1,22 @@
+# freesoft.page (the project server): the website, the apt repository, the
+# ISOs, and the problem report receiver (reports/). Installed by
+# server/reports/deploy.sh; edit here, not on the server.
+freesoft.page, www.freesoft.page {
+	encode gzip
+	# Report a problem: plain-text reports, at most 512 KB (the receiver
+	# limits them per address); the client's address goes with them
+	handle /api/report {
+		request_body {
+			max_size 512KB
+		}
+		reverse_proxy 127.0.0.1:8091 {
+			header_up X-Sg-Client-Ip {remote_host}
+		}
+	}
+	handle {
+		root * /srv/www
+		@listings path /apt/* /iso/*
+		file_server @listings browse
+		file_server
+	}
+}

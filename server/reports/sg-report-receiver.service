@@ -1,0 +1,25 @@
+[Unit]
+Description=Stained Glass OS problem report receiver (behind Caddy, /api/report)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/sg-report-receiver/report-receiver.py
+DynamicUser=yes
+StateDirectory=sg-reports
+StateDirectoryMode=0750
+Environment=SG_REPORT_LISTEN=127.0.0.1:8091
+Restart=on-failure
+MemoryMax=96M
+TasksMax=64
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
