@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds our Wine Mono: upstream wine-mono at $MONO_TAG with mono/patches/
 # applied (wine-mono-*.patch to wine-mono itself, mono-*.patch to its mono
-# submodule), to <src>/wine-mono-<version>-x86.tar.xz -- the tarball the
+# submodule, corefx-*.patch to mono's external/corefx), to <src>/wine-mono-<version>-x86.tar.xz -- the tarball the
 # Makefile pins as MONO_TARBALL. What the patches carry: the README there.
 #
 #   mono/build-wine-mono.sh [SRC-DIR]     (default /var/tmp/wine-mono-build)
@@ -19,6 +19,8 @@ if [ ! -d "$SRC/.git" ]; then
     git clone --branch "$MONO_TAG" --recursive https://gitlab.winehq.org/mono/wine-mono.git "$SRC"
     for p in "$HERE"/patches/wine-mono-*.patch; do git -C "$SRC" apply "$p"; done
     for p in "$HERE"/patches/mono-*.patch; do git -C "$SRC/mono" apply "$p"; done
+    # mono's own submodule, corefx (System.Drawing's Brush comes from it)
+    for p in "$HERE"/patches/corefx-*.patch; do git -C "$SRC/mono/external/corefx" apply "$p"; done
 fi
 W="$SRC/.sg-build"
 mkdir -p "$W/home" "$W/bin"

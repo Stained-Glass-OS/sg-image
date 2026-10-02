@@ -7,7 +7,9 @@
 #   - an app .config may have <startup> twice (its tray program's);
 #   - Environment.UserInteractive is false in a window station that is not
 #     visible (a service's), so Apollo runs as a service, not a console program;
-#   - the support MSI writes NDP\v4\{Client,Full} InstallPath.
+#   - the support MSI writes NDP\v4\{Client,Full} InstallPath;
+#   - System.Drawing has .NET Framework's private names that programs reach by
+#     reflection (AmbirScan's GdPicture).
 # Programs are compiled here with Mono's own mcs.exe, under Wine; the image's
 # addons tree is the Mono that runs them.
 #
@@ -56,6 +58,22 @@ class P {
             Console.WriteLine("eventlog=ok");
         } catch (Exception e) { Console.WriteLine("eventlog=" + e.GetType().Name); }
         Console.WriteLine("setting=" + ConfigurationManager.AppSettings["gate"]);
+        {
+            // System.Drawing's private names as .NET Framework's (GdPicture reflects on them)
+            var bf = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var sf = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic;
+            var gfield = typeof(System.Drawing.Graphics).GetField("nativeGraphics", bf);
+            bool names = gfield != null && typeof(System.Drawing.Pen).GetField("nativePen", bf) != null
+                && typeof(System.Drawing.Brush).GetField("nativeBrush", bf) != null
+                && typeof(System.Drawing.Drawing2D.GraphicsPath).GetConstructor(bf, null, new[] { typeof(IntPtr), typeof(int) }, null) != null
+                && typeof(System.Drawing.Bitmap).GetMethod("FromGDIplus", sf) != null;
+            bool handle = false;
+            if (gfield != null)
+                using (var b = new System.Drawing.Bitmap(4, 4))
+                using (var g = System.Drawing.Graphics.FromImage(b))
+                    handle = (IntPtr)gfield.GetValue(g) != IntPtr.Zero;
+            Console.WriteLine("drawing=" + (names && handle ? "ok" : "names " + names + " handle " + handle));
+        }
         try {
             var cert = new X509Certificate2(a.Length > 1 ? a[1] : "C:\\probe.crt");
             var s = new X509Store(StoreName.Root, StoreLocation.CurrentUser);
@@ -99,12 +117,14 @@ int wmain(int argc, WCHAR **argv)
 EOF
 x86_64-w64-mingw32-gcc -municode -O1 -o "$C/hidden.exe" "$T/hidden.c" || { fail "the launcher did not build"; exit 1; }
 mcs=$("$WINE" winepath -w "$MONO/lib/mono/4.5/mcs.exe" | tr -d '\r')
-(cd "$C" && timeout 300 "$WINE" "$mcs" -r:System.Configuration.dll -r:System.Core.dll -out:fork.exe fork.cs >"$T/mcs.out" 2>&1)
+(cd "$C" && timeout 300 "$WINE" "$mcs" -r:System.Configuration.dll -r:System.Core.dll -r:System.Drawing.dll -out:fork.exe fork.cs >"$T/mcs.out" 2>&1)
 [ -f "$C/fork.exe" ] || { fail "the probe did not compile: $(cat "$T/mcs.out")"; exit 1; }
 out=$(cd "$C" && timeout 120 "$WINE" fork.exe 2>&1 | tr -d '\r')
 v() { printf '%s\n' "$out" | sed -n "s/^$1=//p" | head -1; }
 [ "$(v eventlog)" = ok ] && pass "EventLogWatcher loads and is enabled and disabled" || fail "eventlog: '$(v eventlog)' $(echo "$out" | head -2)"
 [ "$(v setting)" = read ] && pass "a .config with <startup> twice is read" || fail "config: $(echo "$out" | grep -m1 -i 'configuration\|setting')"
+[ "$(v drawing)" = ok ] && pass "System.Drawing has .NET Framework's private names (nativeGraphics, a live GDI+ handle; nativePen, nativeBrush, GraphicsPath(IntPtr,int), Bitmap.FromGDIplus)" \
+    || fail "System.Drawing names: '$(v drawing)'"
 [ "$(v added)" = 1 ] && pass "X509Store.Add puts a certificate in the Root store" || fail "add: $(v added) $(v store)"
 [ "$(v removed)" = True ] && pass "and Remove, while enumerating Certificates, takes it out" || fail "remove: '$(v removed)' $(v store)"
 [ "$(v interactive)" = True ] && pass "UserInteractive in the visible window station" || fail "interactive: '$(v interactive)'"

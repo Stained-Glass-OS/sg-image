@@ -1,0 +1,49 @@
+diff --git a/src/System.Drawing.Common/src/System/Drawing/Brush.cs b/src/System.Drawing.Common/src/System/Drawing/Brush.cs
+index 089069ed..125f38ff 100644
+--- a/src/System.Drawing.Common/src/System/Drawing/Brush.cs
++++ b/src/System.Drawing.Common/src/System/Drawing/Brush.cs
+@@ -15,15 +15,15 @@ namespace System.Drawing
+         private string allocationSite = Graphics.GetAllocationStack();
+ #endif
+         // Handle to native GDI+ brush object to be used on demand.
+-        private IntPtr _nativeBrush;
++        private IntPtr nativeBrush;
+ 
+         public abstract object Clone();
+ 
+         protected internal void SetNativeBrush(IntPtr brush) => SetNativeBrushInternal(brush);
+-        internal void SetNativeBrushInternal(IntPtr brush) => _nativeBrush = brush;
++        internal void SetNativeBrushInternal(IntPtr brush) => nativeBrush = brush;
+ 
+         [Browsable(false), EditorBrowsable(EditorBrowsableState.Never)]
+-        internal IntPtr NativeBrush => _nativeBrush;
++        internal IntPtr NativeBrush => nativeBrush;
+ 
+         public void Dispose()
+         {
+@@ -38,14 +38,14 @@ namespace System.Drawing
+                 Debug.WriteLine("**********************\nDisposed through finalization:\n" + allocationSite);
+ #endif
+ 
+-            if (_nativeBrush != IntPtr.Zero)
++            if (nativeBrush != IntPtr.Zero)
+             {
+                 try
+                 {
+ #if DEBUG
+                     int status =
+ #endif
+-                    SafeNativeMethods.Gdip.GdipDeleteBrush(new HandleRef(this, _nativeBrush));
++                    SafeNativeMethods.Gdip.GdipDeleteBrush(new HandleRef(this, nativeBrush));
+ #if DEBUG
+                     Debug.Assert(status == SafeNativeMethods.Gdip.Ok, "GDI+ returned an error status: " + status.ToString(CultureInfo.InvariantCulture));
+ #endif
+@@ -57,7 +57,7 @@ namespace System.Drawing
+                 }
+                 finally
+                 {
+-                    _nativeBrush = IntPtr.Zero;
++                    nativeBrush = IntPtr.Zero;
+                 }
+             }
+         }

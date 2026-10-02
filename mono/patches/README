@@ -21,4 +21,14 @@ mono-0001-sg-fixes.patch
       not visible (a service's), as .NET decides it (was always true: a .NET
       service that runs as a console program when interactive stopped).
 
+mono-0002-system-drawing-framework-names.patch,
+corefx-0001-brush-nativebrush.patch
+    System.Drawing: the private names .NET Framework's System.Drawing has and
+      programs reach by reflection -- Graphics.nativeGraphics, Pen.nativePen,
+      Brush.nativeBrush (fields), GraphicsPath(IntPtr, int),
+      Bitmap.FromGDIplus(IntPtr) -- over the same GDI+ handles. GdPicture
+      (AmbirScan's imaging library) failed in its type initializer, and
+      AmbirScan with it (David 2026-10-02). Mono's own code keeps
+      nativeObject, a property now for Graphics and Pen.
+
 test/mono-fork-test.sh checks each.
