@@ -31,7 +31,7 @@ OUT=${2:?usage}
 PKG=sg-gtk-theme
 ORCHIS_VERSION=2024-11-03+ds-1
 ORCHIS_SHA256=ca1f134366cdd14b954e74b2354b864b603300373467e6ded0b037fcb0504a59
-VERSION=1.0+orchis20241103-2
+VERSION=1.0+orchis20241103-3
 
 mkdir -p "$CACHE" "$OUT"
 deb="$CACHE/orchis-gtk-theme_${ORCHIS_VERSION}_all.deb"
@@ -301,6 +301,26 @@ cat > "$R/usr/lib/firefox/defaults/pref/sg-gtk-theme.js" <<'EOF'
 // Stained Glass OS (sg-gtk-theme): scroll bars as on the Windows side
 pref("widget.gtk.overlay-scrollbars.enabled", false);
 pref("widget.non-native-theme.scrollbar.style", 4);
+// Its window is in a Wine window of its own, title bar and all (wine-sg
+// 0762): its own tabs-in-the-title-bar made two title bars (David 2026-10-02)
+pref("browser.tabs.inTitlebar", 0);
+// sg-firefox.cfg (beside firefox): what it says it runs on
+pref("general.config.filename", "sg-firefox.cfg");
+pref("general.config.obscure_value", 0);
+EOF
+# A Windows browser to the sites it visits, as the Windows build would say:
+# web apps made for Windows PCs (athenaNet's device manager, downloads that
+# offer the .exe) treat Stained Glass as one (David 2026-10-02). Defaults
+# only: about:config still changes them. The version is the installed
+# Firefox's (extensions.lastAppVersion, set once it has started).
+cat > "$R/usr/lib/firefox/sg-firefox.cfg" <<'EOF'
+// Stained Glass OS (sg-gtk-theme): Firefox says it runs on Windows
+var sgv = "150.0";   // until Firefox has started once
+try { var last = getPref("extensions.lastAppVersion"); if (last) sgv = last.split(".")[0] + ".0"; } catch (e) {}
+defaultPref("general.useragent.override", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:" + sgv + ") Gecko/20100101 Firefox/" + sgv);
+defaultPref("general.platform.override", "Win32");
+defaultPref("general.oscpu.override", "Windows NT 10.0; Win64; x64");
+defaultPref("general.appversion.override", "5.0 (Windows)");
 EOF
 # GNOME's settings (libadwaita programs, and what reads GSettings)
 mkdir -p "$R/usr/share/glib-2.0/schemas"
