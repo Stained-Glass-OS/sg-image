@@ -149,5 +149,13 @@ for d in librsvg2-common fonts-inter fonts-liberation; do echo "$dep" | grep -qw
 [ "$(cd "$T/r" && find etc -type f | sort | tr '\n' ' ')" = "etc/xdg/gtk-3.0/settings.ini etc/xdg/gtk-4.0/settings.ini " ] \
     && dpkg-deb --ctrl-tarfile "$DEB" | tar -xOf - ./conffiles | grep -qx /etc/xdg/gtk-4.0/settings.ini \
     && pass "conffiles: the settings files (the fontconfig link is not one)" || fail "conffiles"
+# the image installs our packages with dpkg, not apt: what this one needs must
+# be in mkosi.conf's package list (2026-10-02: librsvg2-common was not, and
+# the image build failed)
+missing=""
+for d in $(dpkg-deb -f "$DEB" Depends | tr ',' '\n' | sed 's/(.*//; s/|.*//; s/ //g'); do
+    grep -qx "        $d" "$HERE/mkosi.conf" || missing="$missing $d"
+done
+[ -z "$missing" ] && pass "every dependency is in the image's package list (mkosi.conf)" || fail "not in mkosi.conf:$missing"
 [ "$RC" = 0 ] && echo "RESULT: PASS" || echo "RESULT: FAIL"
 exit "$RC"
