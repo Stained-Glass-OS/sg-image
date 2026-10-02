@@ -117,8 +117,10 @@ systemctl enable sg-live.service
 systemctl enable sg-drivers.service
 # Samba's services stay off until a role asks: see
 # mkosi.extra/etc/systemd/system-preset/10-sg-image.preset.
-# The ssh server starts only when a gate provisioned a key (ssh.service.d);
-# a key baked into the image would give its holder root on every install.
+# The ssh server is on (sg-session's sshd_config.d/05-stained-glass.conf:
+# people's passwords, root keys only); the gates sign in as root with the key
+# they provision. A key baked into the image would give its holder root on
+# every install.
 if [ -e /root/.ssh/authorized_keys ]; then
     echo "mkosi.postinst: /root/.ssh/authorized_keys is in the image -- refusing to build" >&2
     exit 1
