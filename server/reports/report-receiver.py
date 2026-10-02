@@ -9,6 +9,13 @@
 # be printable ASCII text (tabs and line breaks too), at most MAX_BYTES, and
 # one of ours; each address may send 2 a minute and 20 a day, and all of
 # them together DAY_TOTAL a day, so nobody can fill the disk or flood it.
+#
+# Reports are read by people and by the project's AI agents (only ones a
+# person reviewed first), so a report must be one sg-bugreport.exe made (its
+# sections, in order) and must not try to instruct an AI ("ignore previous
+# instructions", role markers, ...): such an upload is refused and its
+# address blocked for BLOCK_DAYS (David 2026-10-02). Blocked addresses are
+# kept in STATE/blocked.json.
 # Kept under STATE (systemd's StateDirectory), with the sender's address
 # (for the limits only), and published without it under PUBLIC -- the
 # website's Debug Reports, sorted by program (index.html for people,
@@ -41,9 +48,65 @@ STATE = os.environ.get("STATE_DIRECTORY", os.environ.get("SG_REPORT_DIR", "/var/
 LISTEN = os.environ.get("SG_REPORT_LISTEN", "127.0.0.1:8091")
 PUBLIC = os.environ.get("SG_REPORT_PUBLIC", "/srv/www/reports")
 MARK = b"Stained Glass OS problem report"
+BLOCK_DAYS = int(os.environ.get("SG_REPORT_BLOCK_DAYS", 30))
+# what sg-bugreport.exe writes, in this order
+SECTIONS = [rb"Stained Glass OS problem report\r?\n", rb"\nCreated: ", rb"\n== System ==\r?\n", rb"\nSystem: "]
+INJECTION = [re.compile(p, re.I) for p in (
+    r"\b(ignore|disregard|forget|override)\b.{0,40}\b(previous|prior|above|earlier|all|any|your|the)\b.{0,30}"
+    r"\b(instructions?|prompts?|rules|directions|guidelines|messages?|context)\b",
+    r"\bsystem\s+prompt\b", r"\bnew\s+instructions?\b", r"\bprompt\s+injection\b", r"\bjailbreak",
+    r"\byou\s+are\s+(now\s+)?(an?\s+)?(ai|assistant|language\s+model|llm|chatbot|agent)\b",
+    r"\b(act|behave|respond)\s+as\s+(an?\s+)?(ai|assistant|developer\s+mode|dan)\b",
+    r"\bdo\s+anything\s+now\b", r"\b(dear|hey|attention|note\s+to)\s+(ai|assistant|claude|chatgpt|gpt|llm|agent)\b",
+    r"<\|?\s*(im_start|im_end|endoftext|system|assistant)\s*\|?>", r"\[/?(inst|system)\]",
+    r"(^|\n)\s*(assistant|human|###\s*(instruction|system|response))\s*:",
+    r"\b(curl|wget)\b[^\n]{0,200}\|\s*(ba)?sh\b", r"\brm\s+-rf\s+/", r"\bbase64\s+-d\b",
+)]
 ALLOWED = frozenset(b"\t\n\r") | frozenset(range(32, 127))
 
 lock = threading.Lock()
+blocked = {}   # address -> blocked until (epoch seconds)
+
+
+def load_blocked():
+    try:
+        with open(os.path.join(STATE, "blocked.json")) as f:
+            blocked.update(json.load(f))
+    except (OSError, ValueError):
+        pass
+
+
+def block(address, why):
+    with lock:
+        blocked[address] = time.time() + BLOCK_DAYS * 86400
+        now = time.time()
+        for a in [a for a, t in blocked.items() if t < now]:
+            del blocked[a]
+        tmp = os.path.join(STATE, "blocked.json.tmp")
+        with open(tmp, "w") as f:
+            json.dump(blocked, f)
+        os.replace(tmp, os.path.join(STATE, "blocked.json"))
+    sys.stderr.write("blocked %s for %d days: %s\n" % (address, BLOCK_DAYS, why))
+
+
+def is_blocked(address):
+    with lock:
+        return blocked.get(address, 0) > time.time()
+
+
+def suspicious(text):
+    """why a report is not one of ours, or tries to instruct an AI; "" if fine"""
+    pos = 0
+    for sec in SECTIONS:
+        m = re.compile(sec).search(text.encode("ascii"), pos)
+        if not m:
+            return "not laid out as a problem report"
+        pos = m.start() + 1   # sections share their line breaks
+    for rx in INJECTION:
+        m = rx.search(text)
+        if m:
+            return "looks like instructions to an AI: %r" % m.group(0)[:60]
+    return ""
 sent = collections.defaultdict(collections.deque)   # address -> times of its reports (the last day)
 all_sent = collections.deque()                      # every report's time (the last day)
 
@@ -95,6 +158,8 @@ class Handler(BaseHTTPRequestHandler):
         if length > MAX_BYTES:
             return self.answer(413, {"error": "a report is at most %d bytes" % MAX_BYTES})
         address = self.headers.get("X-Sg-Client-Ip") or self.client_address[0]
+        if is_blocked(address):
+            return self.answer(403, {"error": "reports from this address are not taken"})
         wait = allow(address, time.time())
         if wait is not None:
             return self.answer(429, {"error": "too many reports from here; try again later", "retry_after": wait},
@@ -106,6 +171,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.answer(415, {"error": "a report is plain ASCII text"})
         if MARK not in body[:4096]:
             return self.answer(400, {"error": "not a Stained Glass OS problem report"})
+        why = suspicious(body.decode("ascii"))
+        if why:
+            block(address, why)
+            return self.answer(403, {"error": "this does not look like a report from Report a problem; "
+                                               "reports from this address are no longer taken"})
         if shutil.disk_usage(STATE).free < MIN_FREE:
             return self.answer(507, {"error": "the server cannot take reports right now"})
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -246,6 +316,7 @@ def main():
     host, port = LISTEN.rsplit(":", 1)
     os.makedirs(STATE, exist_ok=True)
     os.makedirs(PUBLIC, exist_ok=True)
+    load_blocked()
     rebuild_index()
     ThreadingHTTPServer((host, int(port)), Handler).serve_forever()
 
