@@ -9,7 +9,7 @@ pass() { echo "PASS  $*"; }
 fail() { echo "FAIL  $*"; RC=1; }
 start() {   # PER_MINUTE PER_DAY
     [ -n "${P:-}" ] && kill "$P" 2>/dev/null; sleep 0.3
-    SG_REPORT_DIR="$T/state" SG_REPORT_LISTEN=127.0.0.1:18091 SG_REPORT_PER_MINUTE=$1 SG_REPORT_PER_DAY=$2 \
+    SG_REPORT_DIR="$T/state" SG_REPORT_PUBLIC="$T/public" SG_REPORT_LISTEN=127.0.0.1:18091 SG_REPORT_PER_MINUTE=$1 SG_REPORT_PER_DAY=$2 \
         SG_REPORT_MAX_BYTES=4096 SG_REPORT_MIN_FREE=0 python3 "$HERE/report-receiver.py" 2>"$T/log" & P=$!
     i=0; while ! python3 -c 'import socket; socket.create_connection(("127.0.0.1",18091),1)' 2>/dev/null && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
 }
@@ -25,12 +25,17 @@ except urllib.error.HTTPError as e:
 PY
 }
 trap 'kill $P 2>/dev/null; rm -rf "$T"' EXIT
-printf 'Stained Glass OS problem report\nCreated: now\n' > "$T/ok.txt"
+printf '== What happened (the tester'"'"'s words) ==\nIt <closed>.\n\nStained Glass OS problem report\nCreated: now\n\n== Program ==\nName:          MeediOS\nVersion:       3.0.0.0\n' > "$T/ok.txt"
 printf 'Stained Glass OS problem report\n\303\251\n' > "$T/utf8.txt"
 python3 -c 'print("Stained Glass OS problem report"); print("x" * 5000)' > "$T/big.txt"
 printf 'hello\n' > "$T/other.txt"
 start 2 20
 [ "$(post "$T/ok.txt")" = 201 ] && [ -n "$(find "$T/state" -name '*.txt')" ] && pass "a report is taken and kept" || fail "a report was not taken"
+[ -n "$(find "$T/public/meedios" -name '*.txt' 2>/dev/null)" ] && grep -q 'MeediOS' "$T/public/index.html" && grep -q '&lt;closed&gt;' "$T/public/index.html" \
+    && pass "...published under its program, listed (escaped) in the index" || fail "not published: $(ls -R "$T/public" 2>&1 | head -5)"
+grep -rq '10.0.0.1' "$T/public" && fail "the sender's address was published" || pass "...without the sender's address"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["MeediOS"][0]["version"]=="3.0.0.0"' "$T/public/index.json" \
+    && pass "...and in index.json, for agents" || fail "index.json"
 post "$T/ok.txt" >/dev/null
 [ "$(post "$T/ok.txt")" = 429 ] && pass "a third in a minute from one address is refused" || fail "no limit per minute"
 [ "$(post "$T/ok.txt" 10.0.0.2)" = 201 ] && pass "...another address is not" || fail "another address was refused"

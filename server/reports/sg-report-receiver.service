@@ -4,10 +4,13 @@ After=network.target
 
 [Service]
 ExecStart=/usr/bin/python3 /usr/local/lib/sg-report-receiver/report-receiver.py
-DynamicUser=yes
+User=sgreports
+Group=sgreports
 StateDirectory=sg-reports
 StateDirectoryMode=0750
-Environment=SG_REPORT_LISTEN=127.0.0.1:8091
+Environment=SG_REPORT_LISTEN=127.0.0.1:8091 SG_REPORT_PUBLIC=/srv/www/reports
+# the website's Debug Reports: the only place it may write besides its state
+ReadWritePaths=/srv/www/reports
 Restart=on-failure
 MemoryMax=96M
 TasksMax=64

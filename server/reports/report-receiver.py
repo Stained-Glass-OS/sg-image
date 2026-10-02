@@ -9,7 +9,11 @@
 # be printable ASCII text (tabs and line breaks too), at most MAX_BYTES, and
 # one of ours; each address may send 2 a minute and 20 a day, and all of
 # them together DAY_TOTAL a day, so nobody can fill the disk or flood it.
-# Kept under STATE (systemd's StateDirectory), one file each, never served.
+# Kept under STATE (systemd's StateDirectory), with the sender's address
+# (for the limits only), and published without it under PUBLIC -- the
+# website's Debug Reports, sorted by program (index.html for people,
+# index.json for agents), so anyone can see what is tested and what fails
+# (David 2026-10-02). The client leaves out the account and computer names.
 #
 #   POST /api/report      body: the report      -> 201 {"id": "..."}
 #                         429 (Retry-After), 413, 415, 400 otherwise
@@ -17,7 +21,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import collections
 import datetime
+import html
 import json
+import re
 import os
 import secrets
 import shutil
@@ -33,6 +39,7 @@ DAY_TOTAL = int(os.environ.get("SG_REPORT_DAY_TOTAL", 1000))
 MIN_FREE = int(os.environ.get("SG_REPORT_MIN_FREE", 2 * 1024 ** 3))   # keep 2 GB for apt and ISOs
 STATE = os.environ.get("STATE_DIRECTORY", os.environ.get("SG_REPORT_DIR", "/var/lib/sg-reports"))
 LISTEN = os.environ.get("SG_REPORT_LISTEN", "127.0.0.1:8091")
+PUBLIC = os.environ.get("SG_REPORT_PUBLIC", "/srv/www/reports")
 MARK = b"Stained Glass OS problem report"
 ALLOWED = frozenset(b"\t\n\r") | frozenset(range(32, 127))
 
@@ -111,7 +118,11 @@ class Handler(BaseHTTPRequestHandler):
             f.write(body)
         os.chmod(path + ".tmp", 0o640)
         os.replace(path + ".tmp", path)
-        return self.answer(201, {"id": rid})
+        try:
+            publish(rid, now, body)
+        except OSError as e:
+            sys.stderr.write("publishing %s failed: %s\n" % (rid, e))
+        return self.answer(201, {"id": rid, "url": "https://freesoft.page/reports/#" + rid})
 
     def do_GET(self):
         self.answer(405, {"error": "reports are sent with POST"})
@@ -121,9 +132,121 @@ class Handler(BaseHTTPRequestHandler):
                                       fmt % args))
 
 
+# ---- the public Debug Reports --------------------------------------------------------------
+
+def field(text, name):
+    m = re.search(r"^%s:\s*(.+)$" % re.escape(name), text, re.M)
+    return m.group(1).strip()[:200] if m else ""
+
+
+def describe(rid, created, text):
+    program = field(text, "Name") if "== Program ==" in text else ""
+    first_exc = ""
+    m = re.search(r"^Exceptions \(by code.*\n\s+\d+\s+(.+)$", text, re.M)
+    if m:
+        first_exc = m.group(1).strip()[:200]
+    net = re.search(r"^\s*(System\.[A-Za-z.]*Exception[^\n]*)", text, re.M)
+    notes = ""
+    m = re.search(r"== What happened \(the tester's words\) ==\n(.*?)\n\n", text, re.S)
+    if m and m.group(1).strip() != "(no notes)":
+        notes = " ".join(m.group(1).split())[:300]
+    return {
+        "id": rid, "created": created.strftime("%Y-%m-%d %H:%M UTC"),
+        "program": program or "System report", "product": field(text, "Product"),
+        "version": field(text, "Version"), "ended": field(text, "How it ended") or field(text, "Ran for"),
+        "exception": first_exc, "dotnet": net.group(1).strip()[:200] if net else "",
+        "system": field(text, "System"), "notes": notes,
+    }
+
+
+def slug(name):
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:60] or "system"
+
+
+PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Debug Reports - Stained Glass OS</title>
+<style>
+:root { --bg: #fff; --fg: #1d1b26; --muted: #66617a; --accent: #7b3fe4; --line: #e4e0ee; --card: #f7f5fb; }
+@media (prefers-color-scheme: dark) { :root { --bg: #16141c; --fg: #ece9f3; --muted: #a39db5; --accent: #b48cff; --line: #2c2838; --card: #1e1b27; } }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+main { max-width: 980px; margin: 0 auto; padding: 16px; }
+a { color: var(--accent); }
+header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+.app { border: 1px solid var(--line); border-radius: 10px; background: var(--card); margin: 14px 0; padding: 10px 14px; }
+.app h2 { margin: 4px 0 6px; font-size: 18px; }
+.r { border-top: 1px solid var(--line); padding: 6px 0; font-size: 14px; }
+.r code { font-size: 13px; overflow-wrap: anywhere; }
+.muted { color: var(--muted); }
+</style></head><body><main>
+<header><h1>Debug Reports</h1><span class="muted"><a href="/">Stained Glass OS</a> &middot; <a href="index.json">index.json</a></span></header>
+<p class="muted">Problem reports testers sent with <b>Report a problem</b>, grouped by program, newest first. Account and
+computer names are left out by the sender. These show what is being tried on Stained Glass OS and what still fails.</p>
+%s
+</main></body></html>
+"""
+
+
+def publish(rid, created, body):
+    text = body.decode("ascii")
+    meta = describe(rid, created, text)
+    d = os.path.join(PUBLIC, slug(meta["program"]))
+    os.makedirs(d, exist_ok=True)
+    for name, data in ((rid + ".txt", text), (rid + ".json", json.dumps(meta))):
+        with open(os.path.join(d, name + ".tmp"), "w") as f:
+            f.write(data)
+        os.chmod(os.path.join(d, name + ".tmp"), 0o644)
+        os.replace(os.path.join(d, name + ".tmp"), os.path.join(d, name))
+    rebuild_index()
+
+
+def rebuild_index():
+    with lock:
+        apps = collections.defaultdict(list)
+        for app in sorted(os.listdir(PUBLIC)):
+            p = os.path.join(PUBLIC, app)
+            if not os.path.isdir(p):
+                continue
+            for name in os.listdir(p):
+                if name.endswith(".json"):
+                    try:
+                        with open(os.path.join(p, name)) as f:
+                            m = json.load(f)
+                    except (OSError, ValueError):
+                        continue
+                    m["path"] = "%s/%s.txt" % (app, m["id"])
+                    apps[m["program"]].append(m)
+        for v in apps.values():
+            v.sort(key=lambda m: m["id"], reverse=True)
+        order = sorted(apps, key=lambda a: (-len(apps[a]), a.lower()))
+        parts = []
+        for a in order:
+            rows = []
+            for m in apps[a][:200]:
+                what = m["dotnet"] or m["exception"]
+                rows.append('<div class="r" id="%s"><a href="%s">%s</a> <span class="muted">%s%s</span>%s%s</div>' % (
+                    html.escape(m["id"]), html.escape(m["path"]), html.escape(m["created"]),
+                    ("v" + html.escape(m["version"]) + " &middot; ") if m["version"] else "", html.escape(m["ended"]),
+                    "<br><code>%s</code>" % html.escape(what) if what else "",
+                    "<br>&ldquo;%s&rdquo;" % html.escape(m["notes"]) if m["notes"] else ""))
+            title = html.escape(a) + (' <span class="muted">%s</span>' % html.escape(apps[a][0]["product"])
+                                      if apps[a][0]["product"] and apps[a][0]["product"] != a else "")
+            parts.append('<section class="app" id="%s"><h2>%s <span class="muted">(%d)</span></h2>%s</section>' % (
+                html.escape(slug(a)), title, len(apps[a]), "".join(rows)))
+        page = PAGE % ("\n".join(parts) or "<p>No reports yet.</p>")
+        for name, data in (("index.html", page),
+                           ("index.json", json.dumps({a: apps[a] for a in order}, indent=1))):
+            with open(os.path.join(PUBLIC, name + ".tmp"), "w") as f:
+                f.write(data)
+            os.chmod(os.path.join(PUBLIC, name + ".tmp"), 0o644)
+            os.replace(os.path.join(PUBLIC, name + ".tmp"), os.path.join(PUBLIC, name))
+
+
 def main():
     host, port = LISTEN.rsplit(":", 1)
     os.makedirs(STATE, exist_ok=True)
+    os.makedirs(PUBLIC, exist_ok=True)
+    rebuild_index()
     ThreadingHTTPServer((host, int(port)), Handler).serve_forever()
 
 
