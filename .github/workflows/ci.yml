@@ -71,6 +71,7 @@ jobs:
 
       # The release's once-more rule for boot-timing checks (release/release.sh)
       - name: Release retry rule
+        working-directory: sg-image
         run: bash test/release-retry-test.sh
 
       # The runner's preinstalled toolchains are not needed, and the Wine
