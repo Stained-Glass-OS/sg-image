@@ -31,7 +31,7 @@ OUT=${2:?usage}
 PKG=sg-gtk-theme
 ORCHIS_VERSION=2024-11-03+ds-1
 ORCHIS_SHA256=ca1f134366cdd14b954e74b2354b864b603300373467e6ded0b037fcb0504a59
-VERSION=1.0+orchis20241103-3
+VERSION=1.0+orchis20241103-4
 
 mkdir -p "$CACHE" "$OUT"
 deb="$CACHE/orchis-gtk-theme_${ORCHIS_VERSION}_all.deb"
