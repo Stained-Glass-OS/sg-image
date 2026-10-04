@@ -176,6 +176,9 @@ DXVK_COMMIT   := b1a1c99ab52b687cf950d62c88bc2fa316b41663
 # icu.dll -- Qt 6's Windows builds and winget use it), built with mingw-w64 from
 # Debian's ICU source (icu/build-icu.sh), in the same package.
 ICU_VERSION   := 76.1
+# our build's revision: raised when icu/build-icu.sh changes what is built (1:
+# res_index without the locales .NET cannot use), so sg-d3d's version changes
+ICU_SGREV     := 1
 ICU_SHA256    := dfacb46bfe4747410472ce3e1144bf28a102feeaa4e3875bac9b4c6cf30f4f3e
 ICU_URL       := https://deb.debian.org/debian/pool/main/i/icu/icu_$(ICU_VERSION).orig.tar.gz
 
@@ -219,7 +222,7 @@ $(D3D_DIR)/VERSION: Makefile dxvk/build-dxgi.sh $(wildcard dxvk/patches/*.patch)
 	mkdir -p $(D3D_DIR)/icu/x64; \
 	cp $$c/x86_64/*.dll $(D3D_DIR)/icu/x64/; \
 	cp licenses/icu.LICENSE $(D3D_DIR)/icu/LICENSE
-	@echo "vkd3d-proton $(VKD3D_VERSION), dxvk $(DXVK_VERSION)+sg$$(cat dxvk/patches/*.patch | sha256sum | cut -c1-8), icu $(ICU_VERSION)" > $@
+	@echo "vkd3d-proton $(VKD3D_VERSION), dxvk $(DXVK_VERSION)+sg$$(cat dxvk/patches/*.patch | sha256sum | cut -c1-8), icu $(ICU_VERSION)+sg$(ICU_SGREV)" > $@
 	@echo "staged D3D: $$(cat $@)"
 
 # The package, beside the other staged debs (staged-debs clears them first).

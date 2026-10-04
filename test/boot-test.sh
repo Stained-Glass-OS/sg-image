@@ -432,6 +432,10 @@ if python3 "$HERE/test/splash-frames.py" "$QMP_DIR"/frames/*.ppm; then
 else
     echo "FAIL  no frame of the boot showed the splash"
     cp "$QMP_DIR"/frames/0[0-2]?.ppm "$ARTIFACTS/" 2>/dev/null || true
+    # why: when the graphics devices came, and what Plymouth did (its debug
+    # log when the command line asks for plymouth.debug)
+    ssh_guest 'journalctl -b -o short-monotonic --no-pager | grep -iE "drm|bochs|virtio.gpu|simpledrm|fb0|efifb|plymouth" | head -60; cat /var/log/plymouth-debug.log 2>/dev/null | head -400' \
+        > "$ARTIFACTS/splash-why.log" 2>&1 || true
     RC=1
 fi
 st=$(ssh_guest 'systemctl show -p After plymouth-reboot.service plymouth-poweroff.service plymouth-quit.service | grep -c "user.slice\|sg-prefix-init"; dpkg -s plymouth-label >/dev/null 2>&1 && echo label' 2>/dev/null | tr '\n' ' ')

@@ -25,6 +25,40 @@ ver=$(sed -n 's/^#define U_ICU_VERSION_MAJOR_NUM \([0-9]*\).*/\1/p' "$S/common/u
 mkdir "$W/native"
 (cd "$W/native" && sh "$S/runConfigureICU" Linux --disable-tests --disable-samples >/dev/null && nice make -j"$J" >/dev/null)
 
+# The locales ICU lists as installed (res_index's InstalledLocales), without
+# those .NET cannot make a culture of: Windows' own ICU is older and has none
+# of them, and with this ICU every CultureInfo.GetCultures() threw ("bgc is an
+# invalid culture identifier") -- MeediOS lost its core and crashed at every
+# click (David, 2026-10-03). Found with .NET 10 against this ICU 76: each
+# available locale given to CultureInfo.GetCultureInfo. Their data stays; only
+# the list leaves them out, so nothing enumerates them.
+DOTNET_UNKNOWN="bgc bgc_IN bho bho_IN cv cv_RU en_MV en_US_POSIX gaa gaa_GH hi_Latn hi_Latn_IN ko_CN ku_TR kxv kxv_Deva
+    kxv_Deva_IN kxv_Latn kxv_Latn_IN kxv_Orya kxv_Orya_IN kxv_Telu kxv_Telu_IN lij lij_IT lmo lmo_IT oc_ES raj raj_IN
+    syr_IQ szl szl_PL tok tok_001 vec vec_IT"
+dat="$S/data/in/icudt${ver}l.dat"     # icupkg takes the package's name from this file's
+N="$W/native"
+R="$W/res-index"
+mkdir -p "$R/out"
+export LD_LIBRARY_PATH="$N/lib"
+# items are named without the package's prefix (res_index.res, not icudt76l/...)
+"$N/bin/icupkg" -x res_index.res -d "$R" "$dat"
+(cd "$R" && "$N/bin/derb" -s "$R" -d "$R" -e UTF-8 res_index.res)
+[ -s "$R/res_index.txt" ] || { echo "build-icu: res_index.res could not be read" >&2; exit 1; }
+n0=$(grep -c '{ "" }' "$R/res_index.txt")
+for l in $DOTNET_UNKNOWN; do
+    sed -i "/^ *$l { \"\" }\$/d" "$R/res_index.txt"
+done
+pat=$(echo $DOTNET_UNKNOWN | sed 's/ /|/g')
+left=$(grep -cE "^ *($pat) \{" "$R/res_index.txt" || true)
+[ "$left" = 0 ] || { echo "build-icu: res_index still lists $left of the locales .NET cannot use" >&2; exit 1; }
+grep -q '^ *en_US { "" }$' "$R/res_index.txt" || { echo "build-icu: res_index.txt is not what was expected" >&2; exit 1; }
+# as ICU's own build writes it: without it, "res_index" reads as a locale whose parent is "res"
+sed -i 's/^res_index{$/res_index:table(nofallback){/' "$R/res_index.txt"
+"$N/bin/genrb" -q -e UTF-8 -s "$R" -d "$R/out" res_index.txt
+"$N/bin/icupkg" -s "$R/out" -a res_index.res "$dat"
+echo "build-icu: installed locales $n0 -> $(grep -c '{ "" }' "$R/res_index.txt") (without those .NET cannot use)"
+unset LD_LIBRARY_PATH
+
 for a in $ARCHS; do
     host=$a-w64-mingw32
     # the plain compilers, or their posix-threads twins (all a CI runner may have)
