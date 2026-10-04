@@ -35,8 +35,14 @@ VERSION=1.0+orchis20241103-3
 
 mkdir -p "$CACHE" "$OUT"
 deb="$CACHE/orchis-gtk-theme_${ORCHIS_VERSION}_all.deb"
+# Debian has since dropped orchis-gtk-theme (2026-10): the pinned build is
+# kept on the project server beside the Wine Mono tarballs; apt first.
+ORCHIS_URL="https://freesoft.page/addons/orchis-gtk-theme_${ORCHIS_VERSION}_all.deb"
 if [[ ! -f "$deb" ]]; then
-    (cd "$CACHE" && apt-get download "orchis-gtk-theme=$ORCHIS_VERSION" >/dev/null)
+    if ! (cd "$CACHE" && apt-get download "orchis-gtk-theme=$ORCHIS_VERSION" >/dev/null 2>&1); then
+        curl -sSL --fail --retry 3 -o "$deb.part" "$ORCHIS_URL"
+        mv "$deb.part" "$deb"
+    fi
 fi
 echo "$ORCHIS_SHA256  $deb" | sha256sum -c - >/dev/null || { echo "build-deb: orchis-gtk-theme is not the pinned build" >&2; exit 1; }
 
