@@ -57,6 +57,8 @@ until [[ "$(seen 'oobe ready')" -ge 1 ]]; do
         fail "the first-run setup did not appear at the first boot"
         shot "none"
         ssh_guest "journalctl -b -t sg-login -t sg-oobe --no-pager -o cat | tail -20; ls -l /etc/stained-glass" 2>&1 | sed 's/^/    /'
+        # what the machine was busy with (a first boot's ClamAV download and load beside it?)
+        ssh_guest "uptime; free -m | head -2; ps -eo pcpu,rss,etime,comm --sort=-pcpu | head -8; systemctl list-jobs --no-pager | head; journalctl -b -u sg-oobed -u clamav-freshclam -u clamav-daemon -u sg-defender -u sg-prefix-init --no-pager -o short-monotonic | tail -25" 2>&1 | cut -c1-200 | sed 's/^/    /'
         exit 1
     fi
     sleep 3; t=$(( t + 3 ))

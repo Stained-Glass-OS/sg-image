@@ -50,10 +50,31 @@ export SG_WINE="$REL/wine-sg" SG_SESSION="$REL/sg-session" SG_SHELL="$REL/sg-she
     SG_OFFICE="$REL/sg-office"
 cd "$REL/sg-image"
 L="$HERE/build/release-logs"; mkdir -p "$L"
+# Checks that depend on how fast a VM boots: the same image passes on its next
+# boot (2026-10-03: the splash -- Plymouth drew its text fallback -- failed 3
+# times in a day, never twice running, never on demand). A gate whose only
+# failures are these is run once more; its first run's log is kept as
+# NAME.first.log (and boot-test's splash-why.log in it) for the cause. Any other
+# failure, or one of these twice, stops the release as before.
+TIMING_CHECKS='no frame of the boot showed the splash|the first-run setup did not appear at the first boot'
+only_timing_failures() { # log
+    local fails
+    fails=$(grep -E "^FAIL  " "$1" || true)
+    [[ -n "$fails" ]] && ! grep -qvE "$TIMING_CHECKS" <<< "$fails"
+}
 step() { # name, command...
     local name=$1; shift
     log "$name"
     if ! "$@" > "$L/$name.log" 2>&1; then
+        if only_timing_failures "$L/$name.log"; then
+            mv "$L/$name.log" "$L/$name.first.log"
+            cp build/artifacts/splash-why.log "$L/$name.first.splash-why.log" 2>/dev/null || true
+            log "$name: only a boot-timing check failed ($(grep -E "^FAIL  " "$L/$name.first.log" | head -1 | cut -c7-80)): once more"
+            if "$@" > "$L/$name.log" 2>&1; then
+                grep -E "GATE (PASS|FAIL)|^FAIL" "$L/$name.log" | tail -4 || true
+                return 0
+            fi
+        fi
         log "FAILED: $name -- $L/$name.log"; tail -15 "$L/$name.log"; exit 1
     fi
     grep -E "GATE (PASS|FAIL)|^FAIL" "$L/$name.log" | tail -4 || true

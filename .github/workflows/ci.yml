@@ -69,6 +69,10 @@ jobs:
           key: wine-build-trixie-${{ hashFiles('wine-sg/wine-version', 'wine-sg/patches/**', 'wine-sg/build.sh') }}
           restore-keys: wine-build-trixie-
 
+      # The release's once-more rule for boot-timing checks (release/release.sh)
+      - name: Release retry rule
+        run: bash test/release-retry-test.sh
+
       # The runner's preinstalled toolchains are not needed, and the Wine
       # tree, the packages and an image of several GB do not fit beside them.
       - name: Free disk space
