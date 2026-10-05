@@ -1,0 +1,1695 @@
+diff --git a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/LocalPrintServer.cs b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/LocalPrintServer.cs
+index c99d791..99fa6dd 100644
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/LocalPrintServer.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/LocalPrintServer.cs
+@@ -9,7 +9,7 @@ public sealed class LocalPrintServer : PrintServer
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return GetDefaultPrintQueue();
+ 		}
+ 		set
+ 		{
+@@ -19,37 +19,30 @@ public sealed class LocalPrintServer : PrintServer
+ 
+ 	public LocalPrintServer()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public LocalPrintServer(LocalPrintServerIndexedProperty[] propertiesFilter)
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public LocalPrintServer(LocalPrintServerIndexedProperty[] propertiesFilter, PrintSystemDesiredAccess desiredAccess)
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public LocalPrintServer(PrintSystemDesiredAccess desiredAccess)
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public LocalPrintServer(string[] propertiesFilter)
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public LocalPrintServer(string[] propertiesFilter, PrintSystemDesiredAccess desiredAccess)
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public sealed override void Commit()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	[return: MarshalAs(UnmanagedType.U1)]
+@@ -78,12 +71,15 @@ public sealed class LocalPrintServer : PrintServer
+ 
+ 	public static PrintQueue GetDefaultPrintQueue()
+ 	{
+-		throw new NotImplementedException();
++		/* Stained Glass OS: the user's default printer (SgSpooler.cs). */
++		string name = SgSpooler.GetDefaultPrinter();
++		if (name == null)
++			throw new PrintQueueException(0, "PrintSystemException.PrintQueue.Generic", null);
++		return new PrintQueue(new LocalPrintServer(), name);
+ 	}
+ 
+ 	public sealed override void Refresh()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ }
+ }
+diff --git a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintDriver.cs b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintDriver.cs
+index 5fdf1a1..94051f0 100644
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintDriver.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintDriver.cs
+@@ -9,19 +9,23 @@ public sealed class PrintDriver : PrintFilter
+ 	{
+ 	}
+ 
++	/* Stained Glass OS: named after the queue's driver, port or print processor. */
++	internal PrintDriver(string name, PrintSystemObject parent)
++	{
++		Name = name;
++		sg_parent = parent;
++	}
++
+ 	public sealed override void Commit()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	protected sealed override void InternalDispose([MarshalAs(UnmanagedType.U1)] bool disposing)
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public sealed override void Refresh()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ }
+ }
+diff --git a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintFilter.cs b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintFilter.cs
+index 40ff976..03bc54c 100644
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintFilter.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintFilter.cs
+@@ -11,7 +11,6 @@ public abstract class PrintFilter : PrintSystemObject
+ 
+ 	protected override void InternalDispose([MarshalAs(UnmanagedType.U1)] bool disposing)
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ }
+ }
+diff --git a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintJobInfoCollection.cs b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintJobInfoCollection.cs
+index 3238e03..d6258b4 100644
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintJobInfoCollection.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintJobInfoCollection.cs
+@@ -7,14 +7,18 @@ namespace System.Printing {
+ 
+ public class PrintJobInfoCollection : PrintSystemObjects, IEnumerable<PrintSystemJobInfo>, IEnumerable, IDisposable
+ {
++	/* Stained Glass OS: the queue's jobs, as the spooler lists them (SgSpooler.cs). */
++	readonly List<PrintSystemJobInfo> sg_jobs = new List<PrintSystemJobInfo>();
++
+ 	public PrintJobInfoCollection(PrintQueue printQueue, string[] propertyFilter)
+ 	{
+-		throw new NotImplementedException();
++		foreach (var job in SgSpooler.EnumJobs(printQueue.FullName))
++			sg_jobs.Add(new PrintSystemJobInfo(printQueue, job));
+ 	}
+ 
+ 	public void Add(PrintSystemJobInfo printObject)
+ 	{
+-		throw new NotImplementedException();
++		sg_jobs.Add(printObject);
+ 	}
+ 
+ 	protected override void Dispose([MarshalAs(UnmanagedType.U1)] bool A_0)
+@@ -23,17 +27,17 @@ public class PrintJobInfoCollection : PrintSystemObjects, IEnumerable<PrintSyste
+ 
+ 	public virtual IEnumerator<PrintSystemJobInfo> GetEnumerator()
+ 	{
+-		throw new NotImplementedException();
++		return sg_jobs.GetEnumerator();
+ 	}
+ 
+ 	public virtual IEnumerator GetNonGenericEnumerator()
+ 	{
+-		throw new NotImplementedException();
++		return sg_jobs.GetEnumerator();
+ 	}
+ 
+ 	IEnumerator IEnumerable.GetEnumerator()
+ 	{
+-		throw new NotImplementedException();
++		return sg_jobs.GetEnumerator();
+ 	}
+ }
+ }
+diff --git a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintPort.cs b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintPort.cs
+index 44d6393..befe8db 100644
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintPort.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintPort.cs
+@@ -9,19 +9,23 @@ public sealed class PrintPort : PrintSystemObject
+ 	{
+ 	}
+ 
++	/* Stained Glass OS: named after the queue's driver, port or print processor. */
++	internal PrintPort(string name, PrintSystemObject parent)
++	{
++		Name = name;
++		sg_parent = parent;
++	}
++
+ 	public sealed override void Commit()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	protected sealed override void InternalDispose([MarshalAs(UnmanagedType.U1)] bool disposing)
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public sealed override void Refresh()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ }
+ }
+diff --git a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintProcessor.cs b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintProcessor.cs
+index eb3e06a..3582bf7 100644
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintProcessor.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintProcessor.cs
+@@ -9,19 +9,23 @@ public sealed class PrintProcessor : PrintFilter
+ 	{
+ 	}
+ 
++	/* Stained Glass OS: named after the queue's driver, port or print processor. */
++	internal PrintProcessor(string name, PrintSystemObject parent)
++	{
++		Name = name;
++		sg_parent = parent;
++	}
++
+ 	public sealed override void Commit()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	protected sealed override void InternalDispose([MarshalAs(UnmanagedType.U1)] bool disposing)
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public sealed override void Refresh()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ }
+ }
+diff --git a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintQueue.cs b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintQueue.cs
+index 00b9698..7a256d5 100644
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintQueue.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintQueue.cs
+@@ -12,7 +12,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return Info.AveragePPM;
+ 		}
+ 	}
+ 
+@@ -20,7 +20,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return 1;
+ 		}
+ 	}
+ 
+@@ -28,7 +28,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return Info.Comment;
+ 		}
+ 		set
+ 		{
+@@ -60,7 +60,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return Info.DefaultPriority;
+ 		}
+ 		set
+ 		{
+@@ -72,7 +72,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return Info.PrinterName + "," + Info.DriverName + "," + Info.Location;
+ 		}
+ 	}
+ 
+@@ -80,7 +80,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return FullNameOf(Info);
+ 		}
+ 	}
+ 
+@@ -89,7 +89,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.PaperProblem) != 0;
+ 		}
+ 	}
+ 
+@@ -98,7 +98,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.NoToner) == 0;
+ 		}
+ 	}
+ 
+@@ -106,7 +106,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return sg_server;
+ 		}
+ 		protected set
+ 		{
+@@ -119,7 +119,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return false;
+ 		}
+ 		[param: MarshalAs(UnmanagedType.U1)]
+ 		set
+@@ -133,7 +133,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueAttributes & PrintQueueAttributes.EnableBidi) != 0;
+ 		}
+ 	}
+ 
+@@ -142,7 +142,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.Busy) != 0;
+ 		}
+ 	}
+ 
+@@ -151,7 +151,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueAttributes & PrintQueueAttributes.EnableDevQuery) != 0;
+ 		}
+ 	}
+ 
+@@ -160,7 +160,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueAttributes & PrintQueueAttributes.Direct) != 0;
+ 		}
+ 	}
+ 
+@@ -169,7 +169,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.DoorOpen) != 0;
+ 		}
+ 	}
+ 
+@@ -178,7 +178,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueAttributes & PrintQueueAttributes.Hidden) != 0;
+ 		}
+ 	}
+ 
+@@ -187,7 +187,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.Error) != 0;
+ 		}
+ 	}
+ 
+@@ -196,7 +196,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.Initializing) != 0;
+ 		}
+ 	}
+ 
+@@ -205,7 +205,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.IOActive) != 0;
+ 		}
+ 	}
+ 
+@@ -214,7 +214,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.ManualFeed) != 0;
+ 		}
+ 	}
+ 
+@@ -223,7 +223,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.NotAvailable) != 0;
+ 		}
+ 	}
+ 
+@@ -232,7 +232,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.Offline) != 0;
+ 		}
+ 	}
+ 
+@@ -241,7 +241,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.OutOfMemory) != 0;
+ 		}
+ 	}
+ 
+@@ -250,7 +250,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.PaperOut) != 0;
+ 		}
+ 	}
+ 
+@@ -259,7 +259,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.OutputBinFull) != 0;
+ 		}
+ 	}
+ 
+@@ -268,7 +268,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.PaperJam) != 0;
+ 		}
+ 	}
+ 
+@@ -277,7 +277,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.Paused) != 0;
+ 		}
+ 	}
+ 
+@@ -286,7 +286,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.PendingDeletion) != 0;
+ 		}
+ 	}
+ 
+@@ -295,7 +295,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.PowerSave) != 0;
+ 		}
+ 	}
+ 
+@@ -304,7 +304,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.Printing) != 0;
+ 		}
+ 	}
+ 
+@@ -313,7 +313,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.Processing) != 0;
+ 		}
+ 	}
+ 
+@@ -322,7 +322,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueAttributes & PrintQueueAttributes.Published) != 0;
+ 		}
+ 	}
+ 
+@@ -331,7 +331,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueAttributes & PrintQueueAttributes.Queued) != 0;
+ 		}
+ 	}
+ 
+@@ -340,7 +340,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueAttributes & PrintQueueAttributes.RawOnly) != 0;
+ 		}
+ 	}
+ 
+@@ -349,7 +349,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.ServerUnknown) != 0;
+ 		}
+ 	}
+ 
+@@ -358,7 +358,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueAttributes & PrintQueueAttributes.Shared) != 0;
+ 		}
+ 	}
+ 
+@@ -367,7 +367,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.TonerLow) != 0;
+ 		}
+ 	}
+ 
+@@ -376,7 +376,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.Waiting) != 0;
+ 		}
+ 	}
+ 
+@@ -385,7 +385,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.WarmingUp) != 0;
+ 		}
+ 	}
+ 
+@@ -394,7 +394,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return false;
+ 		}
+ 	}
+ 
+@@ -403,7 +403,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueAttributes & PrintQueueAttributes.KeepPrintedJobs) != 0;
+ 		}
+ 	}
+ 
+@@ -411,7 +411,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return Info.Location;
+ 		}
+ 		set
+ 		{
+@@ -431,7 +431,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return Info.PrinterName;
+ 		}
+ 		set
+ 		{
+@@ -444,7 +444,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.UserIntervention) != 0;
+ 		}
+ 	}
+ 
+@@ -452,7 +452,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return Info.Jobs;
+ 		}
+ 	}
+ 
+@@ -461,7 +461,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueStatus & PrintQueueStatus.PagePunt) != 0;
+ 		}
+ 	}
+ 
+@@ -470,12 +470,12 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return sg_cancelled;
+ 		}
+ 		[param: MarshalAs(UnmanagedType.U1)]
+ 		set
+ 		{
+-			throw new NotImplementedException();
++			sg_cancelled = value;
+ 		}
+ 	}
+ 
+@@ -483,7 +483,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return Info.Priority;
+ 		}
+ 		set
+ 		{
+@@ -495,7 +495,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (PrintQueueAttributes)Info.Attributes;
+ 		}
+ 	}
+ 
+@@ -503,7 +503,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return new PrintDriver(Info.DriverName, this);
+ 		}
+ 		set
+ 		{
+@@ -515,7 +515,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return new PrintPort(Info.PortName, this);
+ 		}
+ 		set
+ 		{
+@@ -527,7 +527,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return new PrintProcessor(Info.PrintProcessor, this);
+ 		}
+ 		set
+ 		{
+@@ -539,7 +539,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (PrintQueueStatus)Info.Status;
+ 		}
+ 	}
+ 
+@@ -548,7 +548,7 @@ public class PrintQueue : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (QueueAttributes & PrintQueueAttributes.ScheduleCompletedJobsFirst) != 0;
+ 		}
+ 	}
+ 
+@@ -556,7 +556,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return Info.SepFile;
+ 		}
+ 		set
+ 		{
+@@ -568,7 +568,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return Info.ShareName;
+ 		}
+ 		set
+ 		{
+@@ -580,7 +580,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return Info.StartTime;
+ 		}
+ 		set
+ 		{
+@@ -592,7 +592,7 @@ public class PrintQueue : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return Info.UntilTime;
+ 		}
+ 		set
+ 		{
+@@ -614,42 +614,66 @@ public class PrintQueue : PrintSystemObject
+ 
+ 	public PrintQueue(PrintServer printServer, string printQueueName)
+ 	{
+-		throw new NotImplementedException();
++		sg_server = printServer;
++		sg_parent = printServer;
++		sg_name = printQueueName;
++		Refresh();
+ 	}
+ 
+ 	public PrintQueue(PrintServer printServer, string printQueueName, int printSchemaVersion)
+ 	{
+-		throw new NotImplementedException();
++		sg_server = printServer;
++		sg_parent = printServer;
++		sg_name = printQueueName;
++		Refresh();
+ 	}
+ 
+ 	public PrintQueue(PrintServer printServer, string printQueueName, int printSchemaVersion, PrintSystemDesiredAccess desiredAccess)
+ 	{
+-		throw new NotImplementedException();
++		sg_server = printServer;
++		sg_parent = printServer;
++		sg_name = printQueueName;
++		Refresh();
+ 	}
+ 
+ 	public PrintQueue(PrintServer printServer, string printQueueName, PrintQueueIndexedProperty[] propertyFilter)
+ 	{
+-		throw new NotImplementedException();
++		sg_server = printServer;
++		sg_parent = printServer;
++		sg_name = printQueueName;
++		Refresh();
+ 	}
+ 
+ 	public PrintQueue(PrintServer printServer, string printQueueName, PrintQueueIndexedProperty[] propertyFilter, PrintSystemDesiredAccess desiredAccess)
+ 	{
+-		throw new NotImplementedException();
++		sg_server = printServer;
++		sg_parent = printServer;
++		sg_name = printQueueName;
++		Refresh();
+ 	}
+ 
+ 	public PrintQueue(PrintServer printServer, string printQueueName, PrintSystemDesiredAccess desiredAccess)
+ 	{
+-		throw new NotImplementedException();
++		sg_server = printServer;
++		sg_parent = printServer;
++		sg_name = printQueueName;
++		Refresh();
+ 	}
+ 
+ 	public PrintQueue(PrintServer printServer, string printQueueName, string[] propertyFilter)
+ 	{
+-		throw new NotImplementedException();
++		sg_server = printServer;
++		sg_parent = printServer;
++		sg_name = printQueueName;
++		Refresh();
+ 	}
+ 
+ 	public PrintQueue(PrintServer printServer, string printQueueName, string[] propertyFilter, PrintSystemDesiredAccess desiredAccess)
+ 	{
+-		throw new NotImplementedException();
++		sg_server = printServer;
++		sg_parent = printServer;
++		sg_name = printQueueName;
++		Refresh();
+ 	}
+ 
+ 	public PrintSystemJobInfo AddJob()
+@@ -679,7 +703,6 @@ public class PrintQueue : PrintSystemObject
+ 
+ 	public override void Commit()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public static XpsDocumentWriter CreateXpsDocumentWriter(ref double width, ref double height)
+@@ -714,7 +737,9 @@ public class PrintQueue : PrintSystemObject
+ 
+ 	public PrintSystemJobInfo GetJob(int jobId)
+ 	{
+-		throw new NotImplementedException();
++		foreach (var job in GetPrintJobInfoCollection())
++			if (job.JobIdentifier == jobId) return job;
++		throw new PrintJobException(0, "PrintSystemException.PrintSystemJobInfo.Generic", Name, null, jobId);
+ 	}
+ 
+ 	public PrintCapabilities GetPrintCapabilities()
+@@ -739,12 +764,11 @@ public class PrintQueue : PrintSystemObject
+ 
+ 	public PrintJobInfoCollection GetPrintJobInfoCollection()
+ 	{
+-		throw new NotImplementedException();
++		return new PrintJobInfoCollection(this, null);
+ 	}
+ 
+ 	protected sealed override void InternalDispose([MarshalAs(UnmanagedType.U1)] bool disposing)
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public System.Printing.ValidationResult MergeAndValidatePrintTicket(PrintTicket basePrintTicket, PrintTicket deltaPrintTicket)
+@@ -769,7 +793,40 @@ public class PrintQueue : PrintSystemObject
+ 
+ 	public override void Refresh()
+ 	{
+-		throw new NotImplementedException();
++		var info = SgSpooler.GetPrinter(sg_name);
++		if (info == null)
++			throw new PrintQueueException(0, "PrintSystemException.PrintQueue.Populate", sg_name);
++		sg_info = info;
++	}
++
++	/* Stained Glass OS: the queue as the spooler describes it (SgSpooler.cs). */
++	PrintServer sg_server;
++	string sg_name;
++	SgPrinterInfo sg_info;
++	bool sg_cancelled;
++
++	SgPrinterInfo Info
++	{
++		get
++		{
++			if (sg_info == null) Refresh();
++			return sg_info;
++		}
++	}
++
++	static string FullNameOf(SgPrinterInfo info)
++	{
++		if (!string.IsNullOrEmpty(info.ServerName) && !info.PrinterName.StartsWith("\\\\"))
++			return info.ServerName + "\\" + info.PrinterName;
++		return info.PrinterName;
++	}
++
++	internal PrintQueue(PrintServer printServer, SgPrinterInfo info)
++	{
++		sg_server = printServer;
++		sg_parent = printServer;
++		sg_name = info.PrinterName;
++		sg_info = info;
+ 	}
+ 
+ 	public virtual void Resume()
+diff --git a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintQueueCollection.cs b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintQueueCollection.cs
+index fab78b3..ddec781 100644
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintQueueCollection.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintQueueCollection.cs
+@@ -7,32 +7,47 @@ namespace System.Printing {
+ 
+ public class PrintQueueCollection : PrintSystemObjects, IEnumerable<PrintQueue>, IEnumerable, IDisposable
+ {
++	/* Stained Glass OS: the server's queues, read once from the spooler (SgSpooler.cs). */
++	static readonly object sg_sync = new object();
++	readonly List<PrintQueue> sg_queues = new List<PrintQueue>();
++
+ 	public static object SyncRoot
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return sg_sync;
+ 		}
+ 	}
+ 
+ 	public PrintQueueCollection()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public PrintQueueCollection(PrintServer printServer, string[] propertyFilter)
++		: this(printServer, propertyFilter, new EnumeratedPrintQueueTypes[] { EnumeratedPrintQueueTypes.Local, EnumeratedPrintQueueTypes.Connections })
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public PrintQueueCollection(PrintServer printServer, string[] propertyFilter, EnumeratedPrintQueueTypes[] enumerationFlag)
+ 	{
+-		throw new NotImplementedException();
++		EnumeratedPrintQueueTypes flags = 0;
++		if (enumerationFlag != null)
++			foreach (var f in enumerationFlag) flags |= f;
++		bool local = (flags & EnumeratedPrintQueueTypes.Local) != 0;
++		bool connections = (flags & EnumeratedPrintQueueTypes.Connections) != 0;
++		/* Only attribute flags given (Shared, Queued...): every queue that has them. */
++		if (!local && !connections) local = connections = true;
++		var attrs = (int)(flags & ~(EnumeratedPrintQueueTypes.Local | EnumeratedPrintQueueTypes.Connections));
++		foreach (var info in SgSpooler.EnumPrinters(local, connections))
++		{
++			if (attrs != 0 && (info.Attributes & attrs) == 0) continue;
++			sg_queues.Add(new PrintQueue(printServer, info));
++		}
+ 	}
+ 
+ 	public void Add(PrintQueue printObject)
+ 	{
+-		throw new NotImplementedException();
++		sg_queues.Add(printObject);
+ 	}
+ 
+ 	protected override void Dispose([MarshalAs(UnmanagedType.U1)] bool A_0)
+@@ -41,17 +56,17 @@ public class PrintQueueCollection : PrintSystemObjects, IEnumerable<PrintQueue>,
+ 
+ 	public virtual IEnumerator<PrintQueue> GetEnumerator()
+ 	{
+-		throw new NotImplementedException();
++		return sg_queues.GetEnumerator();
+ 	}
+ 
+ 	public virtual IEnumerator GetNonGenericEnumerator()
+ 	{
+-		throw new NotImplementedException();
++		return sg_queues.GetEnumerator();
+ 	}
+ 
+ 	IEnumerator IEnumerable.GetEnumerator()
+ 	{
+-		throw new NotImplementedException();
++		return sg_queues.GetEnumerator();
+ 	}
+ }
+ }
+diff --git a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintServer.cs b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintServer.cs
+index 2bf46e0..c6228b0 100644
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintServer.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintServer.cs
+@@ -95,7 +95,8 @@ public class PrintServer : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			/* Stained Glass OS: a local server has no name; a remote one is its path. */
++			return base.Name;
+ 		}
+ 		set
+ 		{
+@@ -177,47 +178,44 @@ public class PrintServer : PrintSystemObject
+ 
+ 	public PrintServer()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public PrintServer(PrintSystemDesiredAccess desiredAccess)
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public PrintServer(string path)
+ 	{
+-		throw new NotImplementedException();
++		base.Name = path;
+ 	}
+ 
+ 	public PrintServer(string path, PrintServerIndexedProperty[] propertiesFilter)
+ 	{
+-		throw new NotImplementedException();
++		base.Name = path;
+ 	}
+ 
+ 	public PrintServer(string path, PrintServerIndexedProperty[] propertiesFilter, PrintSystemDesiredAccess desiredAccess)
+ 	{
+-		throw new NotImplementedException();
++		base.Name = path;
+ 	}
+ 
+ 	public PrintServer(string path, PrintSystemDesiredAccess desiredAccess)
+ 	{
+-		throw new NotImplementedException();
++		base.Name = path;
+ 	}
+ 
+ 	public PrintServer(string path, string[] propertiesFilter)
+ 	{
+-		throw new NotImplementedException();
++		base.Name = path;
+ 	}
+ 
+ 	public PrintServer(string path, string[] propertiesFilter, PrintSystemDesiredAccess desiredAccess)
+ 	{
+-		throw new NotImplementedException();
++		base.Name = path;
+ 	}
+ 
+ 	public override void Commit()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	[return: MarshalAs(UnmanagedType.U1)]
+@@ -234,42 +232,42 @@ public class PrintServer : PrintSystemObject
+ 
+ 	public PrintQueue GetPrintQueue(string printQueueName)
+ 	{
+-		throw new NotImplementedException();
++		return new PrintQueue(this, printQueueName);
+ 	}
+ 
+ 	public PrintQueue GetPrintQueue(string printQueueName, string[] propertiesFilter)
+ 	{
+-		throw new NotImplementedException();
++		return new PrintQueue(this, printQueueName);
+ 	}
+ 
+ 	public PrintQueueCollection GetPrintQueues()
+ 	{
+-		throw new NotImplementedException();
++		return new PrintQueueCollection(this, null);
+ 	}
+ 
+ 	public PrintQueueCollection GetPrintQueues(EnumeratedPrintQueueTypes[] enumerationFlag)
+ 	{
+-		throw new NotImplementedException();
++		return new PrintQueueCollection(this, null, enumerationFlag);
+ 	}
+ 
+ 	public PrintQueueCollection GetPrintQueues(PrintQueueIndexedProperty[] propertiesFilter)
+ 	{
+-		throw new NotImplementedException();
++		return new PrintQueueCollection(this, null);
+ 	}
+ 
+ 	public PrintQueueCollection GetPrintQueues(PrintQueueIndexedProperty[] propertiesFilter, EnumeratedPrintQueueTypes[] enumerationFlag)
+ 	{
+-		throw new NotImplementedException();
++		return new PrintQueueCollection(this, null, enumerationFlag);
+ 	}
+ 
+ 	public PrintQueueCollection GetPrintQueues(string[] propertiesFilter)
+ 	{
+-		throw new NotImplementedException();
++		return new PrintQueueCollection(this, propertiesFilter);
+ 	}
+ 
+ 	public PrintQueueCollection GetPrintQueues(string[] propertiesFilter, EnumeratedPrintQueueTypes[] enumerationFlag)
+ 	{
+-		throw new NotImplementedException();
++		return new PrintQueueCollection(this, propertiesFilter, enumerationFlag);
+ 	}
+ 
+ 	public PrintQueue InstallPrintQueue(string printQueueName, string driverName, string[] portNames, string printProcessorName, PrintPropertyDictionary initialParameters)
+@@ -294,12 +292,10 @@ public class PrintServer : PrintSystemObject
+ 
+ 	protected sealed override void InternalDispose([MarshalAs(UnmanagedType.U1)] bool disposing)
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public override void Refresh()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ }
+ }
+diff --git a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintSystemJobInfo.cs b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintSystemJobInfo.cs
+index ebdf1d1..383222c 100644
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintSystemJobInfo.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintSystemJobInfo.cs
+@@ -10,7 +10,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return sg_queue;
+ 		}
+ 	}
+ 
+@@ -18,7 +18,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return sg_queue.HostingPrintServer;
+ 		}
+ 	}
+ 
+@@ -27,7 +27,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (JobStatus & PrintJobStatus.Blocked) != 0;
+ 		}
+ 	}
+ 
+@@ -36,7 +36,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (JobStatus & PrintJobStatus.Completed) != 0;
+ 		}
+ 	}
+ 
+@@ -45,7 +45,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (JobStatus & PrintJobStatus.Deleted) != 0;
+ 		}
+ 	}
+ 
+@@ -54,7 +54,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (JobStatus & PrintJobStatus.Deleting) != 0;
+ 		}
+ 	}
+ 
+@@ -63,7 +63,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (JobStatus & PrintJobStatus.Error) != 0;
+ 		}
+ 	}
+ 
+@@ -72,7 +72,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (JobStatus & PrintJobStatus.Offline) != 0;
+ 		}
+ 	}
+ 
+@@ -81,7 +81,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (JobStatus & PrintJobStatus.PaperOut) != 0;
+ 		}
+ 	}
+ 
+@@ -90,7 +90,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (JobStatus & PrintJobStatus.Paused) != 0;
+ 		}
+ 	}
+ 
+@@ -99,7 +99,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (JobStatus & PrintJobStatus.Printed) != 0;
+ 		}
+ 	}
+ 
+@@ -108,7 +108,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (JobStatus & PrintJobStatus.Printing) != 0;
+ 		}
+ 	}
+ 
+@@ -117,7 +117,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (JobStatus & PrintJobStatus.Restarted) != 0;
+ 		}
+ 	}
+ 
+@@ -126,7 +126,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (JobStatus & PrintJobStatus.Retained) != 0;
+ 		}
+ 	}
+ 
+@@ -135,7 +135,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (JobStatus & PrintJobStatus.Spooling) != 0;
+ 		}
+ 	}
+ 
+@@ -144,7 +144,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (JobStatus & PrintJobStatus.UserIntervention) != 0;
+ 		}
+ 	}
+ 
+@@ -152,7 +152,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return sg_job.JobId;
+ 		}
+ 	}
+ 
+@@ -160,7 +160,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return sg_job.Document;
+ 		}
+ 		set
+ 		{
+@@ -172,7 +172,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return 0;
+ 		}
+ 	}
+ 
+@@ -180,7 +180,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (PrintJobStatus)sg_job.Status;
+ 		}
+ 	}
+ 
+@@ -196,7 +196,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return sg_job.TotalPages;
+ 		}
+ 	}
+ 
+@@ -204,7 +204,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return sg_job.PagesPrinted;
+ 		}
+ 	}
+ 
+@@ -212,7 +212,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return sg_job.Position;
+ 		}
+ 	}
+ 
+@@ -220,7 +220,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return (PrintJobPriority)sg_job.Priority;
+ 		}
+ 	}
+ 
+@@ -228,7 +228,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return 0;
+ 		}
+ 	}
+ 
+@@ -236,7 +236,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return sg_job.UserName;
+ 		}
+ 	}
+ 
+@@ -244,7 +244,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return sg_job.Submitted;
+ 		}
+ 	}
+ 
+@@ -252,7 +252,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return 0;
+ 		}
+ 	}
+ 
+@@ -260,7 +260,7 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return 0;
+ 		}
+ 	}
+ 
+@@ -275,7 +275,6 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 
+ 	public override void Commit()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public static PrintSystemJobInfo Get(PrintQueue printQueue, int jobIdentifier)
+@@ -285,7 +284,6 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 
+ 	protected sealed override void InternalDispose([MarshalAs(UnmanagedType.U1)] bool disposing)
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public void Pause()
+@@ -295,7 +293,6 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 
+ 	public override void Refresh()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public void Restart()
+@@ -307,5 +304,17 @@ public class PrintSystemJobInfo : PrintSystemObject
+ 	{
+ 		throw new NotImplementedException();
+ 	}
++
++	/* Stained Glass OS: a job as the spooler lists it (SgSpooler.cs). */
++	PrintQueue sg_queue;
++	SgJobInfo sg_job;
++
++	internal PrintSystemJobInfo(PrintQueue queue, SgJobInfo job)
++	{
++		sg_queue = queue;
++		sg_parent = queue;
++		sg_job = job;
++		Name = job.Document;
++	}
+ }
+ }
+diff --git a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintSystemObject.cs b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintSystemObject.cs
+index 17cf9d0..7ab216f 100644
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintSystemObject.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintSystemObject.cs
+@@ -6,17 +6,22 @@ namespace System.Printing {
+ 
+ public abstract class PrintSystemObject : IDisposable
+ {
++	/* Stained Glass OS: the state every print system object has (SgSpooler.cs). */
++	bool sg_disposed;
++	string sg_name;
++	internal PrintSystemObject sg_parent;
++
+ 	protected bool IsDisposed
+ 	{
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return sg_disposed;
+ 		}
+ 		[param: MarshalAs(UnmanagedType.U1)]
+ 		set
+ 		{
+-			throw new NotImplementedException();
++			sg_disposed = value;
+ 		}
+ 	}
+ 
+@@ -24,11 +29,11 @@ public abstract class PrintSystemObject : IDisposable
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return sg_name;
+ 		}
+ 		set
+ 		{
+-			throw new NotImplementedException();
++			sg_name = value;
+ 		}
+ 	}
+ 
+@@ -36,7 +41,7 @@ public abstract class PrintSystemObject : IDisposable
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			return sg_parent;
+ 		}
+ 	}
+ 
+@@ -50,12 +55,10 @@ public abstract class PrintSystemObject : IDisposable
+ 
+ 	protected PrintSystemObject()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	protected PrintSystemObject(PrintSystemObjectLoadMode mode)
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	protected static string[] BaseAttributeNames()
+@@ -67,20 +70,23 @@ public abstract class PrintSystemObject : IDisposable
+ 
+ 	public void Dispose()
+ 	{
++		Dispose(true);
++		GC.SuppressFinalize(this);
+ 	}
+ 
+ 	protected virtual void Dispose([MarshalAs(UnmanagedType.U1)] bool A_0)
+ 	{
++		if (sg_disposed) return;
++		InternalDispose(A_0);
++		sg_disposed = true;
+ 	}
+ 
+ 	protected void Initialize()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	protected virtual void InternalDispose([MarshalAs(UnmanagedType.U1)] bool disposing)
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public abstract void Refresh();
+diff --git a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintSystemObjects.cs b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintSystemObjects.cs
+index fa17a8d..c30cdc9 100644
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintSystemObjects.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintSystemObjects.cs
+@@ -7,7 +7,6 @@ public abstract class PrintSystemObjects : IDisposable
+ {
+ 	protected PrintSystemObjects()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+ 	public void Dispose()
+diff --git a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/SgSpooler.cs b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/SgSpooler.cs
+new file mode 100644
+index 0000000..27a9723
+--- /dev/null
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/SgSpooler.cs
+@@ -0,0 +1,158 @@
++// Stained Glass OS: the local print spooler for System.Printing, through
++// winspool.drv (OpenPrinter, GetPrinter, EnumPrinters, GetDefaultPrinter).
++// Our own code. Wine Mono's System.Printing threw NotImplementedException
++// from every member, LocalPrintServer's constructor included, so programs
++// that look at their printers through it (DYMO Connect's label printer
++// discovery) stopped there.
++using System;
++using System.Collections.Generic;
++using System.ComponentModel;
++using System.Runtime.InteropServices;
++using System.Text;
++
++namespace System.Printing {
++
++internal sealed class SgPrinterInfo
++{
++	public string ServerName, PrinterName, ShareName, PortName, DriverName;
++	public string Comment, Location, SepFile, PrintProcessor, Datatype, Parameters;
++	public int Attributes, Priority, DefaultPriority, StartTime, UntilTime, Status, Jobs, AveragePPM;
++}
++
++internal sealed class SgJobInfo
++{
++	public int JobId, Status, Priority, Position, TotalPages, PagesPrinted;
++	public string PrinterName, MachineName, UserName, Document, Datatype, StatusText;
++	public DateTime Submitted;
++}
++
++internal static class SgSpooler
++{
++	const int PRINTER_ENUM_LOCAL = 0x2;
++	const int PRINTER_ENUM_CONNECTIONS = 0x4;
++	const int ERROR_INSUFFICIENT_BUFFER = 122;
++
++	[DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
++	static extern bool EnumPrintersW(int flags, string name, int level, IntPtr buffer, int size, out int needed, out int returned);
++
++	[DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
++	static extern bool OpenPrinterW(string name, out IntPtr handle, IntPtr defaults);
++
++	[DllImport("winspool.drv", SetLastError = true)]
++	static extern bool GetPrinterW(IntPtr handle, int level, IntPtr buffer, int size, out int needed);
++
++	[DllImport("winspool.drv", SetLastError = true)]
++	static extern bool ClosePrinter(IntPtr handle);
++
++	[DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
++	static extern bool GetDefaultPrinterW(StringBuilder buffer, ref int size);
++
++	/* PRINTER_INFO_2W: 13 pointers (one of them pDevMode, one pSecurityDescriptor), then 8 DWORDs. */
++	static SgPrinterInfo Read(IntPtr p)
++	{
++		int ps = IntPtr.Size;
++		Func<int, string> str = i => Marshal.PtrToStringUni(Marshal.ReadIntPtr(p, i * ps));
++		int dw = 13 * ps;
++		return new SgPrinterInfo {
++			ServerName = str(0), PrinterName = str(1), ShareName = str(2), PortName = str(3),
++			DriverName = str(4), Comment = str(5), Location = str(6), SepFile = str(8),
++			PrintProcessor = str(9), Datatype = str(10), Parameters = str(11),
++			Attributes = Marshal.ReadInt32(p, dw), Priority = Marshal.ReadInt32(p, dw + 4),
++			DefaultPriority = Marshal.ReadInt32(p, dw + 8), StartTime = Marshal.ReadInt32(p, dw + 12),
++			UntilTime = Marshal.ReadInt32(p, dw + 16), Status = Marshal.ReadInt32(p, dw + 20),
++			Jobs = Marshal.ReadInt32(p, dw + 24), AveragePPM = Marshal.ReadInt32(p, dw + 28),
++		};
++	}
++
++	/* The printer's PRINTER_INFO_2, or null when there is no such printer. */
++	public static SgPrinterInfo GetPrinter(string name)
++	{
++		IntPtr h, buf = IntPtr.Zero;
++		int needed;
++		if (!OpenPrinterW(name, out h, IntPtr.Zero)) return null;
++		try {
++			GetPrinterW(h, 2, IntPtr.Zero, 0, out needed);
++			if (needed <= 0) return null;
++			buf = Marshal.AllocHGlobal(needed);
++			if (!GetPrinterW(h, 2, buf, needed, out needed)) return null;
++			return Read(buf);
++		} finally {
++			if (buf != IntPtr.Zero) Marshal.FreeHGlobal(buf);
++			ClosePrinter(h);
++		}
++	}
++
++	public static List<SgPrinterInfo> EnumPrinters(bool local, bool connections)
++	{
++		var list = new List<SgPrinterInfo>();
++		int flags = (local ? PRINTER_ENUM_LOCAL : 0) | (connections ? PRINTER_ENUM_CONNECTIONS : 0);
++		int needed, count;
++		if (flags == 0) return list;
++		if (EnumPrintersW(flags, null, 2, IntPtr.Zero, 0, out needed, out count) || needed <= 0) return list;
++		IntPtr buf = Marshal.AllocHGlobal(needed);
++		try {
++			if (!EnumPrintersW(flags, null, 2, buf, needed, out needed, out count)) return list;
++			int size = 13 * IntPtr.Size + 8 * 4;
++			if (IntPtr.Size == 8) size = (size + 7) & ~7;
++			for (int i = 0; i < count; i++)
++				list.Add(Read(buf + i * size));
++		} finally {
++			Marshal.FreeHGlobal(buf);
++		}
++		return list;
++	}
++
++	[DllImport("winspool.drv", SetLastError = true)]
++	static extern bool EnumJobsW(IntPtr printer, int first, int count, int level, IntPtr buffer, int size, out int needed, out int returned);
++
++	/* JOB_INFO_1W: DWORD JobId, 6 pointers, 5 DWORDs, SYSTEMTIME Submitted. */
++	public static List<SgJobInfo> EnumJobs(string printerName)
++	{
++		var list = new List<SgJobInfo>();
++		IntPtr h, buf = IntPtr.Zero;
++		int needed, count;
++		if (!OpenPrinterW(printerName, out h, IntPtr.Zero)) return list;
++		try {
++			if (EnumJobsW(h, 0, 0x7fff, 1, IntPtr.Zero, 0, out needed, out count) || needed <= 0) return list;
++			buf = Marshal.AllocHGlobal(needed);
++			if (!EnumJobsW(h, 0, 0x7fff, 1, buf, needed, out needed, out count)) return list;
++			int ps = IntPtr.Size, first = ps;           /* JobId padded to a pointer */
++			int dw = first + 6 * ps;
++			int size = dw + 5 * 4 + 16;
++			size = (size + ps - 1) & ~(ps - 1);
++			for (int i = 0; i < count; i++)
++			{
++				IntPtr p = buf + i * size;
++				Func<int, string> str = k => Marshal.PtrToStringUni(Marshal.ReadIntPtr(p, first + k * ps));
++				var j = new SgJobInfo {
++					JobId = Marshal.ReadInt32(p, 0), PrinterName = str(0), MachineName = str(1),
++					UserName = str(2), Document = str(3), Datatype = str(4), StatusText = str(5),
++					Status = Marshal.ReadInt32(p, dw), Priority = Marshal.ReadInt32(p, dw + 4),
++					Position = Marshal.ReadInt32(p, dw + 8), TotalPages = Marshal.ReadInt32(p, dw + 12),
++					PagesPrinted = Marshal.ReadInt32(p, dw + 16),
++				};
++				int st = dw + 20;
++				try {
++					j.Submitted = new DateTime(Marshal.ReadInt16(p, st), Marshal.ReadInt16(p, st + 2), Marshal.ReadInt16(p, st + 6),
++						Marshal.ReadInt16(p, st + 8), Marshal.ReadInt16(p, st + 10), Marshal.ReadInt16(p, st + 12),
++						Marshal.ReadInt16(p, st + 14), DateTimeKind.Utc);
++				} catch (ArgumentException) { }
++				list.Add(j);
++			}
++		} finally {
++			if (buf != IntPtr.Zero) Marshal.FreeHGlobal(buf);
++			ClosePrinter(h);
++		}
++		return list;
++	}
++
++	public static string GetDefaultPrinter()
++	{
++		int size = 0;
++		GetDefaultPrinterW(null, ref size);
++		if (size <= 0) return null;
++		var sb = new StringBuilder(size);
++		return GetDefaultPrinterW(sb, ref size) ? sb.ToString() : null;
++	}
++}
++}
+diff --git a/src/Microsoft.DotNet.Wpf/src/System.Printing/sources.list b/src/Microsoft.DotNet.Wpf/src/System.Printing/sources.list
+index 59fe602..3cd632a 100644
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/sources.list
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/sources.list
+@@ -59,3 +59,4 @@ System.Windows.Xps/VisualsToXpsDocument.cs
+ System.Windows.Xps/XpsDocumentNotificationLevel.cs
+ System.Windows.Xps/XpsDocumentWriter.cs
+ System.Windows.Xps/XpsWriterException.cs
++System.Printing/SgSpooler.cs

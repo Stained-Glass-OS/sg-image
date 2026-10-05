@@ -1,0 +1,81 @@
+diff --git a/mcs/class/System/System.Configuration/ApplicationSettingsBase.cs b/mcs/class/System/System.Configuration/ApplicationSettingsBase.cs
+index 7e7676a..7792122 100644
+--- a/mcs/class/System/System.Configuration/ApplicationSettingsBase.cs
++++ b/mcs/class/System/System.Configuration/ApplicationSettingsBase.cs
+@@ -256,7 +256,20 @@ namespace System.Configuration {
+ 			if (propertyValues == null)
+ 				InitializeSettings (Properties);
+ 
+-			if (PropertyValues [ propertyName ] == null)
++			/* Stained Glass OS: a value the provider loaded for a setting
++			 * the file had but the class did not declare carries an
++			 * untyped property of its own. Once the setting is declared
++			 * (a program adds it to Properties at run time), its value is
++			 * loaded again for the declared property -- the untyped one
++			 * could not be deserialized and read as null (DYMO Connect
++			 * stopped on its second start). */
++			SettingsPropertyValue cached = PropertyValues [ propertyName ];
++			if (cached != null && cached.Property != prop && cached.Property.PropertyType == null) {
++				PropertyValues.Remove (propertyName);
++				cached = null;
++			}
++
++			if (cached == null)
+ 				CacheValuesByProvider (prop.Provider);
+ 
+ 			return PropertyValues [ propertyName ].PropertyValue;
+diff --git a/mcs/class/System.Management/corefx/ManagementScope.cs b/mcs/class/System.Management/corefx/ManagementScope.cs
+index cea5404..b496a23 100644
+--- a/mcs/class/System.Management/corefx/ManagementScope.cs
++++ b/mcs/class/System.Management/corefx/ManagementScope.cs
+@@ -502,7 +502,17 @@ namespace System.Management
+             QualifierBeginEnumeration_f = (_, __, ___) => throw new PlatformNotSupportedException(exceptionMessage + "QualifierBeginEnumeration_f");
+             QualifierNext_f = (int _, IntPtr __, int ___, out string ____, out object _____, out int ______) => throw new PlatformNotSupportedException(exceptionMessage + "QualifierNext_f");
+             QualifierEndEnumeration_f = (_, __) => throw new PlatformNotSupportedException(exceptionMessage + "QualifierEndEnumeration_f");
+-            GetDemultiplexedStub_f = (object _, bool __, out object ___) => throw new PlatformNotSupportedException(exceptionMessage + "GetDemultiplexedStub_f");
++            // Stained Glass OS: the sink an event query reports to needs no
++            // stub between apartments here: WMI (wbemprox) runs in the
++            // process and calls the sink itself. Was PlatformNotSupported,
++            // which ended every program that watches WMI events (DYMO
++            // Connect's launcher, at each sign-in).
++            GetDemultiplexedStub_f = (object pIUnknown, bool __, out object ppIUnknown) =>
++            {
++                var source = pIUnknown as IWmiEventSource;
++                ppIUnknown = source != null ? new SgEventSinkStub(source) : pIUnknown;
++                return 0;
++            };
+             CreateClassEnumWmi_f = (string _, int __, IWbemContext ___, out IEnumWbemClassObject ____, int _____, int ______, IWbemServices _______, string ________, IntPtr _________, string __________) => throw new PlatformNotSupportedException(exceptionMessage + "CreateClassEnumWmi_f");
+             ExecNotificationQueryWmi_f = (string _, string __, int ___, IWbemContext ____, out IEnumWbemClassObject _____, int ______, int _______, IWbemServices ________, string _________, IntPtr __________, string ___________) => throw new PlatformNotSupportedException(exceptionMessage + "ExecNotificationQueryWmi_f");
+             PutInstanceWmi_f = (_, __, ___, ____, _____, ______, _______, ________, _________, __________) => throw new PlatformNotSupportedException(exceptionMessage + "PutInstanceWmi_f");
+@@ -510,6 +520,31 @@ namespace System.Management
+         }
+     }
+ 
++    // Stained Glass OS: what WMI calls with an event query's results -- an
++    // IWbemObjectSink -- handing them to the watcher's own sink.
++    internal sealed class SgEventSinkStub : IWbemObjectSink
++    {
++        readonly IWmiEventSource source;
++
++        internal SgEventSinkStub(IWmiEventSource source)
++        {
++            this.source = source;
++        }
++
++        public int Indicate_(int lObjectCount, IntPtr[] apObjArray)
++        {
++            for (int i = 0; i < lObjectCount && apObjArray != null && i < apObjArray.Length; i++)
++                source.Indicate(apObjArray[i]);
++            return 0;
++        }
++
++        public int SetStatus_(int lFlags, int hResult, string strParam, IntPtr pObjParam)
++        {
++            source.SetStatus(lFlags, hResult, strParam, pObjParam);
++            return 0;
++        }
++    }
++
+     /// <summary>
+     ///    <para>Represents a scope for management operations. In v1.0 the scope defines the WMI namespace in which management operations are performed.</para>
+     /// </summary>

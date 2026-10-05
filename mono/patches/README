@@ -54,6 +54,18 @@ corefx-0001-brush-nativebrush.patch
       AmbirScan with it (David 2026-10-02). Mono's own code keeps
       nativeObject, a property now for Graphics and Pen.
 
+mono-0003-settings-declared-late-and-wmi-event-watchers.patch (sg11)
+    System: ApplicationSettingsBase reads a setting a program declares at
+      run time (Properties.Add) from the user.config that already has it.
+      The provider had loaded the file's value under an untyped property
+      of its own; once declared, that value was read through it, could not
+      be deserialized and came back null -- DYMO Connect ended on every
+      start after its first (XDocument.Parse(null), David 2026-10-05).
+    System.Management: an event query's sink needs no stub between
+      apartments (WMI runs in the process); ManagementEventWatcher.Start
+      threw PlatformNotSupportedException (GetDemultiplexedStub_f), which
+      ended DYMO Connect's launcher at every sign-in.
+
 test/mono-fork-test.sh checks each.
 
 wpf-0001-pts-managed-engine.patch
@@ -98,3 +110,15 @@ wpf-0003-composite-font-fallbacks.patch
       Symbola. They named only Windows' (Segoe UI, Tahoma, MS Gothic...),
       so Hebrew, Arabic, CJK and symbols in WPF text were boxes.
 
+wpf-0004-system-printing-local-print-server-and-queues.patch (sg11)
+    System.Printing, over winspool.drv (SgSpooler.cs, our own):
+      LocalPrintServer and PrintServer (GetPrintQueue, GetPrintQueues,
+      the default queue), PrintQueue (name, driver, port, print processor,
+      comment, location, status and attributes and every Is... of them,
+      jobs, priorities, Refresh), PrintQueueCollection,
+      PrintJobInfoCollection and PrintSystemJobInfo (EnumJobs). Every
+      member threw NotImplementedException -- LocalPrintServer's
+      constructor too, so DYMO Connect's printer discovery stopped there
+      and it found no LabelWriter. Not yet: print tickets and capabilities,
+      XPS writers, AddJob, installing or deleting queues, property
+      dictionaries.

@@ -18,7 +18,12 @@
 #     it), the 64-bit view's AssemblyFolders in Program Files (not x86), and
 #     the files: Framework\v3.5\csc.exe (compiles a LINQ program for the 2.0
 #     runtime), Program Files\Reference Assemblies\Microsoft\Framework\v3.0
-#     and v3.5 with their reference assemblies (System.Core 3.5...).
+#     and v3.5 with their reference assemblies (System.Core 3.5...);
+#   - (sg11) a setting declared at run time reads the value user.config has
+#     (DYMO Connect's second start); ManagementEventWatcher.Start does not
+#     throw (DYMO Connect's launcher); System.Printing's LocalPrintServer
+#     lists the spooler's queues with their drivers and ports, and a queue's
+#     jobs (DYMO Connect's printer discovery).
 # Programs are compiled here with Mono's own mcs.exe, under Wine; the image's
 # addons tree is the Mono that runs them.
 #
@@ -175,4 +180,102 @@ v() { printf '%s\n' "$out" | sed -n "s/^$1=//p" | head -1; }
 out=$(cd "$C" && timeout 120 "$WINE" hidden.exe "fork.exe service" 2>&1 | tr -d '\r')
 [ "$(v interactive)" = False ] && pass "not UserInteractive in a window station that is not visible (a service's)" \
     || fail "hidden interactive: '$(v interactive)' $(echo "$out" | head -2)"
+# (sg11) a printer for System.Printing to find: driver "SG Label 550", port USB001
+cat > "$T/addprn.c" <<'EOF'
+#include <windows.h>
+#include <winspool.h>
+int wmain(void)
+{
+    DRIVER_INFO_3W di = {0};
+    PRINTER_INFO_2W pi = {0};
+    HANDLE h;
+    di.cVersion = 3; di.pName = (WCHAR *)L"SG Label 550"; di.pEnvironment = (WCHAR *)L"Windows x64";
+    di.pDriverPath = di.pConfigFile = (WCHAR *)L"wineps.drv"; di.pDataFile = (WCHAR *)L"C:\\label.ppd";
+    di.pDefaultDataType = (WCHAR *)L"RAW";
+    AddPrinterDriverExW(NULL, 3, (BYTE *)&di, APD_COPY_NEW_FILES | APD_COPY_FROM_DIRECTORY);
+    pi.pPrinterName = (WCHAR *)L"Label desk"; pi.pDriverName = di.pName; pi.pPortName = (WCHAR *)L"USB001";
+    pi.pPrintProcessor = (WCHAR *)L"wineps"; pi.pDatatype = (WCHAR *)L"RAW";
+    pi.pParameters = pi.pShareName = pi.pSepFile = (WCHAR *)L"";
+    h = AddPrinterW(NULL, 2, (BYTE *)&pi);
+    if (h) ClosePrinter(h);
+    return !h;
+}
+EOF
+cat > "$C/label.ppd" <<'EOF'
+*PPD-Adobe: "4.3"
+*FormatVersion: "4.3"
+*FileVersion: "1.0"
+*LanguageVersion: English
+*LanguageEncoding: ISOLatin1
+*PCFileName: "SGLABEL.PPD"
+*Manufacturer: "SG"
+*ModelName: "SG Label 550"
+*NickName: "SG Label 550"
+*OpenUI *PageSize: PickOne
+*DefaultPageSize: w72h154
+*PageSize w72h154/Address: "<</PageSize[72 154]>>setpagedevice"
+*CloseUI: *PageSize
+*DefaultImageableArea: w72h154
+*ImageableArea w72h154/Address: "4 4 68 150"
+*DefaultPaperDimension: w72h154
+*PaperDimension w72h154/Address: "72 154"
+EOF
+x86_64-w64-mingw32-gcc -municode -O1 -o "$C/addprn.exe" "$T/addprn.c" -lwinspool || { fail "the printer adder did not build"; exit 1; }
+(cd "$C" && timeout 120 "$WINE" addprn.exe >/dev/null 2>&1) || fail "the test printer was not added"
+cat > "$C/sg11.cs" <<'CS'
+using System;
+using System.Configuration;
+using System.Linq;
+using System.Management;
+using System.Printing;
+class Gate : ApplicationSettingsBase {
+    [UserScopedSetting, DefaultSettingValue("")] public string Other { get { return (string)this["Other"]; } }
+    /* a setting declared at run time, as DYMO Connect's preferences are */
+    public void Declare(string name) {
+        var p = new SettingsProperty(name) { PropertyType = typeof(string), DefaultValue = "",
+            Provider = Properties["Other"].Provider, SerializeAs = SettingsSerializeAs.String };
+        p.Attributes.Add(typeof(UserScopedSettingAttribute), new UserScopedSettingAttribute());
+        Properties.Add(p);
+    }
+}
+class P {
+    static void Main(string[] a) {
+        if (a.Length > 0 && a[0] == "save") { var g = new Gate(); g.Declare("Late"); g["Late"] = "kept"; g.Save(); return; }
+        if (a.Length > 0 && a[0] == "late") {
+            var g = new Gate();
+            Console.WriteLine("other=" + g.Other);          /* loads the file: Late is not declared yet */
+            g.Declare("Late");
+            Console.WriteLine("late=" + ((g["Late"] as string) ?? "<null>"));
+            return;
+        }
+        try {
+            var w = new ManagementEventWatcher(new WqlEventQuery("SELECT * FROM __InstanceCreationEvent WITHIN 2 WHERE TargetInstance ISA 'Win32_PnPEntity'"));
+            w.Start(); w.Stop();
+            Console.WriteLine("watcher=ok");
+        } catch (Exception e) { Console.WriteLine("watcher=" + e.GetType().Name); }
+        try {
+            var server = new LocalPrintServer();
+            var q = server.GetPrintQueues().FirstOrDefault(x => x.Name == "Label desk");
+            Console.WriteLine("queue=" + (q == null ? "<none>" : q.Name + "|" + q.QueueDriver.Name + "|" + q.QueuePort.Name + "|" + q.IsOffline));
+            q = server.GetPrintQueue("Label desk");
+            q.Refresh();
+            Console.WriteLine("jobs=" + q.GetPrintJobInfoCollection().Count() + "|" + q.FullName);
+        } catch (Exception e) { Console.WriteLine("printing=" + e.GetType().Name + ": " + e.Message); }
+    }
+}
+CS
+# the WPF assemblies are only in the GAC
+gac() { "$WINE" winepath -w "$(ls -d "$MONO"/lib/mono/gac/"$1"/*/"$1".dll | head -1)" | tr -d '\r'; }
+(cd "$C" && timeout 300 "$WINE" "$mcs" -r:System.Configuration.dll -r:System.Core.dll -r:System.Management.dll \
+    -r:"$(gac System.Printing)" -r:"$(gac ReachFramework)" -out:sg11.exe sg11.cs >"$T/mcs11.out" 2>&1)
+[ -f "$C/sg11.exe" ] || { fail "the sg11 probe did not compile: $(cat "$T/mcs11.out")"; exit 1; }
+(cd "$C" && timeout 120 "$WINE" sg11.exe save >/dev/null 2>&1)
+out=$(cd "$C" && timeout 120 "$WINE" sg11.exe late 2>&1 | tr -d '\r')
+[ "$(v late)" = kept ] && pass "a setting declared at run time reads the value user.config has (DYMO Connect's second start)" \
+    || fail "late-declared setting: '$(v late)' $(echo "$out" | grep -m1 Exception)"
+out=$(cd "$C" && timeout 120 "$WINE" sg11.exe 2>&1 | tr -d '\r')
+[ "$(v watcher)" = ok ] && pass "ManagementEventWatcher starts and stops (DYMO Connect's launcher)" || fail "watcher: '$(v watcher)'"
+[ "$(v queue)" = "Label desk|SG Label 550|USB001|False" ] && pass "LocalPrintServer lists the queue with its driver and port (DYMO Connect's discovery)" \
+    || fail "print queue: '$(v queue)' $(v printing)"
+[ "$(v jobs)" = "0|Label desk" ] && pass "a queue's jobs and full name" || fail "jobs: '$(v jobs)' $(v printing)"
 exit $RC
