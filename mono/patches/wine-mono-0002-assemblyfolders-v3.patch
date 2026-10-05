@@ -1,0 +1,21 @@
+diff --git a/msi-tables/support/registry.idt b/msi-tables/support/registry.idt
+--- a/msi-tables/support/registry.idt
++++ b/msi-tables/support/registry.idt
+@@ -24,6 +24,8 @@
+ NDP35SP	2	Software\Microsoft\NET Framework Setup\NDP\v3.5	SP	#1	mono-registry
+ NDP35Version	2	Software\Microsoft\NET Framework Setup\NDP\v3.5	Version	3.5.30729.4926	mono-registry
+ NDP351033Install	2	Software\Microsoft\NET Framework Setup\NDP\v3.5\1033	Install	#1	mono-registry
++AsmFolders30	2	Software\Microsoft\.NETFramework\AssemblyFolders\v3.0		[ProgramFilesFolder]Reference Assemblies\Microsoft\Framework\v3.0\	mono-registry
++AsmFolders35	2	Software\Microsoft\.NETFramework\AssemblyFolders\v3.5		[ProgramFilesFolder]Reference Assemblies\Microsoft\Framework\v3.5\	mono-registry
+ NDP4ClientInstall	2	Software\Microsoft\NET Framework Setup\NDP\v4\Client	Install	#1	mono-registry
+ NDP4ClientRelease	2	Software\Microsoft\NET Framework Setup\NDP\v4\Client	Release	#533320	mono-registry
+ NDP4ClientVersion	2	Software\Microsoft\NET Framework Setup\NDP\v4\Client	Version	4.7.03190	mono-registry
+@@ -78,6 +80,8 @@
+ NDP35SP_64	2	Software\Microsoft\NET Framework Setup\NDP\v3.5	SP	#1	mono-registry64
+ NDP35Version_64	2	Software\Microsoft\NET Framework Setup\NDP\v3.5	Version	3.5.30729.4926	mono-registry64
+ NDP351033Install_64	2	Software\Microsoft\NET Framework Setup\NDP\v3.5\1033	Install	#1	mono-registry64
++AsmFolders30_64	2	Software\Microsoft\.NETFramework\AssemblyFolders\v3.0		[ProgramFilesFolder]Reference Assemblies\Microsoft\Framework\v3.0\	mono-registry64
++AsmFolders35_64	2	Software\Microsoft\.NETFramework\AssemblyFolders\v3.5		[ProgramFilesFolder]Reference Assemblies\Microsoft\Framework\v3.5\	mono-registry64
+ NDP4ClientInstall_64	2	Software\Microsoft\NET Framework Setup\NDP\v4\Client	Install	#1	mono-registry64
+ NDP4ClientRelease_64	2	Software\Microsoft\NET Framework Setup\NDP\v4\Client	Release	#533320	mono-registry64
+ NDP4ClientVersion_64	2	Software\Microsoft\NET Framework Setup\NDP\v4\Client	Version	4.7.03190	mono-registry64

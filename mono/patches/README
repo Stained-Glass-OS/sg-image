@@ -6,6 +6,12 @@ wine-mono-0001-ndp4-installpath.patch
     registry views). SQL Server Compact 3.5 SP2's installer edits
     [InstallPath]\CONFIG\machine.config and stopped with 1603 without them.
 
+wine-mono-0002-assemblyfolders-v3.patch
+    The support MSI also writes .NETFramework\AssemblyFolders\v3.0 and
+    \v3.5 (both views), as .NET 3.5 SP1 leaves them: Meedio's setup took
+    their absence for .NET 3.5 missing and ran Microsoft's 3.5 SP1 setup,
+    which refuses on Windows 10 ("Turn Windows features on or off").
+
 mono-0001-sg-fixes.patch
     System.Core: System.Diagnostics.Eventing.Reader (EventLogWatcher,
       EventLogSession, EventLogReader...), our own; there are no event logs

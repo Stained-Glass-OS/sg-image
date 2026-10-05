@@ -7,7 +7,9 @@
 #   - an app .config may have <startup> twice (its tray program's);
 #   - Environment.UserInteractive is false in a window station that is not
 #     visible (a service's), so Apollo runs as a service, not a console program;
-#   - the support MSI writes NDP\v4\{Client,Full} InstallPath;
+#   - the support MSI writes NDP\v4\{Client,Full} InstallPath, and
+#     .NETFramework\AssemblyFolders\v3.0/v3.5 (installers take that for
+#     .NET 3.5 SP1 being there);
 #   - System.Drawing has .NET Framework's private names that programs reach by
 #     reflection (AmbirScan's GdPicture).
 # Programs are compiled here with Mono's own mcs.exe, under Wine; the image's
@@ -37,6 +39,8 @@ fail() { echo "FAIL  $*"; RC=1; }
 # the support MSI's registry rows (static: wineboot installs the host's Mono)
 rows=$(msiinfo export "$MONO/support/winemono-support.msi" Registry 2>/dev/null | grep -c 'NDP\\v4\\\(Client\|Full\).InstallPath')
 [ "$rows" = 4 ] && pass "the support MSI writes NDP v4 Client/Full InstallPath, both views" || fail "InstallPath rows: $rows"
+rows=$(msiinfo export "$MONO/support/winemono-support.msi" Registry 2>/dev/null | grep -c 'NETFramework.AssemblyFolders.v3\.[05]'"$(printf '\t')"'.*Reference Assemblies')
+[ "$rows" = 4 ] && pass "and .NETFramework AssemblyFolders v3.0 and v3.5, both views (Meedio's setup ran .NET 3.5 SP1's, refused on Windows 10)" || fail "AssemblyFolders rows: $rows"
 msiinfo export "$MONO/support/winemono-support.msi" Property 2>/dev/null | grep -q '^ProductCode	{[0-9A-F-]\{36\}}' \
     && pass "and has a ProductCode (a build without uuidgen had {})" || fail "support MSI ProductCode"
 
