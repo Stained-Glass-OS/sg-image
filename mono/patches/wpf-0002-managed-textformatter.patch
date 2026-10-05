@@ -1,0 +1,220 @@
+diff --git a/src/Microsoft.DotNet.Wpf/src/PresentationCore/Managed/TextFormatting/FullTextLine.cs b/src/Microsoft.DotNet.Wpf/src/PresentationCore/Managed/TextFormatting/FullTextLine.cs
+index 4c41699..d626a97 100644
+--- a/src/Microsoft.DotNet.Wpf/src/PresentationCore/Managed/TextFormatting/FullTextLine.cs
++++ b/src/Microsoft.DotNet.Wpf/src/PresentationCore/Managed/TextFormatting/FullTextLine.cs
+@@ -270,6 +270,9 @@ FormattedTextSymbols    collapsingSymbol
+             {
+ 				_fullText = fullText;
+ 				_paragraphWidth = paragraphWidth;
++				// Stained Glass OS: a list item's first line carries its marker
++				if (fullText.TextMarkerStore != null)
++					_markerParagraph = fullText.TextStore.Settings.Pap.ParagraphProperties;
+ 
+                 TextStore store = fullText.TextStore;
+                 FormatSettings settings = store.Settings;
+@@ -381,6 +384,26 @@ FormattedTextSymbols    collapsingSymbol
+                         }
+                     }
+                 }
++
++				// Stained Glass OS: the paragraph's alignment (was ignored: centred
++				// and right-aligned text drew at the left, in TextBlock, FormattedText
++				// and flow documents alike); as the simple line does it
++#if SG_MUTANT_NO_ALIGN
++				switch (TextAlignment.Left)
++#else
++				switch (settings.Pap.Align)
++#endif
++				{
++					case TextAlignment.Right:
++						_metrics._paragraphToText = paragraphWidth - _metrics._textWidthAtTrailing;
++						break;
++					case TextAlignment.Center:
++						_metrics._paragraphToText = (int)Math.Round((paragraphWidth - _metrics._textWidthAtTrailing) * 0.5);
++						break;
++					default:
++						_metrics._paragraphToText = 0;
++						break;
++				}
+ 			}
+ 
+ 			private int GetShapeableSymbolsWidth(TextShapeableSymbols textRun)
+@@ -453,6 +476,13 @@ private TextMetrics GetRunMetrics(FullTextState textState, TextRun textRun, Char
+ 				{
+ 					var result = new TextMetrics();
+ 					var metric = ((TextEmbeddedObject)textRun).Format((double)remainingParagraphWidth / TextFormatterImp.ToIdeal);
++					// Stained Glass OS: kept -- the object is measured while the line is
++					// formatted, not again when the line is drawn or queried (WPF's flow
++					// layout can measure an inline control only while formatting a line)
++#if !SG_MUTANT_NO_EMBED_CACHE
++					if (_embeddedMetrics == null) _embeddedMetrics = new Dictionary<TextEmbeddedObject, TextEmbeddedObjectMetrics>();
++					_embeddedMetrics[(TextEmbeddedObject)textRun] = metric;
++#endif
+ 
+ 					result._textHeight = (int)Math.Round(metric.Height * TextFormatterImp.ToIdeal);
+ 					result._textWidth = (int)Math.Round(metric.Width * TextFormatterImp.ToIdeal);
+@@ -481,7 +511,7 @@ private TextMetrics GetRunMetrics(FullTextState textState, TextRun textRun, Char
+ 
+ 			private Point GetOffsetToFirstRun()
+ 			{
+-				return new Point(_metrics._formatter.IdealToReal(_fullText.TextStore.Settings.TextIndent, PixelsPerDip), 0);
++				return new Point(_metrics._formatter.IdealToReal(_fullText.TextStore.Settings.TextIndent + _metrics._paragraphToText, PixelsPerDip), 0);
+ 			}
+ 
+ 			private Point AdjustOffset(Point orig)
+@@ -532,6 +562,57 @@ public override void Draw(DrawingContext drawingContext, Point origin, InvertAxe
+                 }
+ 
+ 				DrawInternal(drawingContext, origin, inversion);
++#if !SG_MUTANT_NO_MARKER
++				if (_markerParagraph != null)
++					DrawMarker(drawingContext, origin, inversion);
++#endif
++			}
++
++			// Stained Glass OS: the marker (a list's bullet or number) was never
++			// drawn: lists showed their items without them. It is formatted on
++			// its own and drawn so that it ends at Offset from the line's start
++			// (Offset is negative: to the left), on the line's baseline.
++			private TextParagraphProperties _markerParagraph;
++
++			private Dictionary<TextEmbeddedObject, TextEmbeddedObjectMetrics> _embeddedMetrics;
++
++			private TextEmbeddedObjectMetrics EmbeddedMetrics(TextEmbeddedObject o, double remainingWidth)
++			{
++				TextEmbeddedObjectMetrics m;
++				if (_embeddedMetrics != null && _embeddedMetrics.TryGetValue(o, out m))
++					return m;
++				return o.Format(remainingWidth);
++			}
++
++			private sealed class MarkerParagraph : TextParagraphProperties
++			{
++				private readonly TextParagraphProperties _p;
++				internal MarkerParagraph(TextParagraphProperties p) { _p = p; }
++				public override FlowDirection FlowDirection { get { return _p.FlowDirection; } }
++				public override TextAlignment TextAlignment { get { return TextAlignment.Left; } }
++				public override double LineHeight { get { return _p.LineHeight; } }
++				public override bool FirstLineInParagraph { get { return true; } }
++				public override TextRunProperties DefaultTextRunProperties { get { return _p.DefaultTextRunProperties; } }
++				public override TextWrapping TextWrapping { get { return TextWrapping.NoWrap; } }
++				public override TextMarkerProperties TextMarkerProperties { get { return null; } }
++				public override double Indent { get { return 0; } }
++			}
++
++			private void DrawMarker(DrawingContext drawingContext, Point origin, InvertAxes inversion)
++			{
++				TextMarkerProperties marker = _markerParagraph.TextMarkerProperties;
++				if (marker == null || marker.TextSource == null)
++					return;
++				TextFormatter formatter = TextFormatter.Create(_textFormattingMode);
++				using (TextLine line = formatter.FormatLine(marker.TextSource, 0, 1000000, new MarkerParagraph(_markerParagraph), null))
++				{
++					double x;
++					if ((_statusFlags & StatusFlags.RightToLeft) != 0)
++						x = origin.X + Start + Width - marker.Offset;
++					else
++						x = origin.X + Start + marker.Offset - line.WidthIncludingTrailingWhitespace;
++					line.Draw(drawingContext, new Point(x, origin.Y + Baseline - line.Baseline), inversion);
++				}
+ 			}
+ 
+ 			private void CheckBoundingBox()
+@@ -644,7 +725,7 @@ MatrixTransform     antiInversion
+ 
+ 						boundingBox.Union(Rect.Offset(runBoundingBox, origin.X, origin.Y));
+ 
+-						origin.X += embedded.Format(paragraphWidth - origin.X).Width;
++						origin.X += EmbeddedMetrics(embedded, paragraphWidth - origin.X).Width;
+ 					}
+ 					else if (ordered.TextRun is TextHidden)
+ 					{
+@@ -725,7 +806,7 @@ public override CharacterHit GetCharacterHitFromDistance(double distance)
+ 					}
+ 					else if (ordered.TextRun is TextEmbeddedObject)
+ 					{
+-						var width = ((TextEmbeddedObject)ordered.TextRun).Format(paragraphWidth - x).Width;
++						var width = EmbeddedMetrics((TextEmbeddedObject)ordered.TextRun, paragraphWidth - x).Width;
+ 
+ 						index = ordered.CpFirst;
+ 						length = ordered.Length;  // trailing edge
+@@ -996,7 +1077,7 @@ public override IList<TextBounds> GetTextBounds(int firstTextSourceCharacterInde
+ 					}
+ 					else if (ordered.TextRun is TextEmbeddedObject)
+ 					{
+-						var width = ((TextEmbeddedObject)ordered.TextRun).Format(paragraphWidth - x).Width;
++						var width = EmbeddedMetrics((TextEmbeddedObject)ordered.TextRun, paragraphWidth - x).Width;
+ 
+ 						if (ordered.CpFirst <= firstTextSourceCharacterIndex + textLength - 1 &&
+ 							ordered.CpFirst + ordered.Length >= firstTextSourceCharacterIndex)
+@@ -1136,7 +1217,7 @@ public override int DependentLength
+ 			{
+ 				get
+ 				{
+-					throw new NotImplementedException("Managed.TextFormatting.FullTextLine.get_DependentLength");
++					return 0;   // Stained Glass OS: no characters past the line weighed in its break
+ 				}
+ 			}
+ 
+@@ -1184,7 +1265,7 @@ public override double TextHeight
+ 			{
+ 				get
+ 				{
+-					throw new NotImplementedException("Managed.TextFormatting.FullTextLine.get_TextHeight");
++					return _metrics.Height;   // Stained Glass OS: no marker apart from the text
+ 				}
+ 			}
+ 
+@@ -1200,7 +1281,7 @@ public override double TextBaseline
+ 			{
+ 				get
+ 				{
+-					throw new NotImplementedException("Managed.TextFormatting.FullTextLine.get_TextBaseline");
++					return _metrics.Baseline;
+ 				}
+ 			}
+ 
+@@ -1208,7 +1289,7 @@ public override double MarkerBaseline
+ 			{
+ 				get
+ 				{
+-					throw new NotImplementedException("Managed.TextFormatting.FullTextLine.get_MarkerBaseline");
++					return _metrics.Baseline;
+ 				}
+ 			}
+ 
+@@ -1216,7 +1297,7 @@ public override double MarkerHeight
+ 			{
+ 				get
+ 				{
+-					throw new NotImplementedException("Managed.TextFormatting.FullTextLine.get_MarkerHeight");
++					return _metrics.Height;
+ 				}
+ 			}
+ 
+@@ -1282,7 +1363,7 @@ public override bool IsTruncated
+ 			{
+ 				get
+ 				{
+-					throw new NotImplementedException("Managed.TextFormatting.FullTextLine.get_IsTruncated");
++					return false;   // Stained Glass OS: a word wider than the line is not marked
+ 				}
+ 			}
+         }
+diff --git a/src/Microsoft.DotNet.Wpf/src/PresentationCore/Managed/TextFormatting/TextProperties.cs b/src/Microsoft.DotNet.Wpf/src/PresentationCore/Managed/TextFormatting/TextProperties.cs
+index bd6c209..e0f5704 100644
+--- a/src/Microsoft.DotNet.Wpf/src/PresentationCore/Managed/TextFormatting/TextProperties.cs
++++ b/src/Microsoft.DotNet.Wpf/src/PresentationCore/Managed/TextFormatting/TextProperties.cs
+@@ -49,6 +49,12 @@ internal enum Plsrun : uint
+     /// </summary>
+     internal sealed class ParaProp
+     {
++        // Stained Glass OS: the properties as given (the marker is drawn from them)
++        internal TextParagraphProperties ParagraphProperties
++        {
++            get { return _paragraphProperties; }
++        }
++
+         /// <summary>
+         /// Constructing paragraph properties
+         /// </summary>

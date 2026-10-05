@@ -1,0 +1,2475 @@
+diff --git a/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/Pts.cs b/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/Pts.cs
+index 7670704..35ed747 100644
+--- a/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/Pts.cs
++++ b/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/Pts.cs
+@@ -35,7 +35,7 @@ namespace MS.Internal.PtsHost.UnsafeNativeMethods
+     // ----------------------------------------------------------------------
+     // Wrapper for PTS APIs and data structures.
+     // ----------------------------------------------------------------------
+-    static internal class PTS
++    static internal partial class PTS
+     {
+         // ------------------------------------------------------------------
+         // PTS return result validation.
+@@ -3066,41 +3066,13 @@ internal delegate int TransferDisplayInfoCell(
+         // Object handlers
+         // ------------------------------------------------------------------
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int GetFloaterHandlerInfo(
+-            [In] 
+-            ref FSFLOATERINIT pfsfloaterinit,   // IN:  pointer to floater init data (callbacks)
+-            IntPtr pFloaterObjectInfo);         // IN:  pointer to floater object info
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int GetTableObjHandlerInfo(
+-            [In] 
+-            ref FSTABLEOBJINIT pfstableobjinit, // IN:  pointer to floater init data (callbacks)
+-            IntPtr pTableObjectInfo);           // IN:  pointer to floater object info
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int CreateInstalledObjectsInfo(
+-            [In] 
+-            ref FSIMETHODS fssubtrackparamethods,//IN:  pointer to subtrack paragraph callbacks
+-            ref FSIMETHODS fssubpageparamethods,// IN:  pointer to subpage paragraph callbacks
+-            out IntPtr pInstalledObjects,       // OUT: pointer to installed objects array
+-            out int cInstalledObjects);         // OUT: size of installed objects array
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int DestroyInstalledObjectsInfo(
+-            IntPtr pInstalledObjects);          // IN:  pointer to installed objects array
+         // ------------------------------------------------------------------
+         // fscrcontxt.h
+         // ------------------------------------------------------------------
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int CreateDocContext(
+-            [In] 
+-            ref FSCONTEXTINFO fscontextinfo,    // IN:  pointer to context information
+-            out IntPtr pfscontext);             // OUT: pointer to the FS context
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int DestroyDocContext(
+-            IntPtr pfscontext);                 // IN:  pointer to the FS context
+ #if NEVER
+         [DllImport(DllImport.PresentationNative)]
+         internal static extern int FsSetDebugFlags(
+@@ -3111,47 +3083,11 @@ internal static extern int FsSetDebugFlags(
+         // ------------------------------------------------------------------
+         // fscrpage.h
+         // ------------------------------------------------------------------
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsCreatePageFinite(
+-            IntPtr pfscontext,                  // IN:  ptr to FS context
+-            IntPtr pfsBRPageStart,              // IN:  ptr to brk record of prev. page
+-            IntPtr fsnmSectStart,               // IN:  name of the section to start from, if pointer to break rec is NULL
+-            out FSFMTR pfsfmtrOut,              // OUT: formatting result
+-            out IntPtr ppfsPageOut,             // OUT: ptr to page, opaque to client
+-            out IntPtr ppfsBRPageOut);          // OUT: break record of the page
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsUpdateFinitePage(
+-            IntPtr pfscontext,                  // IN:  ptr to FS context
+-            IntPtr pfspage,                     // IN:  ptr to page to update
+-            IntPtr pfsBRPageStart,              // IN:  ptr to brk record of prev. page
+-            IntPtr fsnmSectStart,               // IN:  name of the section to start from, if pointer to break rec is NULL
+-            out FSFMTR pfsfmtrOut,              // OUT: formatting result
+-            out IntPtr ppfsBRPageOut);          // OUT: break record of the page
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsCreatePageBottomless(
+-            IntPtr pfscontext,                  // IN:  ptr to FS context
+-            IntPtr fsnmsect,                    // IN:  name of the section to start from
+-            out FSFMTRBL pfsfmtrbl,             // OUT: formatting result
+-            out IntPtr ppfspage);               // OUT: ptr to page, opaque to client
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsUpdateBottomlessPage(
+-            IntPtr pfscontext,                  // IN:  ptr to FS context
+-            IntPtr pfspage,                     // IN:  ptr to page to update
+-            IntPtr fsnmsect,                    // IN:  name of the section to start from
+-            out FSFMTRBL pfsfmtrbl);            // OUT: formatting result
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsClearUpdateInfoInPage(
+-            IntPtr pfscontext,                  // IN:  ptr to FS context
+-            IntPtr pfspage);                    // IN:  ptr to page to clear
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsDestroyPage(
+-            IntPtr pfscontext,                  // IN:  ptr to FS context
+-            IntPtr pfspage);                    // IN:  ptr to page
+ 
+ #if NEVER
+ [DllImport(DllImport.PresentationNative)]//CASRemoval:
+@@ -3161,288 +3097,36 @@ internal static extern int FsDuplicatePageBreakRecord(
+     out IntPtr ppfsbreakrecpage);   // OUT: ptr to duplicate break record
+ #endif
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsDestroyPageBreakRecord(
+-            IntPtr pfscontext,                  // IN:  ptr to FS context
+-            IntPtr pfsbreakrec);                // IN:  ptr to page break record
+ 
+         // ------------------------------------------------------------------
+         // fscrsubp.h
+         // ------------------------------------------------------------------
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern unsafe int FsCreateSubpageFinite(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pBRSubPageStart,             // IN: ptr to brk record of subpage
+-            int fFromPreviousPage,              // IN:  break record was created on previous page
+-            IntPtr nSeg,                        // IN:  name of the segment to start from-if pointer to break rec is NULL
+-            IntPtr pFtnRej,                     // IN:  pftnrej
+-            int fEmptyOk,                       // IN:  fEmptyOK
+-            int fSuppressTopSpace,              // IN:  fSuppressTopSpace
+-            uint fswdir,                        // IN:  fswdir
+-            int lWidth,                         // IN:  width of subpage
+-            int lHeight,                        // IN:  height of subpage
+-            ref FSRECT rcMargin,                // IN:  rectangle within subpage margins
+-            int cColumns,                       // IN:  number of columns
+-            FSCOLUMNINFO* rgColumnInfo,         // IN:  array of column info
+-            int fApplyColumnBalancing,          // IN:  apply column balancing?
+-            int cSegmentAreas,                  // IN:  number of segment-defined colspan areas
+-            IntPtr* rgnSegmentForArea,          // IN:  array of segment names for colspan areas
+-            int* rgSpanForSegmentArea,          // IN:  array of columns spanned for segment-defined areas
+-            int cHeightAreas,                   // IN:  number of height-defined colspan areas
+-            int* rgHeightForArea,               // IN:  array of heights for height-defined colspan areas
+-            int* rgSpanForHeightArea,           // IN:  array of columns spanned for height-defined areas
+-            int fAllowOverhangBottom,           // IN:  allow overhang over bottom margin?
+-            FSKSUPPRESSHARDBREAKBEFOREFIRSTPARA fsksuppresshardbreakbeforefirstparaIn,
+-																/* IN: suppress breaks at track start?			*/
+-            out FSFMTR fsfmtr,                  // OUT: why formatting was stopped
+-            out IntPtr pSubPage,                // OUT: ptr to the subpage
+-            out IntPtr pBRSubPageOut,           // OUT: break record of the subpage
+-            out int dvrUsed,                    // OUT: dvrUsed
+-            out FSBBOX fsBBox,                  // OUT: subpage bbox
+-            out IntPtr pfsMcsClient,            // OUT: margin collapsing state at the bottom
+-            out int topSpace);                  // OUT: top space due to collapsed margins
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static unsafe extern int FsCreateSubpageBottomless(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr nSeg,                        // IN:  name of the segment to start from
+-            int fSuppressTopSpace,              // IN:  suppress top space?
+-            uint fswdir,                        // IN:  fswdir
+-            int lWidth,                         // IN:  width of subpage
+-            int urMargin,                       // IN:  ur of margin
+-            int durMargin,                      // IN:  dur of margin
+-            int vrMargin,                       // IN:  vr of margin
+-            int cColumns,                       // IN:  number of columns
+-            FSCOLUMNINFO* rgColumnInfo,         // IN:  array of column info
+-            int cSegmentAreas,                  // IN:  number of segment-defined colspan areas
+-            IntPtr* rgnSegmentForArea,          // IN:  array of segment names for colspan areas
+-            int* rgSpanForSegmentArea,          // IN:  array of columns spanned for segment-defined areas
+-            int cHeightAreas,                   // IN:  number of height-defined colspan areas
+-            int* rgHeightForArea,               // IN:  array of heights for height-defined colspan areas
+-            int* rgSpanForHeightArea,           // IN:  array of columns spanned for height-defined areas
+-            int fINterrruptible,                // IN:  can be interrupted?
+-            out FSFMTRBL pfsfmtr,               // OUT: why formatting was stopped
+-            out IntPtr ppSubPage,               // OUT: ptr to the subpage
+-            out int pdvrUsed,                   // OUT: dvrUsed
+-            out FSBBOX pfsBBox,                 // OUT: subpage bbox
+-            out IntPtr pfsMcsClient,            // OUT: margin collapsing state at the bottom
+-            out int pTopSpace,                  // OUT: top space due to collapsed margins
+-            out int fPageBecomesUninterruptible);// OUT: interruption is prohibited from now on
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static unsafe extern int FsUpdateBottomlessSubpage(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pfsSubpage,                  // IN:  ptr to the subpage
+-            IntPtr nmSeg,                       // IN:  name of the segment to start from
+-            int fSuppressTopSpace,              // IN:  suppress top space?
+-            uint fswdir,                        // IN:  fswdir
+-            int lWidth,                         // IN:  width of subpage
+-            int urMargin,                       // IN:  ur of margin
+-            int durMargin,                      // IN:  dur of margin
+-            int vrMargin,                       // IN:  vr of margin
+-            int cColumns,                       // IN:  number of columns
+-            FSCOLUMNINFO* rgColumnInfo,         // IN:  array of column info
+-            int cSegmentAreas,                  // IN:  number of segment-defined colspan areas
+-            IntPtr* rgnSegmentForArea,          // IN:  array of segment names for colspan areas
+-            int* rgSpanForSegmentArea,          // IN:  array of columns spanned for segment-defined areas
+-            int cHeightAreas,                   // IN:  number of height-defined colspan areas
+-            int* rgHeightForArea,               // IN:  array of heights for height-defined colspan areas
+-            int* rgSpanForHeightArea,           // IN:  array of columns spanned for height-defined areas
+-            int fINterrruptible,                // IN:  can be interrupted?
+-            out FSFMTRBL pfsfmtr,               // OUT: why formatting was stopped
+-            out int pdvrUsed,                   // OUT: dvrUsed
+-            out FSBBOX pfsBBox,                 // OUT: subpage bbox
+-            out IntPtr pfsMcsClient,            // OUT: margin collapsing state at the bottom
+-            out int pTopSpace,                  // OUT: top space due to collapsed margins
+-            out int fPageBecomesUninterruptible);// OUT: interruption is prohibited from now on
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsCompareSubpages(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pfsSubpageOld,               // IN:  ptr to the old subpage
+-            IntPtr pfsSubpageNew,               // IN:  ptr to the new subpage
+-            out FSCOMPRESULT fsCompResult);     // OUT: comparison result
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsClearUpdateInfoInSubpage(
+-            IntPtr pfscontext,                  // IN:  ptr to FS context
+-            IntPtr pSubpage);                   // IN:  ptr to subpage
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsDestroySubpage(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pSubpage);                   // IN:  ptr to subpage
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsDuplicateSubpageBreakRecord(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pBreakRecSubPageIn,          // IN:  ptr to subpage break record
+-            out IntPtr ppBreakRecSubPageOut);   // OUT: ptr to duplicate break record
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsDestroySubpageBreakRecord(
+-            IntPtr pfscontext,                  // IN:  ptr to FS context
+-            IntPtr pfsbreakrec);                // IN:  ptr to subpage break record
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsGetSubpageColumnBalancingInfo(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pSubpage,                    // IN:  ptr to the subpage
+-            out uint fswdir,                    // OUT: writing direction for results
+-            out int lLineNumber,                // OUT: number of text lines
+-            out int lLineHeights,               // OUT: sum of all line heights
+-            out int lMinimumLineHeight);        // OUT: minimum line height
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsGetNumberSubpageFootnotes(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pSubpage,                    // IN:  ptr to the subpage
+-            out int cFootnotes);                // OUT: number of footnotes
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static unsafe extern int FsGetSubpageFootnoteInfo(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pSubpage,                    // IN:  ptr to the subpage
+-            int cArraySize,                     // IN:  size of FSFTNINFO array
+-            int indexStart,                     // IN:  first index in FSFTNINFO array to be used by this subpage
+-            out uint fswdir,                    // OUT: writing direction for results
+-            PTS.FSFTNINFO* rgFootnoteInfo,      // IN/OUT: array of footnote info
+-            out int indexLim);                  // OUT: lim index used by this subpage
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsTransferDisplayInfoSubpage(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pSubpageOld,                 // IN:  ptr to the old subpage
+-            IntPtr pfsSubpageNew);              // IN:  ptr to the new subpage
+ 
+         // ------------------------------------------------------------------
+         // fscrsubtrack.h
+         // ------------------------------------------------------------------
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsFormatSubtrackFinite(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pfsBRSubtackIn,              // IN:  ptr to brk record of subtrack
+-            int fFromPreviousPage,              // IN:  break record was created on previous page
+-            IntPtr fsnmSegment,                 // IN:  name of the segment to start from - if pointer to break rec is NULL
+-            int iArea,                          // IN:  column-span area index
+-            IntPtr pfsFtnRej,                   // IN:
+-            IntPtr pfsGeom,                     // IN:  geometry
+-            int fEmptyOk,                       // IN:  fEmptyOK
+-            int fSuppressTopSpace,              // IN:  fSuppressTopSpace
+-            uint fswdir,                        // IN:  direction
+-            [In] ref FSRECT fsRectToFill,       // IN:  rectangle to fill
+-            IntPtr pfsMcsClientIn,              // IN:  input margin collapsing state
+-            FSKCLEAR fsKClearIn,                // IN:  clear property that must be satisfied
+-            FSKSUPPRESSHARDBREAKBEFOREFIRSTPARA fsksuppresshardbreakbeforefirstpara,
+-                                                // IN: suppress breaks at track start?	
+-            out FSFMTR pfsfmtr,                 // OUT: why formatting was stopped
+-            out IntPtr ppfsSubtrack,            // OUT: ptr to the subtrack
+-            out IntPtr pfsBRSubtrackOut,        // OUT: break record of the subtrack
+-            out int pdvrUsed,                   // OUT: dvrUsed
+-            out FSBBOX pfsBBox,                 // OUT: subtrack bbox
+-            out IntPtr ppfsMcsClientOut,        // OUT: margin collapsing state at the bottom
+-            out FSKCLEAR pfsKClearOut,          // OUT: ClearIn for the next paragraph
+-            out int pTopSpace);                 // OUT: top space due to collapsed margin
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsFormatSubtrackBottomless(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr fsnmSegment,                 // IN:  name of the segment to start from
+-            int iArea,                          // IN:  column-span area index
+-            IntPtr pfsGeom,                     // IN:  parent geometry
+-            int fSuppressTopSpace,              // IN:
+-            uint fswdir,                        // IN:  direction
+-            int ur,                             // IN:  ur of subtrack
+-            int dur,                            // IN:  dur of subtrack
+-            int vr,                             // IN:  vr of subtrack
+-            IntPtr pfsMcsClientIn,              // IN:  input margin collapsing state
+-            FSKCLEAR fsKClearIn,                // IN:  clear property that must be satisfied
+-            int fCanBeInterruptedIn,            // IN:  can be interrupted?
+-            out FSFMTRBL pfsfmtrbl,             // OUT: why formatting was stopped
+-            out IntPtr ppfsSubtrack,            // OUT: ptr to subtrack
+-            out int pdvrUsed,                   // OUT: dvrUsed
+-            out FSBBOX pfsBBox,                 // OUT: subtrack bbox
+-            out IntPtr ppfsMcsClientOut,        // OUT: margin collapsing state at the bottom
+-            out FSKCLEAR pfsKClearOut,          // OUT: ClearIn for the next paragraph
+-            out int pTopSpace,                  // OUT: top space due to collapsed margin
+-            out int pfCanBeInterruptedOut);     // OUT: interruption is prohibited from now on
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsUpdateBottomlessSubtrack(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pfsSubtrack,                 // IN:  ptr to subtrack
+-            IntPtr fsnmSegment,                 // IN:  name of the segment to start from
+-            int iArea,                          // IN:  column-span area index
+-            IntPtr pfsGeom,                     // IN:  parent geometry
+-            int fSuppressTopSpace,              // IN:
+-            uint fswdir,                        // IN:  direction
+-            int ur,                             // IN:  ur of subtrack
+-            int dur,                            // IN:  dur of subtrack
+-            int vr,                             // IN:  vr of subtrack
+-            IntPtr pfsMcsClientIn,              // IN:  input margin collapsing state
+-            FSKCLEAR fsKClearIn,                // IN:  clear property that must be satisfied
+-            int fCanBeInterruptedIn,            // IN:  can be interrupted?
+-            out FSFMTRBL pfsfmtrbl,             // OUT: why formatting was stopped
+-            out int pdvrUsed,                   // OUT: dvrUsed
+-            out FSBBOX pfsBBox,                 // OUT: subtrack bbox
+-            out IntPtr ppfsMcsClientOut,        // OUT: margin collapsing state at the bottom
+-            out FSKCLEAR pfsKClearOut,          // OUT: ClearIn for the next paragraph
+-            out int pTopSpace,                  // OUT: top space due to collapsed margin
+-            out int pfCanBeInterruptedOut);     // OUT: interruption is prohibited from now on
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsSynchronizeBottomlessSubtrack(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pfsSubtrack,                 // IN:  ptr to subtrack
+-            IntPtr pfsGeom,                     // IN:  geometry
+-            uint fswdir,                        // IN:  direction
+-            int vrShift);                       // IN:  shift by this value
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsCompareSubtrack(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pfsSubtrackOld,              // IN:  ptr to old subtrack
+-            IntPtr pfsSubtrackNew,              // IN:  ptr to new subtrack
+-            uint fswdir,                        // IN:  fswdir
+-            out FSCOMPRESULT fsCompResult,      // OUT: comparison result
+-            out int dvrShifted);                // OUT: dvrShifted if result is fscmprShifted
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsClearUpdateInfoInSubtrack(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pfsSubtrack);                // IN:  ptr to subtrack
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsDestroySubtrack(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pfsSubtrack);                // IN:  ptr to subtrack
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsDuplicateSubtrackBreakRecord(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pfsBRSubtrackIn,             // IN:  ptr to brk record of subtrack
+-            out IntPtr ppfsBRSubtrackOut);      // OUT: ptr to duplicate break record
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsDestroySubtrackBreakRecord(
+-            IntPtr pfscontext,                  // IN:  ptr to FS context
+-            IntPtr pfsbreakrec);                // IN:  ptr to subtrack break record
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsGetSubtrackColumnBalancingInfo(
+-            IntPtr pfscontext,                  // IN:  ptr to FS context
+-            IntPtr pfsSubtrack,                 // IN:  ptr to subtrack
+-            uint fswdir,                        // IN:  fswdir
+-            out int lLineNumber,                // OUT: number of text lines
+-            out int lLineHeights,               // OUT: sum of all line heights
+-            out int lMinimumLineHeight);        // OUT: minimum line height
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsGetNumberSubtrackFootnotes(
+-            IntPtr pfscontext,                  // IN:  ptr to FS context
+-            IntPtr pfsSubtrack,                 // IN:  ptr to subtrack
+-            out int cFootnotes);                // OUT: number of footnotes
+ 
+ #if NEVER
+ FSERR FSAPI FsGetSubtrackFootnoteInfo(
+@@ -3470,11 +3154,6 @@ FSERR FSAPI FsShiftSubtrackVertical(
+ 
+ #endif
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsTransferDisplayInfoSubtrack(
+-            IntPtr pfscontext,                  // IN:  ptr to FS context
+-            IntPtr pfsSubtrackOld,              // IN:  ptr to old subtrack
+-            IntPtr pfsSubtrackNew);             // IN: ptr to new subtrack
+         // ------------------------------------------------------------------
+         // fsfloater.h
+         // ------------------------------------------------------------------
+@@ -3482,11 +3161,6 @@ internal static extern int FsTransferDisplayInfoSubtrack(
+         // ------------------------------------------------------------------
+         // fsfloaterquery.h
+         // ------------------------------------------------------------------
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsQueryFloaterDetails(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pfsfloater,                  // IN:
+-            out FSFLOATERDETAILS fsfloaterdetails); // OUT:
+         // ------------------------------------------------------------------
+         // fsftnrej.h
+         // ------------------------------------------------------------------
+@@ -3594,11 +3268,6 @@ FSERR FSAPI FsGetIntervals(
+         // ------------------------------------------------------------------
+         // fsquery.h
+         // ------------------------------------------------------------------
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsQueryPageDetails(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pPage,                       // IN:  ptr to page
+-            out FSPAGEDETAILS pPageDetails);    // OUT: page details
+ 
+ #if NEVER
+ FSERR FSAPI FsQueryPageFootnoteColumnList(
+@@ -3621,27 +3290,8 @@ FSERR FSAPI FsQueryFootnoteColumnTrackList(
+             LONG*);                     /* OUT: actual number of tracks                 */
+ #endif
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern unsafe int FsQueryPageSectionList(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pPage,                       // IN:  ptr to page
+-            int cArraySize,                     // IN:  size of array of section descriptions
+-            FSSECTIONDESCRIPTION* rgSectionDescription, // OUT: array of section descriptions
+-            out int cActualSize);               // OUT: actual number of sections
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsQuerySectionDetails(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pSection,                    // IN:  ptr to section
+-            out FSSECTIONDETAILS pSectionDetails); // OUT: section details
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern unsafe int FsQuerySectionBasicColumnList(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pSection,                    // IN:  ptr to section
+-            int cArraySize,                     // IN:  size of array of track descriptions
+-            FSTRACKDESCRIPTION* rgColumnDescription, // OUT: array of track descriptions
+-            out int cActualSize);               // OUT: actual number of tracks
+ #if NEVER
+         [DllImport(DllImport.PresentationNative)]
+         internal static extern unsafe int FsQuerySegmentDefinedColumnSpanAreaList(
+@@ -3691,33 +3341,9 @@ FSERR FSAPI FsQueryCompositeColumnFootnoteList(
+             LONG*);                     /* OUT: actual number of footnotes              */
+ #endif
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsQueryTrackDetails(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pTrack,                      // IN:  ptr to track
+-            out FSTRACKDETAILS pTrackDetails);  // OUT: track details
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static unsafe extern int FsQueryTrackParaList(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pTrack,                      // IN:  ptr to track
+-            int cParas,                         // IN:  size of array of para descriptions
+-            FSPARADESCRIPTION* rgParaDesc,      // OUT: array of para descriptions
+-            out int cParaDesc);                 // OUT: actual number of paragraphs
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern unsafe int FsQuerySubpageDetails(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pSubPage,                    // IN:  ptr to subpage
+-            out FSSUBPAGEDETAILS pSubPageDetails);// OUT: subpage details
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern unsafe int FsQuerySubpageBasicColumnList(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pSubPage,                    // IN:  ptr to subpage
+-            int cArraySize,                     // IN:  size of array of track descriptions
+-            FSTRACKDESCRIPTION* rgColumnDescription, // OUT: array of track descriptions
+-            out int cActualSize);               // OUT: actual number of tracks
+ 
+ #if NEVER
+         [DllImport(DllImport.PresentationNative)]
+@@ -3737,49 +3363,11 @@ internal static extern unsafe int FsQuerySubpageHeightDefinedColumnSpanAreaList(
+             out int cActualSize);               // OUT: actual number of height-defined areas
+ #endif
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsQuerySubtrackDetails(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pSubTrack,                   // IN:  ptr to subtrack
+-            out FSSUBTRACKDETAILS pSubTrackDetails);// OUT: subpage details
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static unsafe extern int FsQuerySubtrackParaList(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pSubTrack,                   // IN:  ptr to subtrack
+-            int cParas,                         // IN:  size of array of para descriptions
+-            FSPARADESCRIPTION* rgParaDesc,      // OUT: array of para descriptions
+-            out int cParaDesc);                 // OUT: actual number of paragraphs
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static extern int FsQueryTextDetails(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pPara,                       // IN:  ptr to text para
+-            out FSTEXTDETAILS pTextDetails);    // OUT: text details
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static unsafe extern int FsQueryLineListSingle(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pPara,                       // IN:  ptr to text para
+-            int cLines,                         // IN:  size of array of line descriptions
+-            FSLINEDESCRIPTIONSINGLE* rgLineDesc,// OUT: array of line descriptions
+-            out int cLineDesc);                 // OUT: actual number of lines
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static unsafe extern int FsQueryLineListComposite(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pPara,                       // IN:  ptr to text para
+-            int cElements,                      // IN:  size of array of line descriptions
+-            FSLINEDESCRIPTIONCOMPOSITE* rgLineDescription, // OUT: array of line descriptions
+-            out int cLineElements);             // OUT: actual number of lines
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static unsafe extern int FsQueryLineCompositeElementList(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pLine,                       // IN:  ptr to line
+-            int cElements,                      // IN:  size of array of line elements
+-            FSLINEELEMENT* rgLineElement,       // OUT: array of line elements
+-            out int cLineElements);             // OUT: actual number of line elements
+ #if NEVER
+         [DllImport(DllImport.PresentationNative)]
+         internal static unsafe extern int FsQueryDcpLineVariantsFromCachedTextPara(
+@@ -3790,19 +3378,7 @@ internal static unsafe extern int FsQueryDcpLineVariantsFromCachedTextPara(
+             out int cLineActual);               // OUT: actual number of dcp's
+ #endif
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static unsafe extern int FsQueryAttachedObjectList(
+-            IntPtr pfsContext,                  // IN:  ptr to FS context
+-            IntPtr pPara,                       // IN:  ptr to text para
+-            int cAttachedObject,                // IN:  size of array of attached object descriptions
+-            FSATTACHEDOBJECTDESCRIPTION* rgAttachedObjects,      // OUT: array of attached object descriptions
+-            out int cAttachedObjectDesc);               // OUT: actual number of figures
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static unsafe extern int FsQueryFigureObjectDetails(
+-        			IntPtr pfsContext, /* IN: ptr to FS context						*/
+-        			IntPtr pPara,      /* IN: ptr to figure para						*/
+-        			out FSFIGUREDETAILS fsFigureDetails);			/* OUT: figure details							*/
+ 
+ 
+         // ------------------------------------------------------------------
+@@ -3816,43 +3392,12 @@ internal static unsafe extern int FsQueryFigureObjectDetails(
+         // ------------------------------------------------------------------
+         // fstableobjquery.h
+         // ------------------------------------------------------------------
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static unsafe extern int FsQueryTableObjDetails(
+-            IntPtr pfscontext,                          // IN:  
+-            IntPtr pfstableobj,                         // IN:  
+-            out FSTABLEOBJDETAILS pfstableobjdetails);  // OUT: 
+ 
+         // FsQueryTableObjFigureCountWord               //  -- MS Word specific 
+         // FsQueryTableObjFigureListWord                //  -- MS Word specific 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static unsafe extern int FsQueryTableObjTableProperDetails(
+-            IntPtr pfscontext,                          // IN:  
+-            IntPtr pfstableProper,                      // IN:  
+-            out FSTABLEDETAILS pfstabledetailsProper);  // OUT: 
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static unsafe extern int FsQueryTableObjRowList(
+-            IntPtr pfscontext,                          // IN:  
+-            IntPtr pfstableProper,                      // IN:  
+-            int cRows,                                  // IN:  
+-            FSTABLEROWDESCRIPTION* rgtablerowdescr,     // OUT: 
+-            out int pcRowsActual);                      // OUT: 
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static unsafe extern int FsQueryTableObjRowDetails(
+-            IntPtr pfscontext,                          // IN:  
+-            IntPtr pfstablerow,                         // IN:  
+-            out FSTABLEROWDETAILS ptableorowdetails);   // OUT: 
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static unsafe extern int FsQueryTableObjCellList(
+-            IntPtr pfscontext,                          // IN:  
+-            IntPtr pfstablerow,                         // IN:  
+-            int cCells,                                 // IN:  
+-            FSKUPDATE* rgfskupd,                        // OUT: 
+-            IntPtr* rgpfscell,                          // OUT: 
+-            FSTABLEKCELLMERGE* rgkcellmerge,            // OUT: 
+-            out int pcCellsActual);                     // OUT: 
+ 
+ 
+         // ------------------------------------------------------------------
+@@ -3888,21 +3433,7 @@ internal static unsafe extern int FsQueryTableObjCellList(
+         // FsTransformPoint
+         // FsTransformVector
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static unsafe extern int FsTransformRectangle(
+-            uint fswdirIn,                          // IN:  
+-            ref FSRECT rectPage,                    // IN:  
+-            ref FSRECT rectTransform,
+-            uint fswdirOut,
+-            out FSRECT rectOut);
+ 
+-        [DllImport(DllImport.PresentationNative)]
+-        internal static unsafe extern int FsTransformBbox(
+-            uint fswdirIn,                          // IN:  
+-            ref FSRECT rectPage,                    // IN:  
+-            ref FSBBOX bboxTransform,
+-            uint fswdirOut,
+-            out FSBBOX bboxOut); 
+ 
+         // ------------------------------------------------------------------
+         // fswordframe.h
+diff --git a/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/PtsCache.cs b/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/PtsCache.cs
+index 9c65339..a30d925 100644
+--- a/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/PtsCache.cs
++++ b/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/PtsCache.cs
+@@ -449,7 +449,14 @@ private IntPtr CreatePTSContext(int index, TextFormattingMode textFormattingMode
+             InitTableObjInfo(ptsHost, ref _contextPool[index].TableobjInit);
+ 
+             // Setup for optimal paragraph
+-            if (_contextPool[index].IsOptimalParagraphEnabled)
++            // Stained Glass OS: without Line Services (Wine Mono's PresentationNative
++            // has none; its TextFormatter is managed) there is no penalty module:
++            // the context formats as if optimal paragraphs were off.
++            if (_contextPool[index].IsOptimalParagraphEnabled && !LineServicesAvailable())
++            {
++                _contextPool[index].TextFormatter = TextFormatter.Create(textFormattingMode);
++            }
++            else if (_contextPool[index].IsOptimalParagraphEnabled)
+             {
+                 textFormatterContext = new TextFormatterContext();
+                 TextPenaltyModule penaltyModule = textFormatterContext.GetTextPenaltyModule();
+@@ -472,6 +479,25 @@ private IntPtr CreatePTSContext(int index, TextFormattingMode textFormattingMode
+             return context;
+         }
+ 
++        // Line Services there (1), not (-1), not yet known (0)
++        private static int s_lineServices;
++
++        private static bool LineServicesAvailable()
++        {
++            if (s_lineServices == 0)
++            {
++                try
++                {
++                    new TextFormatterContext();
++                    s_lineServices = 1;
++                }
++                catch (EntryPointNotFoundException) { s_lineServices = -1; }
++                catch (DllNotFoundException) { s_lineServices = -1; }
++                catch (TypeInitializationException) { s_lineServices = -1; }
++            }
++            return s_lineServices > 0;
++        }
++
+         /// <summary>
+         /// Initializes generic PTS callbacks.
+         /// </summary>
+diff --git a/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/PtsEngine.cs b/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/PtsEngine.cs
+new file mode 100644
+index 0000000..4a5a9e6
+--- /dev/null
++++ b/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/PtsEngine.cs
+@@ -0,0 +1,1785 @@
++// Stained Glass OS: the PTS formatting engine, in managed code.
++//
++// WPF's flow layout (FlowDocument, RichTextBox, FlowDocumentScrollViewer,
++// FlowDocumentReader) hands its pages, columns and paragraphs to "PTS", a
++// native engine in PresentationNative that Wine Mono does not have: every
++// program showing rich text stopped with EntryPointNotFoundException
++// (PTS.CreateInstalledObjectsInfo) -- Sonos Desktop Controller among them
++// (David 2026-10-02). This is our own engine behind the same interface (the
++// declarations in Pts.cs, the callbacks PtsHost implements): it stacks a
++// segment's paragraphs down a column, breaks text paragraphs into lines
++// through the client's FormatLine, lets the client's container and subpage
++// objects lay out their own children through the subtrack and subpage
++// calls, breaks finite pages between columns and pages, and answers the
++// queries PtsPage and the paragraph clients make to draw and hit-test.
++//
++// Not yet: tables (a table paragraph takes no space), floaters that float
++// (they are placed as blocks, as BlockUIContainer's are), figures, column
++// balancing, text around obstacles, optimal paragraphs (lines are always the
++// client's FormatLine), footnotes. Updates format again from the start.
++//
++// SPDX-License-Identifier: MIT
++
++using System;
++using System.Collections.Generic;
++using MS.Internal.PtsHost;
++
++namespace MS.Internal.PtsHost.UnsafeNativeMethods
++{
++    static internal partial class PTS
++    {
++        // ------------------------------------------------------------------
++        // Handles: what the client holds of ours is an IntPtr into this table.
++        // ------------------------------------------------------------------
++        private static readonly Dictionary<long, object> s_objects = new Dictionary<long, object>();
++        private static readonly object s_lock = new object();
++        private static long s_nextHandle = 0x50000;
++
++        private static IntPtr NewHandle(object o)
++        {
++            lock (s_lock)
++            {
++                long h = ++s_nextHandle;
++                s_objects[h] = o;
++                return new IntPtr(h);
++            }
++        }
++
++        private static T Get<T>(IntPtr h) where T : class
++        {
++            if (h == IntPtr.Zero) return null;
++            lock (s_lock)
++            {
++                object o;
++                s_objects.TryGetValue(h.ToInt64(), out o);
++                return o as T;
++            }
++        }
++
++        private static void FreeHandle(IntPtr h)
++        {
++            if (h == IntPtr.Zero) return;
++            lock (s_lock) { s_objects.Remove(h.ToInt64()); }
++        }
++
++        // a failed callback (its fserr) or our own check: back to the caller as the error
++        private sealed class PtsFail : Exception
++        {
++            internal readonly int Err;
++            internal PtsFail(int err) { Err = err; }
++        }
++
++        private static void Ck(int fserr)
++        {
++            if (fserr != fserrNone) throw new PtsFail(fserr);
++        }
++
++        private static int Fail(Exception e)
++        {
++            PtsFail f = e as PtsFail;
++            if (f != null) return f.Err;
++            if (Environment.GetEnvironmentVariable("SG_PTS_TRACE") != null)
++                Console.Error.WriteLine("sg-pts: " + e);
++            return tserrInternalError;
++        }
++
++        private static void Trace(string s)
++        {
++            if (Environment.GetEnvironmentVariable("SG_PTS_TRACE") != null)
++                Console.Error.WriteLine("sg-pts: " + s);
++        }
++
++        // ------------------------------------------------------------------
++        // The engine's objects
++        // ------------------------------------------------------------------
++        private sealed class Installed
++        {
++            internal FSIMETHODS Subtrack, Subpage;
++        }
++
++        private sealed class HandlerSlot
++        {
++            internal bool HaveFloater, HaveTable;
++            internal FSFLOATERCBK Floater;
++            internal FSTABLEOBJINIT Table;
++        }
++
++        private sealed class Ctx
++        {
++            internal IntPtr Handle, Client, Geometry;
++            internal uint Ffi;
++            internal FSCBK Cb;
++            internal FSIMETHODS[] Methods = new FSIMETHODS[2];   // container (subtrack), subpage
++            internal bool[] HaveMethods = new bool[2];
++            internal IntPtr[] ObjContext = new IntPtr[2];
++            internal bool[] HaveObjContext = new bool[2];
++            internal FSFLOATERCBK Floater;
++            internal bool HaveFloater, TriedFloater;
++            internal int PageLeft;                // the page's left margin, for FormatLine
++        }
++
++        private sealed class Line
++        {
++            internal IntPtr BrIn;                 // the break record this line starts from (ours)
++            internal int DcpFirst, DcpLim, Ur, Dur, UrBBox, DurBBox, Vr, Ascent, Descent, First, Forced;
++        }
++
++        private sealed class TextPara
++        {
++            internal IntPtr Handle;
++            internal uint Fswdir;
++            internal int SuppressTop;
++            internal List<Line> Lines = new List<Line>();
++        }
++
++        private sealed class FloaterPara
++        {
++            internal IntPtr Handle, Name, Content;
++            internal FSRECT Rect;
++            internal FSKUPDATE Upd = FSKUPDATE.fskupdNew;
++        }
++
++        private sealed class Para
++        {
++            internal IntPtr Nmp, Client, Pfspara;
++            internal int Idobj, Vr, DvrUsed, DvrTop;
++            internal FSBBOX BBox;
++            internal FSKUPDATE Upd = FSKUPDATE.fskupdNew;
++        }
++
++        private sealed class Track
++        {
++            internal IntPtr Handle, Nms;
++            internal uint Fswdir;
++            internal FSRECT Rect;
++            internal FSBBOX BBox;
++            internal FSKUPDATE Upd = FSKUPDATE.fskupdNew;
++            internal List<Para> Paras = new List<Para>();
++        }
++
++        private sealed class Section
++        {
++            internal IntPtr Handle, Nms;
++            internal uint Fswdir;
++            internal FSRECT Rect;
++            internal FSBBOX BBox;
++            internal List<Track> Columns = new List<Track>();
++        }
++
++        private sealed class Page
++        {
++            internal Ctx C;
++            internal IntPtr Handle;
++            internal uint Fswdir;
++            internal FSRECT Body, Margin;
++            internal FSBBOX BBox;
++            internal FSKUPDATE Upd = FSKUPDATE.fskupdNew;
++            internal Section Sec;
++        }
++
++        private sealed class Subpage
++        {
++            internal IntPtr Handle, Nms;
++            internal uint Fswdir;
++            internal FSRECT Rect;
++            internal FSBBOX BBox;
++            internal FSKUPDATE Upd = FSKUPDATE.fskupdNew;
++            internal List<Track> Columns = new List<Track>();
++        }
++
++        // where formatting goes on: a paragraph, and where inside it
++        private sealed class Resume
++        {
++            internal IntPtr Nmp;
++            internal int Idobj;
++            internal bool Inside;                 // inside the paragraph (else from its start)
++            internal int Dcp;                     // text: the first character not yet placed
++            internal IntPtr LineBr;               // text: its line break record (ours)
++            internal IntPtr ObjBr;                // an object's break record (the client's)
++        }
++
++        private sealed class PageBreak
++        {
++            internal IntPtr Nms;
++            internal Resume At;
++        }
++
++        private sealed class SegmentBreak     // a subtrack's or subpage's break record
++        {
++            internal Resume At;
++        }
++
++        // ------------------------------------------------------------------
++        // Installed objects, handlers, contexts
++        // ------------------------------------------------------------------
++        internal static int GetFloaterHandlerInfo(ref FSFLOATERINIT pfsfloaterinit, IntPtr pFloaterObjectInfo)
++        {
++            HandlerSlot s = Get<HandlerSlot>(pFloaterObjectInfo);
++            if (s == null) return tserrInvalidParameter;
++            s.Floater = pfsfloaterinit.fsfloatercbk;
++            s.HaveFloater = true;
++            return fserrNone;
++        }
++
++        internal static int GetTableObjHandlerInfo(ref FSTABLEOBJINIT pfstableobjinit, IntPtr pTableObjectInfo)
++        {
++            HandlerSlot s = Get<HandlerSlot>(pTableObjectInfo);
++            if (s == null) return tserrInvalidParameter;
++            s.Table = pfstableobjinit;
++            s.HaveTable = true;
++            return fserrNone;
++        }
++
++        internal static int CreateInstalledObjectsInfo(ref FSIMETHODS fssubtrackparamethods, ref FSIMETHODS fssubpageparamethods,
++            out IntPtr pInstalledObjects, out int cInstalledObjects)
++        {
++            Installed i = new Installed();
++            i.Subtrack = fssubtrackparamethods;
++            i.Subpage = fssubpageparamethods;
++            pInstalledObjects = NewHandle(i);
++            cInstalledObjects = 2;
++            return fserrNone;
++        }
++
++        internal static int DestroyInstalledObjectsInfo(IntPtr pInstalledObjects)
++        {
++            FreeHandle(pInstalledObjects);
++            return fserrNone;
++        }
++
++        internal static int CreateDocContext(ref FSCONTEXTINFO fscontextinfo, out IntPtr pfscontext)
++        {
++            Ctx c = new Ctx();
++            c.Client = fscontextinfo.pfsclient;
++            c.Cb = fscontextinfo.fscbk;
++            c.Ffi = fscontextinfo.fsffi;
++            Installed i = Get<Installed>(fscontextinfo.pInstalledObjects);
++            if (i != null)
++            {
++                c.Methods[0] = i.Subtrack; c.HaveMethods[0] = true;
++                c.Methods[1] = i.Subpage; c.HaveMethods[1] = true;
++            }
++            c.Geometry = NewHandle(new object());
++            c.Handle = NewHandle(c);
++            pfscontext = c.Handle;
++            return fserrNone;
++        }
++
++        internal static int DestroyDocContext(IntPtr pfscontext)
++        {
++            Ctx c = Get<Ctx>(pfscontext);
++            if (c == null) return tserrInvalidPtsContext;
++            int err = fserrNone;
++            for (int i = 0; i < 2; i++)
++            {
++                if (c.HaveObjContext[i])
++                {
++                    int e = c.Methods[i].pfnDestroyContext(c.ObjContext[i]);
++                    if (err == fserrNone) err = e;
++                    c.HaveObjContext[i] = false;
++                }
++            }
++            FreeHandle(c.Geometry);
++            FreeHandle(pfscontext);
++            return err;
++        }
++
++        private static Ctx Context(IntPtr h)
++        {
++            Ctx c = Get<Ctx>(h);
++            if (c == null) throw new PtsFail(tserrInvalidPtsContext);
++            return c;
++        }
++
++        // the installed object (0: container, 1: subpage) a paragraph of this kind is, or -1
++        private static int MethodIndex(int idobj)
++        {
++            if (idobj == PtsHost.ContainerParagraphId) return 0;
++            if (idobj == PtsHost.SubpageParagraphId) return 1;
++            return -1;
++        }
++
++        private static IntPtr ObjContext(Ctx c, int index)
++        {
++            if (!c.HaveObjContext[index])
++            {
++                IntPtr o;
++                Ck(c.Methods[index].pfnCreateContext(c.Client, c.Handle, IntPtr.Zero, c.Ffi,
++                    index == 0 ? PtsHost.ContainerParagraphId : PtsHost.SubpageParagraphId, out o));
++                c.ObjContext[index] = o;
++                c.HaveObjContext[index] = true;
++            }
++            return c.ObjContext[index];
++        }
++
++        private static bool Floaters(Ctx c)
++        {
++            if (!c.TriedFloater)
++            {
++                c.TriedFloater = true;
++                HandlerSlot slot = new HandlerSlot();
++                IntPtr h = NewHandle(slot);
++                try { Ck(c.Cb.cbkobj.pfnGetObjectHandlerInfo(c.Client, PtsHost.FloaterParagraphId, h)); }
++                finally { FreeHandle(h); }
++                if (slot.HaveFloater) { c.Floater = slot.Floater; c.HaveFloater = true; }
++            }
++            return c.HaveFloater;
++        }
++
++        // ------------------------------------------------------------------
++        // Geometry helpers
++        // ------------------------------------------------------------------
++        private static void Union(ref FSBBOX into, FSBBOX b)
++        {
++            if (b.fDefined == False) return;
++            if (into.fDefined == False) { into = b; return; }
++            int u = Math.Min(into.fsrc.u, b.fsrc.u), v = Math.Min(into.fsrc.v, b.fsrc.v);
++            int ur = Math.Max(into.fsrc.u + into.fsrc.du, b.fsrc.u + b.fsrc.du);
++            int vr = Math.Max(into.fsrc.v + into.fsrc.dv, b.fsrc.v + b.fsrc.dv);
++            into.fsrc = new FSRECT(u, v, ur - u, vr - v);
++        }
++
++        private static FSBBOX Box(int u, int v, int du, int dv)
++        {
++            FSBBOX b = new FSBBOX();
++            b.fDefined = True;
++            b.fsrc = new FSRECT(u, v, Math.Max(0, du), Math.Max(0, dv));
++            return b;
++        }
++
++        private static bool EndOfParagraph(FSFLRES r)
++        {
++            return r == FSFLRES.fsflrEndOfParagraph || r == FSFLRES.fsflrEndOfParagraphClearLeft ||
++                   r == FSFLRES.fsflrEndOfParagraphClearRight || r == FSFLRES.fsflrEndOfParagraphClearBoth;
++        }
++
++        // ------------------------------------------------------------------
++        // Break records
++        // ------------------------------------------------------------------
++        private static void DestroyResume(Ctx c, Resume r)
++        {
++            if (r == null) return;
++            if (r.LineBr != IntPtr.Zero) { Ck(c.Cb.cbktxt.pfnDestroyLineBreakRecord(c.Client, r.LineBr)); r.LineBr = IntPtr.Zero; }
++            if (r.ObjBr != IntPtr.Zero)
++            {
++                int m = MethodIndex(r.Idobj);
++                if (m >= 0) Ck(c.Methods[m].pfnDestroyBreakRecord(ObjContext(c, m), r.ObjBr));
++                r.ObjBr = IntPtr.Zero;
++            }
++        }
++
++        private static Resume DuplicateResume(Ctx c, Resume r)
++        {
++            if (r == null) return null;
++            Resume d = new Resume();
++            d.Nmp = r.Nmp; d.Idobj = r.Idobj; d.Inside = r.Inside; d.Dcp = r.Dcp;
++            if (r.LineBr != IntPtr.Zero) Ck(c.Cb.cbktxt.pfnDuplicateLineBreakRecord(c.Client, r.LineBr, out d.LineBr));
++            if (r.ObjBr != IntPtr.Zero)
++            {
++                int m = MethodIndex(r.Idobj);
++                if (m >= 0) Ck(c.Methods[m].pfnDuplicateBreakRecord(ObjContext(c, m), r.ObjBr, out d.ObjBr));
++            }
++            return d;
++        }
++
++        // ------------------------------------------------------------------
++        // Destroying what was formatted
++        // ------------------------------------------------------------------
++        private static void DestroyParaContent(Ctx c, Para p)
++        {
++            if (p.Pfspara == IntPtr.Zero) return;
++            if (p.Idobj == fsidobjText)
++            {
++                TextPara tp = Get<TextPara>(p.Pfspara);
++                if (tp != null)
++                    foreach (Line l in tp.Lines)
++                        if (l.BrIn != IntPtr.Zero) Ck(c.Cb.cbktxt.pfnDestroyLineBreakRecord(c.Client, l.BrIn));
++                FreeHandle(p.Pfspara);
++            }
++            else if (p.Idobj == PtsHost.FloaterParagraphId)
++            {
++                FloaterPara fp = Get<FloaterPara>(p.Pfspara);
++                if (fp != null && fp.Content != IntPtr.Zero && c.HaveFloater) Ck(c.Floater.pfnDestroyFloaterContent(fp.Content));
++                FreeHandle(p.Pfspara);
++            }
++            else
++            {
++                int m = MethodIndex(p.Idobj);
++                if (m >= 0) Ck(c.Methods[m].pfnDestroyPara(p.Pfspara));
++            }
++            p.Pfspara = IntPtr.Zero;
++        }
++
++        private static void DestroyParas(Ctx c, List<Para> paras)
++        {
++            foreach (Para p in paras)
++            {
++                DestroyParaContent(c, p);
++                if (p.Client != IntPtr.Zero) Ck(c.Cb.cbkgen.pfnDestroyParaclient(c.Client, p.Client));
++                p.Client = IntPtr.Zero;
++            }
++            paras.Clear();
++        }
++
++        private static void DestroyTrack(Ctx c, Track t)
++        {
++            DestroyParas(c, t.Paras);
++            FreeHandle(t.Handle);
++        }
++
++        private static void DestroyColumns(Ctx c, List<Track> columns)
++        {
++            foreach (Track t in columns) DestroyTrack(c, t);
++            columns.Clear();
++        }
++
++        // a new formatting's paragraphs take over the old ones' visuals, then the old go
++        private static void Replace(Ctx c, List<Para> oldParas, List<Para> newParas)
++        {
++            Dictionary<long, Para> old = new Dictionary<long, Para>();
++            foreach (Para p in oldParas) old[p.Nmp.ToInt64()] = p;
++            foreach (Para p in newParas)
++            {
++                Para o;
++                if (!old.TryGetValue(p.Nmp.ToInt64(), out o) || o.Client == IntPtr.Zero) continue;
++                Ck(c.Cb.cbkgen.pfnTransferDisplayInfo(c.Client, o.Client, p.Client));
++                int m = MethodIndex(p.Idobj);
++                if (m >= 0 && o.Idobj == p.Idobj && o.Pfspara != IntPtr.Zero && p.Pfspara != IntPtr.Zero)
++                    Ck(c.Methods[m].pfnTransferDisplayInfoPara(o.Pfspara, p.Pfspara));
++            }
++            DestroyParas(c, oldParas);
++        }
++
++        // ------------------------------------------------------------------
++        // Formatting: a column (track) of paragraphs
++        // ------------------------------------------------------------------
++        private struct FillResult
++        {
++            internal bool Done;           // the segment's paragraphs are all placed
++            internal Resume Next;         // else where they go on (ours)
++            internal IntPtr Mcs;          // the margin state after the last paragraph (passes to the caller)
++            internal int TopSpace;        // the first paragraph's top space
++            internal int Bottom;          // vr below the last paragraph
++        }
++
++        // Fills t (its Rect: where; dv the room when finite) with the segment's
++        // paragraphs from 'from' (null: its first). 'from' stays the caller's.
++        private static FillResult Fill(Ctx c, Track t, Resume from, bool finite, bool emptyOk, bool suppressTop,
++            IntPtr mcsIn, bool fromPreviousPage)
++        {
++            FillResult o = new FillResult();
++            IntPtr nmp;
++            int vr = t.Rect.v, limit = finite ? t.Rect.v + t.Rect.dv : int.MaxValue;
++#if SG_MUTANT_PTS_NO_BREAK
++            limit = int.MaxValue;
++#endif
++            IntPtr mcs = mcsIn;
++            bool ownMcs = false;
++
++            o.Bottom = vr;
++            if (from != null)
++                nmp = from.Nmp;
++            else
++            {
++                int found;
++                Ck(c.Cb.cbkgen.pfnGetFirstPara(c.Client, t.Nms, out found, out nmp));
++                if (found == False) { o.Done = true; return o; }
++            }
++
++            for (int guard = 0; ; guard++)
++            {
++                if (guard > Restrictions.tscLineInParaRestriction) throw new PtsFail(tserrSystemRestrictionsExceeded);
++                FSPAP pap = new FSPAP();
++                Ck(c.Cb.cbkgen.pfnGetParaProperties(c.Client, nmp, ref pap));
++                bool first = t.Paras.Count == 0;
++                Resume inside = (first && from != null && from.Inside && from.Nmp == nmp) ? from : null;
++
++                if (finite && !first && (pap.fBreakPageBefore != False || pap.fBreakColumnBefore != False))
++                {
++                    o.Next = new Resume { Nmp = nmp, Idobj = pap.idobj };
++                    break;
++                }
++
++                IntPtr pc;
++                Ck(c.Cb.cbkgen.pfnCreateParaclient(c.Client, nmp, out pc));
++                Para p = new Para { Nmp = nmp, Client = pc, Idobj = pap.idobj, Vr = vr };
++                IntPtr mcsOut = IntPtr.Zero;
++                Resume next = null;
++                bool placed;
++                bool mayBeEmpty = emptyOk || !first;
++                bool supp = suppressTop && first;
++
++                if (pap.idobj == fsidobjText)
++                    placed = FormatText(c, t, p, inside, finite, limit, mayBeEmpty, supp, mcs, out mcsOut, out next);
++                else if (MethodIndex(pap.idobj) >= 0 && c.HaveMethods[MethodIndex(pap.idobj)])
++                    placed = FormatObject(c, t, p, inside, finite, limit, mayBeEmpty, supp, mcs, fromPreviousPage, out mcsOut, out next);
++                else if (pap.idobj == PtsHost.FloaterParagraphId && Floaters(c))
++                    placed = FormatFloater(c, t, p, finite, limit, mayBeEmpty, supp, mcs, out mcsOut);
++                else
++                {
++                    // a table or a figure: not yet; it takes no space
++                    Trace("paragraph kind " + pap.idobj + " not laid out");
++                    Ck(c.Cb.cbkgen.pfnDestroyParaclient(c.Client, pc));
++                    p = null;
++                    placed = true;
++                }
++
++                if (p != null && !placed)
++                {
++                    Ck(c.Cb.cbkgen.pfnDestroyParaclient(c.Client, pc));
++                    o.Next = inside != null ? DuplicateResume(c, inside) : new Resume { Nmp = nmp, Idobj = pap.idobj };
++                    break;
++                }
++                if (p != null)
++                {
++                    if (first) o.TopSpace = p.DvrTop;
++                    t.Paras.Add(p);
++                    vr += p.DvrUsed;
++                    Union(ref t.BBox, p.BBox);
++                    if (ownMcs && mcs != IntPtr.Zero) Ck(c.Cb.cbkobj.pfnDestroyMcsclient(c.Client, mcs));
++                    mcs = mcsOut;
++                    ownMcs = true;
++                }
++                if (next != null) { o.Next = next; break; }
++
++                int more;
++                IntPtr nmpNext;
++                Ck(c.Cb.cbkgen.pfnGetNextPara(c.Client, t.Nms, nmp, out more, out nmpNext));
++                if (more == False) { o.Done = true; break; }
++                nmp = nmpNext;
++                if (finite && vr >= limit) { o.Next = new Resume { Nmp = nmp }; break; }
++            }
++            o.Bottom = vr;
++            o.Mcs = ownMcs ? mcs : IntPtr.Zero;
++            return o;
++        }
++
++        // A text paragraph: its top space, then lines while they fit.
++        private static bool FormatText(Ctx c, Track t, Para p, Resume inside, bool finite, int limit, bool emptyOk,
++            bool suppressTop, IntPtr mcsIn, out IntPtr mcsOut, out Resume next)
++        {
++            FSTXTPROPS props = new FSTXTPROPS();
++            TextPara tp = new TextPara();
++            int dvrTop = 0, vr, dcp, lastHeight = 0;
++            IntPtr br = IntPtr.Zero, lastLine = IntPtr.Zero;
++            bool ended = false;
++
++            mcsOut = IntPtr.Zero;
++            next = null;
++            Ck(c.Cb.cbktxt.pfnGetTextProperties(c.Client, p.Nmp, 0, ref props));
++            tp.Fswdir = t.Fswdir;
++            tp.SuppressTop = suppressTop ? True : False;
++            if (inside == null)
++                Ck(c.Cb.cbkobj.pfnConvertMcsclient(c.Client, p.Client, p.Nmp, t.Fswdir, mcsIn, suppressTop ? True : False, out dvrTop));
++            vr = p.Vr + dvrTop;
++            dcp = inside != null ? inside.Dcp : props.dcpStartContent;
++            if (inside != null && inside.LineBr != IntPtr.Zero)
++                Ck(c.Cb.cbktxt.pfnDuplicateLineBreakRecord(c.Client, inside.LineBr, out br));
++
++            for (int n = 0; ; n++)
++            {
++                if (n > Restrictions.tscLineInParaRestriction) throw new PtsFail(tserrSystemRestrictionsExceeded);
++                IntPtr line, brOut;
++                int dcpLine, forced, ascent, descent, urBBox, durBBox, dcpDepend, reformat;
++                FSFLRES res;
++                bool firstInPara = inside == null && n == 0;
++                Ck(c.Cb.cbktxt.pfnFormatLine(c.Client, p.Client, p.Nmp, 0, dcp, br, t.Fswdir,
++                    t.Rect.u, t.Rect.du, t.Rect.u, t.Rect.du, c.PageLeft, True, False, False,
++                    firstInPara ? True : False, False, (suppressTop && n == 0) ? True : False,
++                    out line, out dcpLine, out brOut, out forced, out res, out ascent, out descent,
++                    out urBBox, out durBBox, out dcpDepend, out reformat));
++                int height = ascent + descent;
++                if (finite && vr + height > limit && (n > 0 || emptyOk))
++                {
++                    // it does not fit: the next column or page goes on from here
++                    Ck(c.Cb.cbktxt.pfnDestroyLine(c.Client, line));
++                    if (brOut != IntPtr.Zero) Ck(c.Cb.cbktxt.pfnDestroyLineBreakRecord(c.Client, brOut));
++                    if (n > 0)
++                    {
++                        next = new Resume { Nmp = p.Nmp, Idobj = fsidobjText, Inside = true, Dcp = dcp, LineBr = br };
++                        br = IntPtr.Zero;
++                    }
++                    break;
++                }
++                if (dcpLine <= 0)
++                {
++                    Ck(c.Cb.cbktxt.pfnDestroyLine(c.Client, line));
++                    if (brOut != IntPtr.Zero) Ck(c.Cb.cbktxt.pfnDestroyLineBreakRecord(c.Client, brOut));
++                    throw new PtsFail(tserrInvalidClientOutput);
++                }
++                Line l = new Line();
++                l.BrIn = br; l.DcpFirst = dcp; l.DcpLim = dcp + dcpLine;
++                l.Ur = t.Rect.u; l.Dur = t.Rect.du; l.UrBBox = urBBox; l.DurBBox = durBBox;
++                l.Vr = vr; l.Ascent = ascent; l.Descent = descent;
++                l.First = firstInPara ? True : False; l.Forced = forced;
++                tp.Lines.Add(l);
++                br = brOut;
++                if (lastLine != IntPtr.Zero) Ck(c.Cb.cbktxt.pfnDestroyLine(c.Client, lastLine));
++                lastLine = line;
++                lastHeight = height;
++                vr += height;
++                dcp += dcpLine;
++                if (EndOfParagraph(res)) { ended = true; break; }
++                if (finite && (res == FSFLRES.fsflrPageBreak || res == FSFLRES.fsflrColumnBreak))
++                {
++                    next = new Resume { Nmp = p.Nmp, Idobj = fsidobjText, Inside = true, Dcp = dcp, LineBr = br };
++                    br = IntPtr.Zero;
++                    break;
++                }
++            }
++            if (br != IntPtr.Zero) Ck(c.Cb.cbktxt.pfnDestroyLineBreakRecord(c.Client, br));
++
++            if (tp.Lines.Count == 0)
++                return false;
++            if (ended)
++                Ck(c.Cb.cbktxt.pfnFormatBottomText(c.Client, p.Client, p.Nmp, 0, t.Fswdir, lastLine, lastHeight, out mcsOut));
++            if (lastLine != IntPtr.Zero) Ck(c.Cb.cbktxt.pfnDestroyLine(c.Client, lastLine));
++
++            p.DvrTop = dvrTop;
++            p.DvrUsed = vr - p.Vr;
++            foreach (Line l in tp.Lines) Union(ref p.BBox, Box(l.UrBBox, l.Vr, l.DurBBox, l.Ascent + l.Descent));
++            tp.Handle = NewHandle(tp);
++            p.Pfspara = tp.Handle;
++            return true;
++        }
++
++        // A container or subpage paragraph: the client lays it out (through the
++        // subtrack and subpage calls below).
++        private static bool FormatObject(Ctx c, Track t, Para p, Resume inside, bool finite, int limit, bool emptyOk,
++            bool suppressTop, IntPtr mcsIn, bool fromPreviousPage, out IntPtr mcsOut, out Resume next)
++        {
++            int m = MethodIndex(p.Idobj);
++            FSIMETHODS meth = c.Methods[m];
++            IntPtr objc = ObjContext(c, m), pfspara;
++            int dvrUsed, dvrTop;
++            FSBBOX bbox;
++            FSKCLEAR kclear;
++
++            next = null;
++            if (!finite)
++            {
++                FSFMTRBL r;
++                int uninterruptible;
++                Ck(meth.pfnFormatParaBottomless(objc, p.Client, p.Nmp, 0, c.Geometry, suppressTop ? True : False, t.Fswdir,
++                    t.Rect.u, t.Rect.du, p.Vr, mcsIn, FSKCLEAR.fskclearNone, False,
++                    out r, out pfspara, out dvrUsed, out bbox, out mcsOut, out kclear, out dvrTop, out uninterruptible));
++            }
++            else
++            {
++                FSFMTR r;
++                IntPtr brOut;
++                int breakInsidePossible;
++                FSRECT fill = new FSRECT(t.Rect.u, p.Vr, t.Rect.du, Math.Max(0, limit - p.Vr));
++                Ck(meth.pfnFormatParaFinite(objc, p.Client, inside != null ? inside.ObjBr : IntPtr.Zero,
++                    (inside != null && fromPreviousPage) ? True : False, p.Nmp, 0, IntPtr.Zero, c.Geometry,
++                    emptyOk ? True : False, suppressTop ? True : False, t.Fswdir, ref fill, mcsIn, FSKCLEAR.fskclearNone,
++                    FSKSUPPRESSHARDBREAKBEFOREFIRSTPARA.fsksuppresshardbreakbeforefirstparaNone, False,
++                    out r, out pfspara, out brOut, out dvrUsed, out bbox, out mcsOut, out kclear, out dvrTop, out breakInsidePossible));
++                if (r.kstop >= FSFMTRKSTOP.fmtrNoProgressOutOfSpace)
++                {
++                    // nothing of it here
++                    if (pfspara != IntPtr.Zero) Ck(meth.pfnDestroyPara(pfspara));
++                    if (brOut != IntPtr.Zero) Ck(meth.pfnDestroyBreakRecord(objc, brOut));
++                    if (mcsOut != IntPtr.Zero) Ck(c.Cb.cbkobj.pfnDestroyMcsclient(c.Client, mcsOut));
++                    mcsOut = IntPtr.Zero;
++                    return false;
++                }
++                if (r.kstop != FSFMTRKSTOP.fmtrGoalReached || brOut != IntPtr.Zero)
++                    next = new Resume { Nmp = p.Nmp, Idobj = p.Idobj, Inside = brOut != IntPtr.Zero, ObjBr = brOut };
++            }
++            p.Pfspara = pfspara;
++            p.DvrUsed = dvrUsed;
++            p.DvrTop = dvrTop;
++            p.BBox = bbox;
++            return true;
++        }
++
++        // A floater: placed as a block (BlockUIContainer is one; a floating one is too, for now).
++        private static bool FormatFloater(Ctx c, Track t, Para p, bool finite, int limit, bool emptyOk, bool suppressTop,
++            IntPtr mcsIn, out IntPtr mcsOut)
++        {
++            FSFLOATERPROPS props;
++            IntPtr content;
++            int dur, dvr, cPolygons, cVertices, dvrTop;
++            FSBBOX bbox;
++
++            mcsOut = IntPtr.Zero;
++            Ck(c.Floater.pfnGetFloaterProperties(c.Client, p.Nmp, t.Fswdir, out props));
++            Ck(c.Cb.cbkobj.pfnConvertMcsclient(c.Client, p.Client, p.Nmp, t.Fswdir, mcsIn, suppressTop ? True : False, out dvrTop));
++            int vr = p.Vr + dvrTop;
++            if (!finite)
++            {
++                FSFMTRBL r;
++                Ck(c.Floater.pfnFormatFloaterContentBottomless(c.Client, p.Client, p.Nmp, suppressTop ? True : False, t.Fswdir,
++                    True, t.Rect.du, MaxPageSize, out r, out content, out dur, out dvr, out bbox, out cPolygons, out cVertices));
++            }
++            else
++            {
++                FSFMTR r;
++                IntPtr br;
++                Ck(c.Floater.pfnFormatFloaterContentFinite(c.Client, p.Client, IntPtr.Zero, False, p.Nmp, IntPtr.Zero,
++                    emptyOk ? True : False, suppressTop ? True : False, t.Fswdir, True, t.Rect.du, Math.Max(0, limit - vr),
++                    FSKSUPPRESSHARDBREAKBEFOREFIRSTPARA.fsksuppresshardbreakbeforefirstparaNone,
++                    out r, out content, out br, out dur, out dvr, out bbox, out cPolygons, out cVertices));
++                if (br != IntPtr.Zero) Ck(c.Floater.pfnDestroyFloaterContentBreakRecord(c.Client, br));
++                if (emptyOk && (r.kstop >= FSFMTRKSTOP.fmtrNoProgressOutOfSpace || vr + dvr > limit))
++                {
++                    if (content != IntPtr.Zero) Ck(c.Floater.pfnDestroyFloaterContent(content));
++                    return false;
++                }
++            }
++            dur = Math.Min(Math.Max(dur, 0), t.Rect.du);
++            int u = t.Rect.u;
++            if (props.fskfloatalignment == FSKFLOATALIGNMENT.fskfloatalignCenter) u += (t.Rect.du - dur) / 2;
++            else if (props.fskfloatalignment == FSKFLOATALIGNMENT.fskfloatalignMax) u += t.Rect.du - dur;
++            FloaterPara fp = new FloaterPara();
++            fp.Name = p.Nmp;
++            fp.Content = content;
++            fp.Rect = new FSRECT(u, vr, dur, Math.Max(0, dvr));
++            fp.Handle = NewHandle(fp);
++            Ck(c.Floater.pfnGetMCSClientAfterFloater(c.Client, p.Client, p.Nmp, t.Fswdir, mcsIn, out mcsOut));
++            p.Pfspara = fp.Handle;
++            p.DvrTop = dvrTop;
++            p.DvrUsed = dvrTop + fp.Rect.dv;
++            p.BBox = Box(fp.Rect.u, fp.Rect.v, fp.Rect.du, fp.Rect.dv);
++            return true;
++        }
++
++        // ------------------------------------------------------------------
++        // Pages
++        // ------------------------------------------------------------------
++        private static Track NewTrack(IntPtr nms, uint fswdir, FSRECT rect)
++        {
++            Track t = new Track();
++            t.Nms = nms;
++            t.Fswdir = fswdir;
++            t.Rect = rect;
++            t.Handle = NewHandle(t);
++            return t;
++        }
++
++        // Lays the page out from 'from' (null: the section's start); returns where the next page goes on.
++        private static Resume FormatPage(Ctx c, Page pg, IntPtr nms, Resume from, bool finite, out bool done)
++        {
++            uint fswdir, secdir;
++            int fHeaderFooter, durPage, dvrPage, fNewPage, fBalance, ccol, cSegAreas, cHeightAreas;
++            FSRECT margin = new FSRECT();
++            IntPtr segment;
++
++            Ck(c.Cb.cbkgen.pfnGetPageDimensions(c.Client, nms, out fswdir, out fHeaderFooter, out durPage, out dvrPage, ref margin));
++            Ck(c.Cb.cbkgen.pfnGetSectionProperties(c.Client, nms, out fNewPage, out secdir, out fBalance, out ccol, out cSegAreas, out cHeightAreas));
++            Ck(c.Cb.cbkgen.pfnGetMainTextSegment(c.Client, nms, out segment));
++            c.PageLeft = margin.u;
++            pg.Fswdir = fswdir;
++            pg.Margin = margin;
++
++            List<FSRECT> columns = new List<FSRECT>();
++            if (finite && ccol > 1)
++            {
++                FSCOLUMNINFO[] info = new FSCOLUMNINFO[ccol];
++                int actual;
++                unsafe
++                {
++                    fixed (FSCOLUMNINFO* pi = info)
++                        Ck(c.Cb.cbkgen.pfnGetSectionColumnInfo(c.Client, nms, secdir, ccol, pi, out actual));
++                }
++                int u = margin.u;
++                for (int i = 0; i < Math.Min(actual, ccol); i++)
++                {
++                    u += info[i].durBefore;
++                    columns.Add(new FSRECT(u, margin.v, info[i].durWidth, margin.dv));
++                    u += info[i].durWidth;
++                }
++            }
++            if (columns.Count == 0) columns.Add(margin);
++
++            Section sec = new Section();
++            sec.Nms = nms;
++            sec.Fswdir = secdir;
++            sec.Rect = margin;
++            Resume at = from, next = null;
++            int bottom = margin.v;
++            done = false;
++            for (int i = 0; i < columns.Count; i++)
++            {
++                Track t = NewTrack(segment, secdir, columns[i]);
++                sec.Columns.Add(t);
++                if (done) continue;
++                FillResult r = Fill(c, t, at, finite, i > 0, (finite && from != null) || i > 0, IntPtr.Zero, true);
++                if (r.Mcs != IntPtr.Zero) Ck(c.Cb.cbkobj.pfnDestroyMcsclient(c.Client, r.Mcs));
++                if (at != from) DestroyResume(c, at);
++                bottom = Math.Max(bottom, r.Bottom);
++                Union(ref sec.BBox, t.BBox);
++                if (!finite) t.Rect.dv = r.Bottom - t.Rect.v;
++                at = r.Next;
++                if (r.Done || at == null) { done = true; at = null; }
++            }
++            next = at;
++            if (!finite)
++            {
++                int bottomMargin = Math.Max(0, dvrPage - margin.v - margin.dv);
++                if (dvrPage >= MaxPageSize || bottomMargin > MaxPageSize / 2) bottomMargin = 0;
++                sec.Rect.dv = bottom - margin.v;
++                pg.Body = new FSRECT(0, 0, durPage, bottom + bottomMargin);
++            }
++            else
++                pg.Body = new FSRECT(0, 0, durPage, dvrPage);
++            pg.BBox = sec.BBox;
++            sec.Handle = NewHandle(sec);
++            pg.Sec = sec;
++            return next;
++        }
++
++        private static void DestroyPageContent(Ctx c, Page pg)
++        {
++            if (pg.Sec == null) return;
++            DestroyColumns(c, pg.Sec.Columns);
++            FreeHandle(pg.Sec.Handle);
++            pg.Sec = null;
++        }
++
++        private static List<Para> AllParas(Page pg)
++        {
++            List<Para> l = new List<Para>();
++            if (pg.Sec != null) foreach (Track t in pg.Sec.Columns) l.AddRange(t.Paras);
++            return l;
++        }
++
++        // the old page's paragraphs give their visuals to the new ones, and go
++        private static void ReplacePage(Ctx c, Page pg, Section old)
++        {
++            if (old == null) return;
++            List<Para> oldParas = new List<Para>();
++            foreach (Track t in old.Columns) oldParas.AddRange(t.Paras);
++            Replace(c, oldParas, AllParas(pg));
++            foreach (Track t in old.Columns) { t.Paras.Clear(); FreeHandle(t.Handle); }
++            FreeHandle(old.Handle);
++        }
++
++        internal static int FsCreatePageFinite(IntPtr pfscontext, IntPtr pfsBRPageStart, IntPtr fsnmSectStart,
++            out FSFMTR pfsfmtrOut, out IntPtr ppfsPageOut, out IntPtr ppfsBRPageOut)
++        {
++            pfsfmtrOut = new FSFMTR();
++            ppfsPageOut = IntPtr.Zero;
++            ppfsBRPageOut = IntPtr.Zero;
++            try
++            {
++                Ctx c = Context(pfscontext);
++                PageBreak br = Get<PageBreak>(pfsBRPageStart);
++                Page pg = new Page { C = c };
++                bool done;
++                Resume next = FormatPage(c, pg, br != null ? br.Nms : fsnmSectStart, br != null ? br.At : null, true, out done);
++                pg.Handle = NewHandle(pg);
++                ppfsPageOut = pg.Handle;
++                pfsfmtrOut.kstop = done ? FSFMTRKSTOP.fmtrGoalReached : FSFMTRKSTOP.fmtrBrokenOutOfSpace;
++                if (!done && next != null)
++                    ppfsBRPageOut = NewHandle(new PageBreak { Nms = br != null ? br.Nms : fsnmSectStart, At = next });
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        internal static int FsUpdateFinitePage(IntPtr pfscontext, IntPtr pfspage, IntPtr pfsBRPageStart, IntPtr fsnmSectStart,
++            out FSFMTR pfsfmtrOut, out IntPtr ppfsBRPageOut)
++        {
++            pfsfmtrOut = new FSFMTR();
++            ppfsBRPageOut = IntPtr.Zero;
++            try
++            {
++                Ctx c = Context(pfscontext);
++                Page pg = Get<Page>(pfspage);
++                if (pg == null) return tserrInvalidParameter;
++                PageBreak br = Get<PageBreak>(pfsBRPageStart);
++                Section old = pg.Sec;
++                pg.Sec = null;
++                bool done;
++                Resume next = FormatPage(c, pg, br != null ? br.Nms : fsnmSectStart, br != null ? br.At : null, true, out done);
++                ReplacePage(c, pg, old);
++                pg.Upd = FSKUPDATE.fskupdNew;
++                pfsfmtrOut.kstop = done ? FSFMTRKSTOP.fmtrGoalReached : FSFMTRKSTOP.fmtrBrokenOutOfSpace;
++                if (!done && next != null)
++                    ppfsBRPageOut = NewHandle(new PageBreak { Nms = br != null ? br.Nms : fsnmSectStart, At = next });
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        internal static int FsCreatePageBottomless(IntPtr pfscontext, IntPtr fsnmsect, out FSFMTRBL pfsfmtrbl, out IntPtr ppfspage)
++        {
++            pfsfmtrbl = FSFMTRBL.fmtrblGoalReached;
++            ppfspage = IntPtr.Zero;
++            try
++            {
++                Ctx c = Context(pfscontext);
++                Page pg = new Page { C = c };
++                bool done;
++                FormatPage(c, pg, fsnmsect, null, false, out done);
++                pg.Handle = NewHandle(pg);
++                ppfspage = pg.Handle;
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        internal static int FsUpdateBottomlessPage(IntPtr pfscontext, IntPtr pfspage, IntPtr fsnmsect, out FSFMTRBL pfsfmtrbl)
++        {
++            pfsfmtrbl = FSFMTRBL.fmtrblGoalReached;
++            try
++            {
++                Ctx c = Context(pfscontext);
++                Page pg = Get<Page>(pfspage);
++                if (pg == null) return tserrInvalidParameter;
++                Section old = pg.Sec;
++                pg.Sec = null;
++                bool done;
++                FormatPage(c, pg, fsnmsect, null, false, out done);
++                ReplacePage(c, pg, old);
++                pg.Upd = FSKUPDATE.fskupdNew;
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        internal static int FsClearUpdateInfoInPage(IntPtr pfscontext, IntPtr pfspage)
++        {
++            try
++            {
++                Ctx c = Context(pfscontext);
++                Page pg = Get<Page>(pfspage);
++                if (pg == null) return tserrInvalidParameter;
++                pg.Upd = FSKUPDATE.fskupdNoChange;
++                if (pg.Sec != null) ClearColumns(c, pg.Sec.Columns);
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        private static void ClearColumns(Ctx c, List<Track> columns)
++        {
++            foreach (Track t in columns) ClearTrack(c, t);
++        }
++
++        private static void ClearTrack(Ctx c, Track t)
++        {
++            t.Upd = FSKUPDATE.fskupdNoChange;
++            foreach (Para p in t.Paras)
++            {
++                p.Upd = FSKUPDATE.fskupdNoChange;
++                int m = MethodIndex(p.Idobj);
++                if (m >= 0 && p.Pfspara != IntPtr.Zero) Ck(c.Methods[m].pfnClearUpdateInfoInPara(p.Pfspara));
++                else if (p.Idobj == PtsHost.FloaterParagraphId)
++                {
++                    FloaterPara fp = Get<FloaterPara>(p.Pfspara);
++                    if (fp != null)
++                    {
++                        fp.Upd = FSKUPDATE.fskupdNoChange;
++                        if (fp.Content != IntPtr.Zero && c.HaveFloater) Ck(c.Floater.pfnClearUpdateInfoInFloaterContent(fp.Content));
++                    }
++                }
++            }
++        }
++
++        internal static int FsDestroyPage(IntPtr pfscontext, IntPtr pfspage)
++        {
++            try
++            {
++                Ctx c = Context(pfscontext);
++                Page pg = Get<Page>(pfspage);
++                if (pg == null) return tserrInvalidParameter;
++                DestroyPageContent(c, pg);
++                FreeHandle(pfspage);
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        internal static int FsDestroyPageBreakRecord(IntPtr pfscontext, IntPtr pfsbreakrec)
++        {
++            try
++            {
++                Ctx c = Context(pfscontext);
++                PageBreak br = Get<PageBreak>(pfsbreakrec);
++                if (br != null) DestroyResume(c, br.At);
++                FreeHandle(pfsbreakrec);
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        // ------------------------------------------------------------------
++        // Subpages: a page inside a paragraph (a figure's, a floater's, a cell's content)
++        // ------------------------------------------------------------------
++        private static unsafe List<FSRECT> SubpageColumns(int u, int v, int du, int dv, int cColumns, FSCOLUMNINFO* info, bool finite)
++        {
++            List<FSRECT> l = new List<FSRECT>();
++            if (finite && cColumns > 1 && info != null)
++            {
++                for (int i = 0; i < cColumns; i++)
++                {
++                    u += info[i].durBefore;
++                    l.Add(new FSRECT(u, v, info[i].durWidth, dv));
++                    u += info[i].durWidth;
++                }
++            }
++            else
++                l.Add(new FSRECT(u, v, du, dv));
++            return l;
++        }
++
++        private static Resume FormatSubpage(Ctx c, Subpage sp, List<FSRECT> columns, Resume from, bool finite, bool emptyOk,
++            bool suppressTop, bool fromPreviousPage, out bool done, out bool progress, out int dvrUsed, out IntPtr mcsOut, out int topSpace)
++        {
++            Resume at = from;
++            int bottom = sp.Rect.v;
++            done = false;
++            progress = false;
++            mcsOut = IntPtr.Zero;
++            topSpace = 0;
++            for (int i = 0; i < columns.Count; i++)
++            {
++                Track t = NewTrack(sp.Nms, sp.Fswdir, columns[i]);
++                sp.Columns.Add(t);
++                if (done) continue;
++                FillResult r = Fill(c, t, at, finite, emptyOk || i > 0, suppressTop || i > 0, IntPtr.Zero, fromPreviousPage);
++                if (i == 0) topSpace = r.TopSpace;
++                if (t.Paras.Count > 0) progress = true;
++                if (mcsOut != IntPtr.Zero) Ck(c.Cb.cbkobj.pfnDestroyMcsclient(c.Client, mcsOut));
++                mcsOut = r.Mcs;
++                if (at != from) DestroyResume(c, at);
++                bottom = Math.Max(bottom, r.Bottom);
++                Union(ref sp.BBox, t.BBox);
++                if (!finite) t.Rect.dv = r.Bottom - t.Rect.v;
++                at = r.Next;
++                if (r.Done || at == null) { done = true; at = null; }
++            }
++            dvrUsed = bottom - sp.Rect.v;
++            if (!finite) sp.Rect.dv = dvrUsed;
++            return at;
++        }
++
++        internal static unsafe int FsCreateSubpageFinite(IntPtr pfsContext, IntPtr pBRSubPageStart, int fFromPreviousPage, IntPtr nSeg,
++            IntPtr pFtnRej, int fEmptyOk, int fSuppressTopSpace, uint fswdir, int lWidth, int lHeight, ref FSRECT rcMargin,
++            int cColumns, FSCOLUMNINFO* rgColumnInfo, int fApplyColumnBalancing, int cSegmentAreas, IntPtr* rgnSegmentForArea,
++            int* rgSpanForSegmentArea, int cHeightAreas, int* rgHeightForArea, int* rgSpanForHeightArea, int fAllowOverhangBottom,
++            FSKSUPPRESSHARDBREAKBEFOREFIRSTPARA fsksuppresshardbreakbeforefirstparaIn,
++            out FSFMTR fsfmtr, out IntPtr pSubPage, out IntPtr pBRSubPageOut, out int dvrUsed, out FSBBOX fsBBox,
++            out IntPtr pfsMcsClient, out int topSpace)
++        {
++            fsfmtr = new FSFMTR();
++            pSubPage = IntPtr.Zero; pBRSubPageOut = IntPtr.Zero; dvrUsed = 0; fsBBox = new FSBBOX(); pfsMcsClient = IntPtr.Zero; topSpace = 0;
++            try
++            {
++                Ctx c = Context(pfsContext);
++                SegmentBreak br = Get<SegmentBreak>(pBRSubPageStart);
++                Subpage sp = new Subpage();
++                sp.Nms = nSeg;
++                sp.Fswdir = fswdir;
++                sp.Rect = rcMargin;
++                bool done, progress;
++                Resume next = FormatSubpage(c, sp, SubpageColumns(rcMargin.u, rcMargin.v, rcMargin.du, rcMargin.dv, cColumns, rgColumnInfo, true),
++                    br != null ? br.At : null, true, fEmptyOk != False, fSuppressTopSpace != False, fFromPreviousPage != False,
++                    out done, out progress, out dvrUsed, out pfsMcsClient, out topSpace);
++                sp.Handle = NewHandle(sp);
++                pSubPage = sp.Handle;
++                if (!progress && !done && fEmptyOk != False)
++                    fsfmtr.kstop = FSFMTRKSTOP.fmtrNoProgressOutOfSpace;
++                else
++                    fsfmtr.kstop = done ? FSFMTRKSTOP.fmtrGoalReached : FSFMTRKSTOP.fmtrBrokenOutOfSpace;
++                if (!done && next != null) pBRSubPageOut = NewHandle(new SegmentBreak { At = next });
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        internal static unsafe int FsCreateSubpageBottomless(IntPtr pfsContext, IntPtr nSeg, int fSuppressTopSpace, uint fswdir,
++            int lWidth, int urMargin, int durMargin, int vrMargin, int cColumns, FSCOLUMNINFO* rgColumnInfo, int cSegmentAreas,
++            IntPtr* rgnSegmentForArea, int* rgSpanForSegmentArea, int cHeightAreas, int* rgHeightForArea, int* rgSpanForHeightArea,
++            int fINterrruptible, out FSFMTRBL pfsfmtr, out IntPtr ppSubPage, out int pdvrUsed, out FSBBOX pfsBBox,
++            out IntPtr pfsMcsClient, out int pTopSpace, out int fPageBecomesUninterruptible)
++        {
++            pfsfmtr = FSFMTRBL.fmtrblGoalReached;
++            ppSubPage = IntPtr.Zero; pdvrUsed = 0; pfsBBox = new FSBBOX(); pfsMcsClient = IntPtr.Zero; pTopSpace = 0;
++            fPageBecomesUninterruptible = False;
++            try
++            {
++                Ctx c = Context(pfsContext);
++                Subpage sp = new Subpage();
++                sp.Nms = nSeg;
++                sp.Fswdir = fswdir;
++                sp.Rect = new FSRECT(urMargin, vrMargin, durMargin, 0);
++                bool done, progress;
++                FormatSubpage(c, sp, SubpageColumns(urMargin, vrMargin, durMargin, 0, cColumns, rgColumnInfo, false), null, false,
++                    true, fSuppressTopSpace != False, false, out done, out progress, out pdvrUsed, out pfsMcsClient, out pTopSpace);
++                sp.Handle = NewHandle(sp);
++                ppSubPage = sp.Handle;
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        internal static unsafe int FsUpdateBottomlessSubpage(IntPtr pfsContext, IntPtr pfsSubpage, IntPtr nmSeg, int fSuppressTopSpace,
++            uint fswdir, int lWidth, int urMargin, int durMargin, int vrMargin, int cColumns, FSCOLUMNINFO* rgColumnInfo,
++            int cSegmentAreas, IntPtr* rgnSegmentForArea, int* rgSpanForSegmentArea, int cHeightAreas, int* rgHeightForArea,
++            int* rgSpanForHeightArea, int fINterrruptible, out FSFMTRBL pfsfmtr, out int pdvrUsed, out FSBBOX pfsBBox,
++            out IntPtr pfsMcsClient, out int pTopSpace, out int fPageBecomesUninterruptible)
++        {
++            pfsfmtr = FSFMTRBL.fmtrblGoalReached;
++            pdvrUsed = 0; pfsBBox = new FSBBOX(); pfsMcsClient = IntPtr.Zero; pTopSpace = 0;
++            fPageBecomesUninterruptible = False;
++            try
++            {
++                Ctx c = Context(pfsContext);
++                Subpage sp = Get<Subpage>(pfsSubpage);
++                if (sp == null) return tserrInvalidParameter;
++                List<Track> old = sp.Columns;
++                sp.Columns = new List<Track>();
++                sp.Nms = nmSeg;
++                sp.Fswdir = fswdir;
++                sp.Rect = new FSRECT(urMargin, vrMargin, durMargin, 0);
++                sp.BBox = new FSBBOX();
++                bool done, progress;
++                FormatSubpage(c, sp, SubpageColumns(urMargin, vrMargin, durMargin, 0, cColumns, rgColumnInfo, false), null, false,
++                    true, fSuppressTopSpace != False, false, out done, out progress, out pdvrUsed, out pfsMcsClient, out pTopSpace);
++                ReplaceColumns(c, old, sp.Columns);
++                sp.Upd = FSKUPDATE.fskupdNew;
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        private static void ReplaceColumns(Ctx c, List<Track> old, List<Track> now)
++        {
++            List<Para> oldParas = new List<Para>(), newParas = new List<Para>();
++            foreach (Track t in old) oldParas.AddRange(t.Paras);
++            foreach (Track t in now) newParas.AddRange(t.Paras);
++            Replace(c, oldParas, newParas);
++            foreach (Track t in old) { t.Paras.Clear(); FreeHandle(t.Handle); }
++        }
++
++        internal static int FsCompareSubpages(IntPtr pfsContext, IntPtr pfsSubpageOld, IntPtr pfsSubpageNew, out FSCOMPRESULT fsCompResult)
++        {
++            fsCompResult = FSCOMPRESULT.fscmprChangeInside;
++            return fserrNone;
++        }
++
++        internal static int FsClearUpdateInfoInSubpage(IntPtr pfscontext, IntPtr pSubpage)
++        {
++            try
++            {
++                Ctx c = Context(pfscontext);
++                Subpage sp = Get<Subpage>(pSubpage);
++                if (sp == null) return tserrInvalidParameter;
++                sp.Upd = FSKUPDATE.fskupdNoChange;
++                ClearColumns(c, sp.Columns);
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        internal static int FsDestroySubpage(IntPtr pfsContext, IntPtr pSubpage)
++        {
++            try
++            {
++                Ctx c = Context(pfsContext);
++                Subpage sp = Get<Subpage>(pSubpage);
++                if (sp == null) return tserrInvalidParameter;
++                DestroyColumns(c, sp.Columns);
++                FreeHandle(pSubpage);
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        internal static int FsDuplicateSubpageBreakRecord(IntPtr pfsContext, IntPtr pBreakRecSubPageIn, out IntPtr ppBreakRecSubPageOut)
++        {
++            return DuplicateSegmentBreak(pfsContext, pBreakRecSubPageIn, out ppBreakRecSubPageOut);
++        }
++
++        internal static int FsDestroySubpageBreakRecord(IntPtr pfscontext, IntPtr pfsbreakrec)
++        {
++            return DestroySegmentBreak(pfscontext, pfsbreakrec);
++        }
++
++        private static int DuplicateSegmentBreak(IntPtr pfsContext, IntPtr brIn, out IntPtr brOut)
++        {
++            brOut = IntPtr.Zero;
++            try
++            {
++                Ctx c = Context(pfsContext);
++                SegmentBreak br = Get<SegmentBreak>(brIn);
++                if (br == null) return tserrInvalidParameter;
++                brOut = NewHandle(new SegmentBreak { At = DuplicateResume(c, br.At) });
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        private static int DestroySegmentBreak(IntPtr pfsContext, IntPtr brIn)
++        {
++            try
++            {
++                Ctx c = Context(pfsContext);
++                SegmentBreak br = Get<SegmentBreak>(brIn);
++                if (br != null) DestroyResume(c, br.At);
++                FreeHandle(brIn);
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        private static void BalancingInfo(List<Track> columns, out int lines, out int heights, out int minHeight)
++        {
++            lines = 0; heights = 0; minHeight = 0;
++            foreach (Track t in columns)
++                foreach (Para p in t.Paras)
++                {
++                    TextPara tp = p.Idobj == fsidobjText ? Get<TextPara>(p.Pfspara) : null;
++                    if (tp == null) continue;
++                    foreach (Line l in tp.Lines)
++                    {
++                        int h = l.Ascent + l.Descent;
++                        lines++;
++                        heights += h;
++                        if (minHeight == 0 || h < minHeight) minHeight = h;
++                    }
++                }
++        }
++
++        internal static int FsGetSubpageColumnBalancingInfo(IntPtr pfsContext, IntPtr pSubpage, out uint fswdir, out int lLineNumber,
++            out int lLineHeights, out int lMinimumLineHeight)
++        {
++            fswdir = 0; lLineNumber = 0; lLineHeights = 0; lMinimumLineHeight = 0;
++            Subpage sp = Get<Subpage>(pSubpage);
++            if (sp == null) return tserrInvalidParameter;
++            fswdir = sp.Fswdir;
++            BalancingInfo(sp.Columns, out lLineNumber, out lLineHeights, out lMinimumLineHeight);
++            return fserrNone;
++        }
++
++        internal static int FsGetNumberSubpageFootnotes(IntPtr pfsContext, IntPtr pSubpage, out int cFootnotes)
++        {
++            cFootnotes = 0;
++            return fserrNone;
++        }
++
++        internal static unsafe int FsGetSubpageFootnoteInfo(IntPtr pfsContext, IntPtr pSubpage, int cArraySize, int indexStart,
++            out uint fswdir, FSFTNINFO* rgFootnoteInfo, out int indexLim)
++        {
++            Subpage sp = Get<Subpage>(pSubpage);
++            fswdir = sp != null ? sp.Fswdir : 0;
++            indexLim = indexStart;
++            return fserrNone;
++        }
++
++        internal static int FsTransferDisplayInfoSubpage(IntPtr pfsContext, IntPtr pSubpageOld, IntPtr pfsSubpageNew)
++        {
++            return fserrNone;
++        }
++
++        // ------------------------------------------------------------------
++        // Subtracks: a container's column of paragraphs (a Section, a List, a ListItem)
++        // ------------------------------------------------------------------
++        internal static int FsFormatSubtrackFinite(IntPtr pfsContext, IntPtr pfsBRSubtackIn, int fFromPreviousPage, IntPtr fsnmSegment,
++            int iArea, IntPtr pfsFtnRej, IntPtr pfsGeom, int fEmptyOk, int fSuppressTopSpace, uint fswdir, ref FSRECT fsRectToFill,
++            IntPtr pfsMcsClientIn, FSKCLEAR fsKClearIn, FSKSUPPRESSHARDBREAKBEFOREFIRSTPARA fsksuppresshardbreakbeforefirstpara,
++            out FSFMTR pfsfmtr, out IntPtr ppfsSubtrack, out IntPtr pfsBRSubtrackOut, out int pdvrUsed, out FSBBOX pfsBBox,
++            out IntPtr ppfsMcsClientOut, out FSKCLEAR pfsKClearOut, out int pTopSpace)
++        {
++            pfsfmtr = new FSFMTR();
++            ppfsSubtrack = IntPtr.Zero; pfsBRSubtrackOut = IntPtr.Zero; pdvrUsed = 0; pfsBBox = new FSBBOX();
++            ppfsMcsClientOut = IntPtr.Zero; pfsKClearOut = FSKCLEAR.fskclearNone; pTopSpace = 0;
++            try
++            {
++                Ctx c = Context(pfsContext);
++                SegmentBreak br = Get<SegmentBreak>(pfsBRSubtackIn);
++                Track t = NewTrack(fsnmSegment, fswdir, fsRectToFill);
++                FillResult r = Fill(c, t, br != null ? br.At : null, true, fEmptyOk != False, fSuppressTopSpace != False,
++                    pfsMcsClientIn, fFromPreviousPage != False);
++                if (t.Paras.Count == 0 && !r.Done && fEmptyOk != False)
++                {
++                    pfsfmtr.kstop = FSFMTRKSTOP.fmtrNoProgressOutOfSpace;
++                    if (r.Mcs != IntPtr.Zero) Ck(c.Cb.cbkobj.pfnDestroyMcsclient(c.Client, r.Mcs));
++                    DestroyResume(c, r.Next);
++                    DestroyTrack(c, t);
++                    return fserrNone;
++                }
++                pfsfmtr.kstop = r.Done ? FSFMTRKSTOP.fmtrGoalReached : FSFMTRKSTOP.fmtrBrokenOutOfSpace;
++                if (!r.Done && r.Next != null) pfsBRSubtrackOut = NewHandle(new SegmentBreak { At = r.Next });
++                ppfsSubtrack = t.Handle;
++                pdvrUsed = r.Bottom - fsRectToFill.v;
++                pfsBBox = t.BBox;
++                ppfsMcsClientOut = r.Mcs;
++                pTopSpace = r.TopSpace;
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        internal static int FsFormatSubtrackBottomless(IntPtr pfsContext, IntPtr fsnmSegment, int iArea, IntPtr pfsGeom,
++            int fSuppressTopSpace, uint fswdir, int ur, int dur, int vr, IntPtr pfsMcsClientIn, FSKCLEAR fsKClearIn,
++            int fCanBeInterruptedIn, out FSFMTRBL pfsfmtrbl, out IntPtr ppfsSubtrack, out int pdvrUsed, out FSBBOX pfsBBox,
++            out IntPtr ppfsMcsClientOut, out FSKCLEAR pfsKClearOut, out int pTopSpace, out int pfCanBeInterruptedOut)
++        {
++            pfsfmtrbl = FSFMTRBL.fmtrblGoalReached;
++            ppfsSubtrack = IntPtr.Zero; pdvrUsed = 0; pfsBBox = new FSBBOX(); ppfsMcsClientOut = IntPtr.Zero;
++            pfsKClearOut = FSKCLEAR.fskclearNone; pTopSpace = 0; pfCanBeInterruptedOut = fCanBeInterruptedIn;
++            try
++            {
++                Ctx c = Context(pfsContext);
++                Track t = NewTrack(fsnmSegment, fswdir, new FSRECT(ur, vr, dur, 0));
++                FillResult r = Fill(c, t, null, false, true, fSuppressTopSpace != False, pfsMcsClientIn, false);
++                t.Rect.dv = r.Bottom - vr;
++                ppfsSubtrack = t.Handle;
++                pdvrUsed = r.Bottom - vr;
++                pfsBBox = t.BBox;
++                ppfsMcsClientOut = r.Mcs;
++                pTopSpace = r.TopSpace;
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        internal static int FsUpdateBottomlessSubtrack(IntPtr pfsContext, IntPtr pfsSubtrack, IntPtr fsnmSegment, int iArea,
++            IntPtr pfsGeom, int fSuppressTopSpace, uint fswdir, int ur, int dur, int vr, IntPtr pfsMcsClientIn, FSKCLEAR fsKClearIn,
++            int fCanBeInterruptedIn, out FSFMTRBL pfsfmtrbl, out int pdvrUsed, out FSBBOX pfsBBox, out IntPtr ppfsMcsClientOut,
++            out FSKCLEAR pfsKClearOut, out int pTopSpace, out int pfCanBeInterruptedOut)
++        {
++            pfsfmtrbl = FSFMTRBL.fmtrblGoalReached;
++            pdvrUsed = 0; pfsBBox = new FSBBOX(); ppfsMcsClientOut = IntPtr.Zero;
++            pfsKClearOut = FSKCLEAR.fskclearNone; pTopSpace = 0; pfCanBeInterruptedOut = fCanBeInterruptedIn;
++            try
++            {
++                Ctx c = Context(pfsContext);
++                Track t = Get<Track>(pfsSubtrack);
++                if (t == null) return tserrInvalidParameter;
++                List<Para> old = t.Paras;
++                t.Paras = new List<Para>();
++                t.Nms = fsnmSegment;
++                t.Fswdir = fswdir;
++                t.Rect = new FSRECT(ur, vr, dur, 0);
++                t.BBox = new FSBBOX();
++                FillResult r = Fill(c, t, null, false, true, fSuppressTopSpace != False, pfsMcsClientIn, false);
++                Replace(c, old, t.Paras);
++                t.Rect.dv = r.Bottom - vr;
++                t.Upd = FSKUPDATE.fskupdNew;
++                pdvrUsed = r.Bottom - vr;
++                pfsBBox = t.BBox;
++                ppfsMcsClientOut = r.Mcs;
++                pTopSpace = r.TopSpace;
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        internal static int FsSynchronizeBottomlessSubtrack(IntPtr pfsContext, IntPtr pfsSubtrack, IntPtr pfsGeom, uint fswdir, int vrShift)
++        {
++            try
++            {
++                Ctx c = Context(pfsContext);
++                Track t = Get<Track>(pfsSubtrack);
++                if (t == null) return tserrInvalidParameter;
++                Shift(c, t, vrShift);
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        private static void Shift(Ctx c, Track t, int dv)
++        {
++            t.Rect.v += dv;
++            if (t.BBox.fDefined != False) t.BBox.fsrc.v += dv;
++            foreach (Para p in t.Paras)
++            {
++                p.Vr += dv;
++                if (p.BBox.fDefined != False) p.BBox.fsrc.v += dv;
++                if (p.Idobj == fsidobjText)
++                {
++                    TextPara tp = Get<TextPara>(p.Pfspara);
++                    if (tp != null) foreach (Line l in tp.Lines) l.Vr += dv;
++                }
++                else if (p.Idobj == PtsHost.FloaterParagraphId)
++                {
++                    FloaterPara fp = Get<FloaterPara>(p.Pfspara);
++                    if (fp != null) fp.Rect.v += dv;
++                }
++                else
++                {
++                    int m = MethodIndex(p.Idobj);
++                    if (m >= 0 && p.Pfspara != IntPtr.Zero)
++                        Ck(c.Methods[m].pfnSynchronizeBottomlessPara(p.Pfspara, p.Client, c.Geometry, t.Fswdir, dv));
++                }
++            }
++        }
++
++        internal static int FsCompareSubtrack(IntPtr pfsContext, IntPtr pfsSubtrackOld, IntPtr pfsSubtrackNew, uint fswdir,
++            out FSCOMPRESULT fsCompResult, out int dvrShifted)
++        {
++            fsCompResult = FSCOMPRESULT.fscmprChangeInside;
++            dvrShifted = 0;
++            return fserrNone;
++        }
++
++        internal static int FsClearUpdateInfoInSubtrack(IntPtr pfsContext, IntPtr pfsSubtrack)
++        {
++            try
++            {
++                Ctx c = Context(pfsContext);
++                Track t = Get<Track>(pfsSubtrack);
++                if (t == null) return tserrInvalidParameter;
++                ClearTrack(c, t);
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        internal static int FsDestroySubtrack(IntPtr pfsContext, IntPtr pfsSubtrack)
++        {
++            try
++            {
++                Ctx c = Context(pfsContext);
++                Track t = Get<Track>(pfsSubtrack);
++                if (t == null) return tserrInvalidParameter;
++                DestroyTrack(c, t);
++                return fserrNone;
++            }
++            catch (Exception e) { return Fail(e); }
++        }
++
++        internal static int FsDuplicateSubtrackBreakRecord(IntPtr pfsContext, IntPtr pfsBRSubtrackIn, out IntPtr ppfsBRSubtrackOut)
++        {
++            return DuplicateSegmentBreak(pfsContext, pfsBRSubtrackIn, out ppfsBRSubtrackOut);
++        }
++
++        internal static int FsDestroySubtrackBreakRecord(IntPtr pfscontext, IntPtr pfsbreakrec)
++        {
++            return DestroySegmentBreak(pfscontext, pfsbreakrec);
++        }
++
++        internal static int FsGetSubtrackColumnBalancingInfo(IntPtr pfscontext, IntPtr pfsSubtrack, uint fswdir, out int lLineNumber,
++            out int lLineHeights, out int lMinimumLineHeight)
++        {
++            lLineNumber = 0; lLineHeights = 0; lMinimumLineHeight = 0;
++            Track t = Get<Track>(pfsSubtrack);
++            if (t == null) return tserrInvalidParameter;
++            BalancingInfo(new List<Track> { t }, out lLineNumber, out lLineHeights, out lMinimumLineHeight);
++            return fserrNone;
++        }
++
++        internal static int FsGetNumberSubtrackFootnotes(IntPtr pfscontext, IntPtr pfsSubtrack, out int cFootnotes)
++        {
++            cFootnotes = 0;
++            return fserrNone;
++        }
++
++        internal static int FsTransferDisplayInfoSubtrack(IntPtr pfscontext, IntPtr pfsSubtrackOld, IntPtr pfsSubtrackNew)
++        {
++            return fserrNone;
++        }
++
++        // ------------------------------------------------------------------
++        // Queries
++        // ------------------------------------------------------------------
++        internal static int FsQueryFloaterDetails(IntPtr pfsContext, IntPtr pfsfloater, out FSFLOATERDETAILS fsfloaterdetails)
++        {
++            fsfloaterdetails = new FSFLOATERDETAILS();
++            FloaterPara fp = Get<FloaterPara>(pfsfloater);
++            if (fp == null) return tserrInvalidParameter;
++            fsfloaterdetails.fskupdContent = fp.Upd;
++            fsfloaterdetails.fsnmFloater = fp.Name;
++            fsfloaterdetails.fsrcFloater = fp.Rect;
++            fsfloaterdetails.pfsFloaterContent = fp.Content;
++            return fserrNone;
++        }
++
++        internal static int FsQueryPageDetails(IntPtr pfsContext, IntPtr pPage, out FSPAGEDETAILS pPageDetails)
++        {
++            pPageDetails = new FSPAGEDETAILS();
++            Page pg = Get<Page>(pPage);
++            if (pg == null) return tserrInvalidParameter;
++            pPageDetails.fskupd = pg.Upd;
++            pPageDetails.fSimple = False;
++            pPageDetails.u.complex.fswdirPageProper = pg.Fswdir;
++            pPageDetails.u.complex.fsupdinfPageBody.fskupd = pg.Upd;
++            pPageDetails.u.complex.fsrcPageBody = pg.Body;
++            pPageDetails.u.complex.fsrcPageMarginActual = pg.Margin;
++            pPageDetails.u.complex.fsbboxPageBody = pg.BBox;
++            pPageDetails.u.complex.cSections = pg.Sec != null ? 1 : 0;
++            return fserrNone;
++        }
++
++        internal static unsafe int FsQueryPageSectionList(IntPtr pfsContext, IntPtr pPage, int cArraySize,
++            FSSECTIONDESCRIPTION* rgSectionDescription, out int cActualSize)
++        {
++            cActualSize = 0;
++            Page pg = Get<Page>(pPage);
++            if (pg == null) return tserrInvalidParameter;
++            if (pg.Sec == null) return fserrNone;
++            if (cArraySize < 1) return tserrOutputArrayTooSmall;
++            FSSECTIONDESCRIPTION d = new FSSECTIONDESCRIPTION();
++            d.fsupdinf.fskupd = pg.Upd;
++            d.nms = pg.Sec.Nms;
++            d.fsrc = pg.Sec.Rect;
++            d.fsbbox = pg.Sec.BBox;
++            d.pfssection = pg.Sec.Handle;
++            rgSectionDescription[0] = d;
++            cActualSize = 1;
++            return fserrNone;
++        }
++
++        internal static int FsQuerySectionDetails(IntPtr pfsContext, IntPtr pSection, out FSSECTIONDETAILS pSectionDetails)
++        {
++            pSectionDetails = new FSSECTIONDETAILS();
++            Section s = Get<Section>(pSection);
++            if (s == null) return tserrInvalidParameter;
++            pSectionDetails.fFootnotesAsPagenotes = True;
++            pSectionDetails.u.withpagenotes.fswdir = s.Fswdir;
++            pSectionDetails.u.withpagenotes.fsrcSectionBody = s.Rect;
++            pSectionDetails.u.withpagenotes.fsbboxSectionBody = s.BBox;
++            pSectionDetails.u.withpagenotes.cBasicColumns = s.Columns.Count;
++            return fserrNone;
++        }
++
++        private static FSTRACKDESCRIPTION Describe(Track t, FSKUPDATE upd)
++        {
++            FSTRACKDESCRIPTION d = new FSTRACKDESCRIPTION();
++            d.fsupdinf.fskupd = upd;
++            d.nms = t.Nms;
++            d.fsrc = t.Rect;
++            d.fsbbox = t.BBox;
++            d.pfstrack = t.Handle;
++            return d;
++        }
++
++        internal static unsafe int FsQuerySectionBasicColumnList(IntPtr pfsContext, IntPtr pSection, int cArraySize,
++            FSTRACKDESCRIPTION* rgColumnDescription, out int cActualSize)
++        {
++            cActualSize = 0;
++            Section s = Get<Section>(pSection);
++            if (s == null) return tserrInvalidParameter;
++            if (cArraySize < s.Columns.Count) return tserrOutputArrayTooSmall;
++            for (int i = 0; i < s.Columns.Count; i++) rgColumnDescription[i] = Describe(s.Columns[i], s.Columns[i].Upd);
++            cActualSize = s.Columns.Count;
++            return fserrNone;
++        }
++
++        internal static int FsQueryTrackDetails(IntPtr pfsContext, IntPtr pTrack, out FSTRACKDETAILS pTrackDetails)
++        {
++            pTrackDetails = new FSTRACKDETAILS();
++            Track t = Get<Track>(pTrack);
++            if (t == null) return tserrInvalidParameter;
++            pTrackDetails.cParas = t.Paras.Count;
++            return fserrNone;
++        }
++
++        private static unsafe int ParaList(Track t, int cParas, FSPARADESCRIPTION* rgParaDesc, out int cParaDesc)
++        {
++            cParaDesc = 0;
++            if (cParas < t.Paras.Count) return tserrOutputArrayTooSmall;
++            for (int i = 0; i < t.Paras.Count; i++)
++            {
++                Para p = t.Paras[i];
++                FSPARADESCRIPTION d = new FSPARADESCRIPTION();
++                d.fsupdinf.fskupd = p.Upd;
++                d.pfspara = p.Pfspara;
++                d.pfsparaclient = p.Client;
++                d.nmp = p.Nmp;
++                d.idobj = p.Idobj;
++                d.dvrUsed = p.DvrUsed;
++                d.fsbbox = p.BBox;
++                d.dvrTopSpace = p.DvrTop;
++                rgParaDesc[i] = d;
++            }
++            cParaDesc = t.Paras.Count;
++            return fserrNone;
++        }
++
++        internal static unsafe int FsQueryTrackParaList(IntPtr pfsContext, IntPtr pTrack, int cParas, FSPARADESCRIPTION* rgParaDesc,
++            out int cParaDesc)
++        {
++            cParaDesc = 0;
++            Track t = Get<Track>(pTrack);
++            if (t == null) return tserrInvalidParameter;
++            return ParaList(t, cParas, rgParaDesc, out cParaDesc);
++        }
++
++        internal static unsafe int FsQuerySubpageDetails(IntPtr pfsContext, IntPtr pSubPage, out FSSUBPAGEDETAILS pSubPageDetails)
++        {
++            pSubPageDetails = new FSSUBPAGEDETAILS();
++            Subpage sp = Get<Subpage>(pSubPage);
++            if (sp == null) return tserrInvalidParameter;
++            pSubPageDetails.fSimple = False;
++            pSubPageDetails.u.complex.nms = sp.Nms;
++            pSubPageDetails.u.complex.fswdir = sp.Fswdir;
++            pSubPageDetails.u.complex.fsrc = sp.Rect;
++            pSubPageDetails.u.complex.fsbbox = sp.BBox;
++            pSubPageDetails.u.complex.cBasicColumns = sp.Columns.Count;
++            return fserrNone;
++        }
++
++        internal static unsafe int FsQuerySubpageBasicColumnList(IntPtr pfsContext, IntPtr pSubPage, int cArraySize,
++            FSTRACKDESCRIPTION* rgColumnDescription, out int cActualSize)
++        {
++            cActualSize = 0;
++            Subpage sp = Get<Subpage>(pSubPage);
++            if (sp == null) return tserrInvalidParameter;
++            if (cArraySize < sp.Columns.Count) return tserrOutputArrayTooSmall;
++            for (int i = 0; i < sp.Columns.Count; i++) rgColumnDescription[i] = Describe(sp.Columns[i], sp.Upd);
++            cActualSize = sp.Columns.Count;
++            return fserrNone;
++        }
++
++        internal static int FsQuerySubtrackDetails(IntPtr pfsContext, IntPtr pSubTrack, out FSSUBTRACKDETAILS pSubTrackDetails)
++        {
++            pSubTrackDetails = new FSSUBTRACKDETAILS();
++            Track t = Get<Track>(pSubTrack);
++            if (t == null) return tserrInvalidParameter;
++            pSubTrackDetails.fsupdinf.fskupd = t.Upd;
++            pSubTrackDetails.nms = t.Nms;
++            pSubTrackDetails.fsrc = t.Rect;
++            pSubTrackDetails.cParas = t.Paras.Count;
++            return fserrNone;
++        }
++
++        internal static unsafe int FsQuerySubtrackParaList(IntPtr pfsContext, IntPtr pSubTrack, int cParas, FSPARADESCRIPTION* rgParaDesc,
++            out int cParaDesc)
++        {
++            cParaDesc = 0;
++            Track t = Get<Track>(pSubTrack);
++            if (t == null) return tserrInvalidParameter;
++            return ParaList(t, cParas, rgParaDesc, out cParaDesc);
++        }
++
++        internal static int FsQueryTextDetails(IntPtr pfsContext, IntPtr pPara, out FSTEXTDETAILS pTextDetails)
++        {
++            pTextDetails = new FSTEXTDETAILS();
++            TextPara tp = Get<TextPara>(pPara);
++            if (tp == null) return tserrInvalidParameter;
++            pTextDetails.fsktd = FSKTEXTDETAILS.fsktdFull;
++            pTextDetails.u.full.fswdir = tp.Fswdir;
++            pTextDetails.u.full.fsklines = FSKTEXTLINES.fsklinesNormal;
++            pTextDetails.u.full.fLinesComposite = False;
++            pTextDetails.u.full.cLines = tp.Lines.Count;
++            pTextDetails.u.full.cAttachedObjects = 0;
++            if (tp.Lines.Count > 0)
++            {
++                pTextDetails.u.full.dcpFirst = tp.Lines[0].DcpFirst;
++                pTextDetails.u.full.dcpLim = tp.Lines[tp.Lines.Count - 1].DcpLim;
++            }
++            pTextDetails.u.full.fSuppressTopLineSpacing = tp.SuppressTop;
++            pTextDetails.u.full.fUpdateInfoForLinesPresent = False;
++            return fserrNone;
++        }
++
++        internal static unsafe int FsQueryLineListSingle(IntPtr pfsContext, IntPtr pPara, int cLines, FSLINEDESCRIPTIONSINGLE* rgLineDesc,
++            out int cLineDesc)
++        {
++            cLineDesc = 0;
++            TextPara tp = Get<TextPara>(pPara);
++            if (tp == null) return tserrInvalidParameter;
++            if (cLines < tp.Lines.Count) return tserrOutputArrayTooSmall;
++            for (int i = 0; i < tp.Lines.Count; i++)
++            {
++                Line l = tp.Lines[i];
++                FSLINEDESCRIPTIONSINGLE d = new FSLINEDESCRIPTIONSINGLE();
++                d.pfslineclient = IntPtr.Zero;
++                d.pfsbreakreclineclient = l.BrIn;
++                d.dcpFirst = l.DcpFirst;
++                d.dcpLim = l.DcpLim;
++                d.urStart = l.Ur;
++                d.dur = l.Dur;
++                d.fAllowHyphenation = True;
++                d.urBBox = l.UrBBox;
++                d.durBBox = l.DurBBox;
++                d.vrStart = l.Vr;
++                d.dvrAscent = l.Ascent;
++                d.dvrDescent = l.Descent;
++                d.fTreatedAsFirst = l.First;
++                d.fForceBroken = l.Forced;
++                rgLineDesc[i] = d;
++            }
++            cLineDesc = tp.Lines.Count;
++            return fserrNone;
++        }
++
++        internal static unsafe int FsQueryLineListComposite(IntPtr pfsContext, IntPtr pPara, int cElements,
++            FSLINEDESCRIPTIONCOMPOSITE* rgLineDescription, out int cLineElements)
++        {
++            cLineElements = 0;
++            return fserrNone;
++        }
++
++        internal static unsafe int FsQueryLineCompositeElementList(IntPtr pfsContext, IntPtr pLine, int cElements,
++            FSLINEELEMENT* rgLineElement, out int cLineElements)
++        {
++            cLineElements = 0;
++            return fserrNone;
++        }
++
++        internal static unsafe int FsQueryAttachedObjectList(IntPtr pfsContext, IntPtr pPara, int cAttachedObject,
++            FSATTACHEDOBJECTDESCRIPTION* rgAttachedObjects, out int cAttachedObjectDesc)
++        {
++            cAttachedObjectDesc = 0;
++            return fserrNone;
++        }
++
++        internal static unsafe int FsQueryFigureObjectDetails(IntPtr pfsContext, IntPtr pPara, out FSFIGUREDETAILS fsFigureDetails)
++        {
++            fsFigureDetails = new FSFIGUREDETAILS();
++            return tserrNotImplemented;
++        }
++
++        internal static unsafe int FsQueryTableObjDetails(IntPtr pfscontext, IntPtr pfstableobj, out FSTABLEOBJDETAILS pfstableobjdetails)
++        {
++            pfstableobjdetails = new FSTABLEOBJDETAILS();
++            return tserrNotImplemented;
++        }
++
++        internal static unsafe int FsQueryTableObjTableProperDetails(IntPtr pfscontext, IntPtr pfstableProper, out FSTABLEDETAILS pfstabledetailsProper)
++        {
++            pfstabledetailsProper = new FSTABLEDETAILS();
++            return tserrNotImplemented;
++        }
++
++        internal static unsafe int FsQueryTableObjRowList(IntPtr pfscontext, IntPtr pfstableProper, int cRows,
++            FSTABLEROWDESCRIPTION* rgtablerowdescr, out int pcRowsActual)
++        {
++            pcRowsActual = 0;
++            return tserrNotImplemented;
++        }
++
++        internal static unsafe int FsQueryTableObjRowDetails(IntPtr pfscontext, IntPtr pfstablerow, out FSTABLEROWDETAILS ptableorowdetails)
++        {
++            ptableorowdetails = new FSTABLEROWDETAILS();
++            return tserrNotImplemented;
++        }
++
++        internal static unsafe int FsQueryTableObjCellList(IntPtr pfscontext, IntPtr pfstablerow, int cCells, FSKUPDATE* rgfskupd,
++            IntPtr* rgpfscell, FSTABLEKCELLMERGE* rgkcellmerge, out int pcCellsActual)
++        {
++            pcCellsActual = 0;
++            return tserrNotImplemented;
++        }
++
++        // ------------------------------------------------------------------
++        // Writing directions: WPF uses ES (left to right) and WS (right to left)
++        // ------------------------------------------------------------------
++        internal static unsafe int FsTransformRectangle(uint fswdirIn, ref FSRECT rectPage, ref FSRECT rectTransform, uint fswdirOut,
++            out FSRECT rectOut)
++        {
++            rectOut = rectTransform;
++            uint d = fswdirIn ^ fswdirOut;
++            if ((d & fUDirection) != 0) rectOut.u = 2 * rectPage.u + rectPage.du - rectTransform.u - rectTransform.du;
++            if ((d & fVDirection) != 0) rectOut.v = 2 * rectPage.v + rectPage.dv - rectTransform.v - rectTransform.dv;
++            return fserrNone;
++        }
++
++        internal static unsafe int FsTransformBbox(uint fswdirIn, ref FSRECT rectPage, ref FSBBOX bboxTransform, uint fswdirOut,
++            out FSBBOX bboxOut)
++        {
++            bboxOut = bboxTransform;
++            if (bboxTransform.fDefined != False)
++                FsTransformRectangle(fswdirIn, ref rectPage, ref bboxTransform.fsrc, fswdirOut, out bboxOut.fsrc);
++            return fserrNone;
++        }
++    }
++}
+diff --git a/src/Microsoft.DotNet.Wpf/src/PresentationFramework/sources.list b/src/Microsoft.DotNet.Wpf/src/PresentationFramework/sources.list
+index 8aded56..5724141 100644
+--- a/src/Microsoft.DotNet.Wpf/src/PresentationFramework/sources.list
++++ b/src/Microsoft.DotNet.Wpf/src/PresentationFramework/sources.list
+@@ -307,6 +307,7 @@ MS/Internal/PtsHost/PageVisual.cs
+ MS/Internal/PtsHost/ParagraphElementVisual.cs
+ MS/Internal/PtsHost/ParagraphVisual.cs
+ MS/Internal/PtsHost/Pts.cs
++MS/Internal/PtsHost/PtsEngine.cs
+ MS/Internal/PtsHost/PtsCache.cs
+ MS/Internal/PtsHost/PtsContext.cs
+ MS/Internal/PtsHost/PtsHelper.cs

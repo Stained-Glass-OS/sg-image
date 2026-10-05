@@ -18,7 +18,7 @@ SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 
-.PHONY: image-deps-test mono-config-test mono-fork-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
+.PHONY: image-deps-test mono-config-test mono-fork-test wpf-flow-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
 
 all: image
 
@@ -309,14 +309,15 @@ $(APPS_DIR)/VERSION: Makefile
 # components under their own free licences; Wine Gecko is MPL-2.0.
 #
 # Wine Mono is our build of it: upstream 9.4.0 with mono/patches (what the
-# athenaNet Device Manager and SQL Server Compact need; mono/patches/README),
+# athenaNet Device Manager and SQL Server Compact need, WPF's flow layout for
+# rich text; mono/patches/README),
 # built by mono/build-wine-mono.sh and served from the project's server. The
 # upstream tarball (dl.winehq.org, sha256 fd772219...bf13858) is what it
 # replaces; test/mono-fork-test.sh tells them apart.
 MONO_VERSION       := 9.4.0
-MONO_BUILD         := sg2
+MONO_BUILD         := sg3
 MONO_URL           := https://freesoft.page/addons/wine-mono-$(MONO_VERSION)-$(MONO_BUILD)-x86.tar.xz
-MONO_SHA256        := da7ce67c4a2ce401e6a628e1c4b87ada621f9aee9ca55996fcc07436966c959f
+MONO_SHA256        := 53ceb09393c656350dabaf8b9be4c548072a4ee481c3f65fe53896e4b6c4587c
 GECKO_VERSION      := 2.47.4
 GECKO_X86_SHA256   := 2cfc8d5c948602e21eff8a78613e1826f2d033df9672cace87fed56e8310afb6
 GECKO_X64_SHA256   := fd88fc7e537d058d7a8abf0c1ebc90c574892a466de86706a26d254710a82814
@@ -402,6 +403,10 @@ mono-config-test: $(MONO_ROOT)/.done
 # store, <startup> twice, UserInteractive in a service, NDP v4 InstallPath.
 mono-fork-test: $(MONO_ROOT)/.done
 	SG_MONO_DIR=$(MONO_ROOT)/usr/share/wine/mono sh test/mono-fork-test.sh
+
+# WPF's flow layout (rich text: FlowDocument, RichTextBox) in our Mono (wpf-*.patch)
+wpf-flow-test: $(MONO_ROOT)/.done
+	SG_MONO_DIR=$(MONO_ROOT)/usr/share/wine/mono sh test/wpf-flow-test.sh
 
 # --- Linux programs' look ------------------------------------------------------
 

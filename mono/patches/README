@@ -32,3 +32,30 @@ corefx-0001-brush-nativebrush.patch
       nativeObject, a property now for Graphics and Pen.
 
 test/mono-fork-test.sh checks each.
+
+wpf-0001-pts-managed-engine.patch
+    PresentationFramework: PTS, the engine WPF's flow layout hands pages,
+      columns and paragraphs to, in managed code (MS/Internal/PtsHost/
+      PtsEngine.cs, our own, written from the interface's declarations in
+      Pts.cs and how PtsHost uses them). Wine Mono's PresentationNative has
+      no PTS: FlowDocument, RichTextBox, FlowDocumentScrollViewer and
+      FlowDocumentReader stopped with EntryPointNotFoundException
+      (CreateInstalledObjectsInfo) -- Sonos Desktop Controller among them
+      (David 2026-10-02). Paragraphs stack down columns, text breaks into
+      lines through the client's FormatLine, containers and subpages lay
+      out their own children, finite pages break between columns and
+      pages, lists, sections and BlockUIContainer are placed. Not yet:
+      tables (take no space), floating floaters and figures (floaters are
+      placed as blocks), column balancing, footnotes. PtsCache: without
+      Line Services there is no penalty module (optimal paragraphs off).
+
+wpf-0002-managed-textformatter.patch
+    PresentationCore, Wine Mono's managed TextFormatter (FullTextLine):
+      TextHeight, TextBaseline, MarkerHeight/Baseline, DependentLength and
+      IsTruncated answered (were NotImplementedException; flow documents
+      ask for them); a list item's marker (bullet, number) is drawn; an
+      inline object (InlineUIContainer) is measured while its line is
+      formatted, not again when drawn or queried (the flow layout can only
+      measure it then: InvalidCastException); the paragraph's alignment
+      (centre, right) is applied -- centred text drew at the left.
+
