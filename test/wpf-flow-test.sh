@@ -13,12 +13,16 @@
 #   - a FlowDocument paginated at 300 x 200 has several pages;
 #   - an inline control (InlineUIContainer) sits in its line;
 #   - centred text is centred (a paragraph and FormattedText);
+#   - a table: cells of a row side by side at one height, a cell spanning
+#     two rows as high as they are, what follows below it; a long table
+#     paginated breaks between rows over several pages;
 #   - no exception anywhere.
 #
 #   test/wpf-flow-test.sh [WINE]      (needs make mono-deb first)
 # Mutation: sg2 (no wpf patches) fails at once (EntryPointNotFoundException);
 # PresentationFramework/PresentationCore built with -define:SG_MUTANT_PTS_NO_BREAK,
-# SG_MUTANT_NO_MARKER, SG_MUTANT_NO_EMBED_CACHE or SG_MUTANT_NO_ALIGN each fail
+# SG_MUTANT_PTS_NO_TABLE, SG_MUTANT_NO_MARKER, SG_MUTANT_NO_EMBED_CACHE or
+# SG_MUTANT_NO_ALIGN each fail
 # their check (SG_MONO_DIR= a Mono tree with the mutant assemblies in its GAC).
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
@@ -72,6 +76,15 @@ p=$(sed -n 's/^PAGES \([0-9]*\).*/\1/p' "$T/out"); [ "${p:-0}" -ge 3 ] && pass "
 x=$(sed -n 's/^INLINE checkX \([0-9.-]*\).*/\1/p' "$T/out"); [ "${x%.*}" -ge 50 ] 2>/dev/null && pass "an inline control sits in its line (x ${x})" || fail "inline control: ${x:-?}"
 c=$(sed -n 's/^FLOW centredX \([0-9.-]*\).*/\1/p' "$T/out"); [ "${c%.*}" -ge 100 ] 2>/dev/null && pass "a centred paragraph is centred (x ${c})" || fail "centred paragraph at x ${c:-?}"
 f=$(sed -n 's/^FORMATTEDTEXT boundsX \([0-9.-]*\).*/\1/p' "$T/out"); [ "${f%.*}" -ge 100 ] 2>/dev/null && pass "and centred FormattedText (x ${f})" || fail "centred FormattedText at x ${f:-?}"
+# shellcheck disable=SC2046  # six numbers, split on purpose
+set -- $(sed -n 's/^TABLE r0c0 \([0-9.]*\) r0c1 \([0-9.]*\) r1c1 \([0-9.]*\) r2c0 \([0-9.]*\) c1x \([0-9.]*\) after \([0-9.]*\).*/\1 \2 \3 \4 \5 \6/p' "$T/out")
+if [ $# = 6 ] && [ "${1%.*}" = "${2%.*}" ] && [ "${3%.*}" -gt "${2%.*}" ] && [ "${4%.*}" -ge $(( ${3%.*} + 25 )) ] \
+   && [ "${5%.*}" -ge 100 ] && [ "${6%.*}" -gt "${4%.*}" ]; then
+    pass "a table: a row's cells side by side (y $1, x $5), the next row below (y $3), a two-row cell pushes the third down (y $4), text after it below (y $6)"
+else
+    fail "table: $(grep -m1 "^TABLE " "$T/out")"
+fi
+tp=$(sed -n 's/^TABLEPAGES \([0-9]*\).*/\1/p' "$T/out"); [ "${tp:-0}" -ge 3 ] && pass "a 40-row table at 300 x 200 breaks between rows over $tp pages" || fail "table pages: ${tp:-?}"
 l=$(sed -n 's/^LONG ms \([0-9]*\).*/\1/p' "$T/out"); [ -n "$l" ] && echo "      500 paragraphs laid out in $l ms"
 [ "$RC" = 0 ] && echo "RESULT: PASS" || { echo "RESULT: FAIL"; sed -n 1,30p "$T/out" | cut -c1-200; }
 exit "$RC"

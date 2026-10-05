@@ -159,6 +159,55 @@ class Probe
                 var centred = (Paragraph)tail.PreviousBlock.PreviousBlock;
                 Console.WriteLine("FLOW centredX " + centred.ContentStart.GetCharacterRect(LogicalDirection.Forward).X.ToString("F1") + " rtlX " + ((Paragraph)tail.PreviousBlock).ContentStart.GetCharacterRect(LogicalDirection.Forward).X.ToString("F1"));
 
+                // tables: three rows, a cell spanning two, borders; and a long one over pages
+                var doc4 = new FlowDocument { PagePadding = new Thickness(10), FontFamily = new FontFamily("Arial"), FontSize = 14 };
+                var t4 = new Table { CellSpacing = 4, BorderBrush = Brushes.Black, BorderThickness = new Thickness(1) };
+                t4.Columns.Add(new TableColumn()); t4.Columns.Add(new TableColumn());
+                var g4 = new TableRowGroup();
+                TableCell[,] c4 = new TableCell[3, 2];
+                for (int r = 0; r < 3; r++)
+                {
+                    var tr = new TableRow();
+                    for (int k = 0; k < 2; k++)
+                    {
+                        if (r == 1 && k == 0) continue;     // covered by the spanning cell
+                        var cell = new TableCell(new Paragraph(new Run("r" + r + "c" + k))) { BorderBrush = Brushes.Gray, BorderThickness = new Thickness(1) };
+                        if (r == 0 && k == 0) { cell.RowSpan = 2; ((Paragraph)cell.Blocks.FirstBlock).Inlines.Add(new LineBreak()); ((Paragraph)cell.Blocks.FirstBlock).Inlines.Add(new Run("two")); ((Paragraph)cell.Blocks.FirstBlock).Inlines.Add(new LineBreak()); ((Paragraph)cell.Blocks.FirstBlock).Inlines.Add(new Run("rows")); }
+                        c4[r, k] = cell;
+                        tr.Cells.Add(cell);
+                    }
+                    g4.Rows.Add(tr);
+                }
+                t4.RowGroups.Add(g4);
+                doc4.Blocks.Add(t4);
+                var after4 = new Paragraph(new Run("After the table."));
+                doc4.Blocks.Add(after4);
+                rtb.Document = doc4;
+                w.UpdateLayout();
+                Func<TableCell, Rect> cr = cc => cc.ContentStart.GetCharacterRect(LogicalDirection.Forward);
+                Console.WriteLine("TABLE r0c0 " + cr(c4[0, 0]).Y.ToString("F1") + " r0c1 " + cr(c4[0, 1]).Y.ToString("F1") + " r1c1 " + cr(c4[1, 1]).Y.ToString("F1")
+                    + " r2c0 " + cr(c4[2, 0]).Y.ToString("F1") + " c1x " + cr(c4[0, 1]).X.ToString("F1") + " after " + Top(after4).ToString("F1"));
+                Save(w, (int)w.ActualWidth, (int)w.ActualHeight, "table.png");
+
+                var doc5 = new FlowDocument { PagePadding = new Thickness(10), FontFamily = new FontFamily("Arial"), FontSize = 14 };
+                var t5 = new Table();
+                t5.Columns.Add(new TableColumn()); t5.Columns.Add(new TableColumn());
+                var g5 = new TableRowGroup();
+                for (int r = 0; r < 40; r++)
+                {
+                    var tr = new TableRow();
+                    tr.Cells.Add(new TableCell(new Paragraph(new Run("row " + r))));
+                    tr.Cells.Add(new TableCell(new Paragraph(new Run("value " + r))));
+                    g5.Rows.Add(tr);
+                }
+                t5.RowGroups.Add(g5);
+                doc5.Blocks.Add(t5);
+                var pag5 = ((IDocumentPaginatorSource)doc5).DocumentPaginator;
+                pag5.PageSize = new Size(300, 200);
+                pag5.ComputePageCount();
+                Console.WriteLine("TABLEPAGES " + pag5.PageCount);
+                Save(pag5.GetPage(1).Visual, 300, 200, "tablepage1.png");
+
                 // a long document
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 rtb.Document = MakeDoc(500);

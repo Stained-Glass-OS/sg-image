@@ -44,10 +44,12 @@ wpf-0001-pts-managed-engine.patch
       (David 2026-10-02). Paragraphs stack down columns, text breaks into
       lines through the client's FormatLine, containers and subpages lay
       out their own children, finite pages break between columns and
-      pages, lists, sections and BlockUIContainer are placed. Not yet:
-      tables (take no space), floating floaters and figures (floaters are
-      placed as blocks), column balancing, footnotes. PtsCache: without
-      Line Services there is no penalty module (optimal paragraphs off).
+      pages, lists, sections and BlockUIContainer are placed, tables laid
+      out row by row (row spans, row heights, breaks between rows). Not
+      yet: floating floaters and figures (floaters are placed as blocks),
+      column balancing, repeated table headers, footnotes. PtsCache:
+      without Line Services there is no penalty module (optimal
+      paragraphs off).
 
 wpf-0002-managed-textformatter.patch
     PresentationCore, Wine Mono's managed TextFormatter (FullTextLine):

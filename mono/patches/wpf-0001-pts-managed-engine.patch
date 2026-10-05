@@ -672,10 +672,10 @@ index 9c65339..a30d925 100644
          /// </summary>
 diff --git a/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/PtsEngine.cs b/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/PtsEngine.cs
 new file mode 100644
-index 0000000..4a5a9e6
+index 0000000..94c8904
 --- /dev/null
 +++ b/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/PtsEngine.cs
-@@ -0,0 +1,1785 @@
+@@ -0,0 +1,2077 @@
 +// Stained Glass OS: the PTS formatting engine, in managed code.
 +//
 +// WPF's flow layout (FlowDocument, RichTextBox, FlowDocumentScrollViewer,
@@ -691,10 +691,12 @@ index 0000000..4a5a9e6
 +// calls, breaks finite pages between columns and pages, and answers the
 +// queries PtsPage and the paragraph clients make to draw and hit-test.
 +//
-+// Not yet: tables (a table paragraph takes no space), floaters that float
-+// (they are placed as blocks, as BlockUIContainer's are), figures, column
-+// balancing, text around obstacles, optimal paragraphs (lines are always the
-+// client's FormatLine), footnotes. Updates format again from the start.
++// Tables: rows down the column, each as high as its tallest cell (a cell
++// spanning rows as high as its rows together), broken between rows across
++// pages. Not yet: floaters that float (they are placed as blocks, as
++// BlockUIContainer's are), figures, column balancing, text around obstacles,
++// optimal paragraphs (lines are always the client's FormatLine), repeated
++// table headers, footnotes. Updates format again from the start.
 +//
 +// SPDX-License-Identifier: MIT
 +
@@ -793,6 +795,8 @@ index 0000000..4a5a9e6
 +            internal bool[] HaveObjContext = new bool[2];
 +            internal FSFLOATERCBK Floater;
 +            internal bool HaveFloater, TriedFloater;
++            internal FSTABLEOBJINIT Table;
++            internal bool HaveTable, TriedTable;
 +            internal int PageLeft;                // the page's left margin, for FormatLine
 +        }
 +
@@ -815,6 +819,27 @@ index 0000000..4a5a9e6
 +            internal IntPtr Handle, Name, Content;
 +            internal FSRECT Rect;
 +            internal FSKUPDATE Upd = FSKUPDATE.fskupdNew;
++        }
++
++        private sealed class TableRowRec
++        {
++            internal IntPtr Handle, Name;
++            internal int DvrRow, DvrAbove, DvrBelow, Height;
++            internal FSKTABLEROWBOUNDARY Above, Below;
++            internal IntPtr[] Cells;
++            internal FSTABLEKCELLMERGE[] Merge;
++            internal FSKUPDATE Upd = FSKUPDATE.fskupdNew;
++        }
++
++        private sealed class TableObj
++        {
++            internal IntPtr Handle, Proper, Name;
++            internal uint Fswdir;
++            internal FSRECT Rect;
++            internal int DvrTable;
++            internal FSKUPDATE Upd = FSKUPDATE.fskupdNew;
++            internal List<TableRowRec> Rows = new List<TableRowRec>();
++            internal List<IntPtr> Cells = new List<IntPtr>();     // the cells formatted here (ours to destroy)
 +        }
 +
 +        private sealed class Para
@@ -874,6 +899,7 @@ index 0000000..4a5a9e6
 +            internal int Dcp;                     // text: the first character not yet placed
 +            internal IntPtr LineBr;               // text: its line break record (ours)
 +            internal IntPtr ObjBr;                // an object's break record (the client's)
++            internal IntPtr TableRow;             // a table: the row the next page starts with
 +        }
 +
 +        private sealed class PageBreak
@@ -1004,6 +1030,20 @@ index 0000000..4a5a9e6
 +            return c.HaveFloater;
 +        }
 +
++        private static bool Tables(Ctx c)
++        {
++            if (!c.TriedTable)
++            {
++                c.TriedTable = true;
++                HandlerSlot slot = new HandlerSlot();
++                IntPtr h = NewHandle(slot);
++                try { Ck(c.Cb.cbkobj.pfnGetObjectHandlerInfo(c.Client, PtsHost.TableParagraphId, h)); }
++                finally { FreeHandle(h); }
++                if (slot.HaveTable) { c.Table = slot.Table; c.HaveTable = true; }
++            }
++            return c.HaveTable;
++        }
++
 +        // ------------------------------------------------------------------
 +        // Geometry helpers
 +        // ------------------------------------------------------------------
@@ -1050,7 +1090,7 @@ index 0000000..4a5a9e6
 +        {
 +            if (r == null) return null;
 +            Resume d = new Resume();
-+            d.Nmp = r.Nmp; d.Idobj = r.Idobj; d.Inside = r.Inside; d.Dcp = r.Dcp;
++            d.Nmp = r.Nmp; d.Idobj = r.Idobj; d.Inside = r.Inside; d.Dcp = r.Dcp; d.TableRow = r.TableRow;
 +            if (r.LineBr != IntPtr.Zero) Ck(c.Cb.cbktxt.pfnDuplicateLineBreakRecord(c.Client, r.LineBr, out d.LineBr));
 +            if (r.ObjBr != IntPtr.Zero)
 +            {
@@ -1079,6 +1119,11 @@ index 0000000..4a5a9e6
 +                FloaterPara fp = Get<FloaterPara>(p.Pfspara);
 +                if (fp != null && fp.Content != IntPtr.Zero && c.HaveFloater) Ck(c.Floater.pfnDestroyFloaterContent(fp.Content));
 +                FreeHandle(p.Pfspara);
++            }
++            else if (p.Idobj == PtsHost.TableParagraphId)
++            {
++                TableObj to = Get<TableObj>(p.Pfspara);
++                if (to != null) DestroyTable(c, to);
 +            }
 +            else
 +            {
@@ -1193,9 +1238,15 @@ index 0000000..4a5a9e6
 +                    placed = FormatObject(c, t, p, inside, finite, limit, mayBeEmpty, supp, mcs, fromPreviousPage, out mcsOut, out next);
 +                else if (pap.idobj == PtsHost.FloaterParagraphId && Floaters(c))
 +                    placed = FormatFloater(c, t, p, finite, limit, mayBeEmpty, supp, mcs, out mcsOut);
++#if !SG_MUTANT_PTS_NO_TABLE
++                else if (pap.idobj == PtsHost.TableParagraphId && Tables(c))
++#else
++                else if (false)
++#endif
++                    placed = FormatTable(c, t, p, inside, finite, limit, mayBeEmpty, supp, mcs, out mcsOut, out next);
 +                else
 +                {
-+                    // a table or a figure: not yet; it takes no space
++                    // a figure: not yet; it takes no space
 +                    Trace("paragraph kind " + pap.idobj + " not laid out");
 +                    Ck(c.Cb.cbkgen.pfnDestroyParaclient(c.Client, pc));
 +                    p = null;
@@ -1423,6 +1474,186 @@ index 0000000..4a5a9e6
 +            return true;
 +        }
 +
++        // A table: the client sizes its columns (AutofitTable) and lays out each
++        // cell (a subpage); the rows go down the column, each as high as its
++        // tallest cell; a page breaks between rows.
++        private struct Span
++        {
++            internal IntPtr Cell;
++            internal int Dvr, Top;
++        }
++
++        private static unsafe bool FormatTable(Ctx c, Track t, Para p, Resume inside, bool finite, int limit, bool emptyOk,
++            bool suppressTop, IntPtr mcsIn, out IntPtr mcsOut, out Resume next)
++        {
++            FSTABLEOBJCBK tcb = c.Table.tableobjcbk;
++            FSTABLECBKFETCH fetch = c.Table.tablecbkfetch;
++            FSTABLECBKCELL cellcb = c.Table.tablecbkcell;
++            FSTABLEOBJPROPS props;
++            int dvrTop = 0, width, found;
++            IntPtr row;
++
++            mcsOut = IntPtr.Zero;
++            next = null;
++            Ck(tcb.pfnGetTableProperties(c.Client, p.Nmp, t.Fswdir, out props));
++            if (inside == null)
++                Ck(c.Cb.cbkobj.pfnConvertMcsclient(c.Client, p.Client, p.Nmp, t.Fswdir, mcsIn, suppressTop ? True : False, out dvrTop));
++            Ck(tcb.pfnAutofitTable(c.Client, p.Client, p.Nmp, t.Fswdir, t.Rect.du, out width));
++            uint tdir = props.fswdirTable;
++            if (inside != null && inside.TableRow != IntPtr.Zero) { row = inside.TableRow; found = True; }
++            else Ck(fetch.pfnGetFirstRow(c.Client, p.Nmp, out found, out row));
++
++            TableObj to = new TableObj();
++            to.Name = p.Nmp;
++            to.Fswdir = tdir;
++            int vrTable = p.Vr + dvrTop;
++            int rowTop = 0, prevHeight = 0, prevBelow = 0;
++            Dictionary<long, Span> spans = new Dictionary<long, Span>();
++
++            for (int guard = 0; found != False; guard++)
++            {
++                if (guard > Restrictions.tscMatrixRowsRestriction * 100) throw new PtsFail(tserrSystemRestrictionsExceeded);
++                FSTABLEROWPROPS rp;
++                Ck(fetch.pfnGetRowProperties(c.Client, row, tdir, out rp));
++                int n = Math.Max(0, rp.cCells);
++                IntPtr[] names = new IntPtr[n];
++                FSTABLEKCELLMERGE[] merge = new FSTABLEKCELLMERGE[n];
++                if (n > 0)
++                    fixed (IntPtr* pn = names)
++                    fixed (FSTABLEKCELLMERGE* pm = merge)
++                        Ck(fetch.pfnGetCells(c.Client, row, n, pn, pm));
++                int more;
++                IntPtr nextRow;
++                Ck(fetch.pfnGetNextRow(c.Client, p.Nmp, row, out more, out nextRow));
++                bool firstHere = to.Rows.Count == 0, lastRow = more == False;
++                int above = firstHere ? (inside != null ? rp.dvrAboveRowBreak : rp.dvrAboveTopRow) : rp.dvrAboveRow;
++                int below = lastRow ? rp.dvrBelowBottomRow : rp.dvrBelowRow;
++                int top = firstHere ? above : rowTop + prevHeight + prevBelow + above;
++
++                // the cells: new ones laid out, a spanning one carried on
++                IntPtr[] cells = new IntPtr[n];
++                List<IntPtr> fresh = new List<IntPtr>();
++                int height = 0;
++                for (int i = 0; i < n; i++)
++                {
++                    Span sp;
++                    bool carried = (merge[i] == FSTABLEKCELLMERGE.fskcellmergeMiddle || merge[i] == FSTABLEKCELLMERGE.fskcellmergeLast)
++                                   && spans.TryGetValue(names[i].ToInt64(), out sp);
++                    if (carried) { cells[i] = spans[names[i].ToInt64()].Cell; continue; }
++                    IntPtr cell;
++                    int used;
++                    if (!finite)
++                    {
++                        FSFMTRBL r;
++                        Ck(cellcb.pfnFormatCellBottomless(c.Client, p.Client, names[i], tdir, out r, out cell, out used));
++                    }
++                    else
++                    {
++                        FSFMTR r;
++                        IntPtr brk;
++                        Ck(cellcb.pfnFormatCellFinite(c.Client, p.Client, IntPtr.Zero, names[i], IntPtr.Zero, False, tdir, 0,
++                            MaxPageSize, out r, out cell, out brk, out used));
++                        if (brk != IntPtr.Zero) Ck(cellcb.pfnDestroyCellBreakRecord(c.Client, brk));
++                    }
++                    cells[i] = cell;
++                    if (cell != IntPtr.Zero) fresh.Add(cell);
++                    if (merge[i] == FSTABLEKCELLMERGE.fskcellmergeNo)
++                        height = Math.Max(height, used);
++                    else
++                        spans[names[i].ToInt64()] = new Span { Cell = cell, Dvr = used, Top = top };
++                }
++                // a spanning cell ends here: the rows it spans are as high as it, together
++                for (int i = 0; i < n; i++)
++                {
++                    Span sp;
++                    if (merge[i] == FSTABLEKCELLMERGE.fskcellmergeLast && spans.TryGetValue(names[i].ToInt64(), out sp))
++                        height = Math.Max(height, sp.Dvr - (top - sp.Top));
++                }
++                if (rp.fskrowheight == FSKROWHEIGHTRESTRICTION.fskrowheightAtLeast)
++                    height = Math.Max(height, rp.dvrRowHeightRestriction);
++                else if (rp.fskrowheight == FSKROWHEIGHTRESTRICTION.fskrowheightAtMostNoBreak)
++                    height = Math.Min(height, rp.dvrRowHeightRestriction);
++                else if (rp.fskrowheight == FSKROWHEIGHTRESTRICTION.fskrowheightExactNoBreak)
++                    height = rp.dvrRowHeightRestriction;
++
++                if (finite && vrTable + top + height + below > limit && (to.Rows.Count > 0 || emptyOk))
++                {
++                    // this row goes to the next page
++                    foreach (IntPtr cell in fresh) Ck(cellcb.pfnDestroyCell(cell));
++                    next = new Resume { Nmp = p.Nmp, Idobj = p.Idobj, Inside = true, TableRow = row };
++                    break;
++                }
++
++                for (int i = 0; i < n; i++)
++                {
++                    if (cells[i] == IntPtr.Zero) continue;
++                    if (merge[i] == FSTABLEKCELLMERGE.fskcellmergeNo)
++                        Ck(cellcb.pfnSetCellHeight(cells[i], p.Client, IntPtr.Zero, names[i], False, tdir, height));
++                    else
++                    {
++                        Span sp;
++                        if ((merge[i] == FSTABLEKCELLMERGE.fskcellmergeLast || lastRow) && spans.TryGetValue(names[i].ToInt64(), out sp) && sp.Cell == cells[i])
++                            Ck(cellcb.pfnSetCellHeight(cells[i], p.Client, IntPtr.Zero, names[i], False, tdir, top + height - sp.Top));
++                    }
++                }
++                to.Cells.AddRange(fresh);
++
++                TableRowRec rec = new TableRowRec();
++                rec.Name = row;
++                rec.Height = height;
++                rec.DvrAbove = above;
++                rec.DvrBelow = below;
++                rec.Above = firstHere ? (inside != null ? FSKTABLEROWBOUNDARY.fsktablerowboundaryBreak : FSKTABLEROWBOUNDARY.fsktablerowboundaryOuter)
++                                      : FSKTABLEROWBOUNDARY.fsktablerowboundaryInner;
++                rec.Below = lastRow ? FSKTABLEROWBOUNDARY.fsktablerowboundaryOuter : FSKTABLEROWBOUNDARY.fsktablerowboundaryInner;
++                rec.Cells = cells;
++                rec.Merge = merge;
++                rec.Handle = NewHandle(rec);
++                to.Rows.Add(rec);
++                rowTop = top;
++                prevHeight = height;
++                prevBelow = below;
++                row = nextRow;
++                found = more;
++            }
++
++            if (to.Rows.Count == 0 && next != null && emptyOk)
++            {
++                DestroyTable(c, to);
++                next = null;
++                return false;
++            }
++            // each row's pitch: its height, the space below it and above the next
++            for (int i = 0; i < to.Rows.Count; i++)
++            {
++                TableRowRec r = to.Rows[i];
++                r.DvrRow = r.Height + r.DvrBelow + (i + 1 < to.Rows.Count ? to.Rows[i + 1].DvrAbove : 0);
++                if (next != null && i + 1 == to.Rows.Count) r.Below = FSKTABLEROWBOUNDARY.fsktablerowboundaryBreak;
++            }
++            to.DvrTable = to.Rows.Count > 0 ? to.Rows[0].DvrAbove : 0;
++            foreach (TableRowRec r in to.Rows) to.DvrTable += r.DvrRow;
++            to.Rect = new FSRECT(t.Rect.u, vrTable, t.Rect.du, to.DvrTable);
++            to.Handle = NewHandle(to);
++            to.Proper = NewHandle(to);
++            if (next == null)
++                Ck(tcb.pfnGetMCSClientAfterTable(c.Client, p.Client, p.Nmp, t.Fswdir, mcsIn, out mcsOut));
++            p.Pfspara = to.Handle;
++            p.DvrTop = dvrTop;
++            p.DvrUsed = dvrTop + to.DvrTable;
++            p.BBox = Box(to.Rect.u, to.Rect.v, to.Rect.du, to.Rect.dv);
++            return true;
++        }
++
++        private static void DestroyTable(Ctx c, TableObj to)
++        {
++            foreach (IntPtr cell in to.Cells) Ck(c.Table.tablecbkcell.pfnDestroyCell(cell));
++            to.Cells.Clear();
++            foreach (TableRowRec r in to.Rows) FreeHandle(r.Handle);
++            to.Rows.Clear();
++            FreeHandle(to.Proper);
++            FreeHandle(to.Handle);
++        }
++
 +        // ------------------------------------------------------------------
 +        // Pages
 +        // ------------------------------------------------------------------
@@ -1645,6 +1876,16 @@ index 0000000..4a5a9e6
 +                p.Upd = FSKUPDATE.fskupdNoChange;
 +                int m = MethodIndex(p.Idobj);
 +                if (m >= 0 && p.Pfspara != IntPtr.Zero) Ck(c.Methods[m].pfnClearUpdateInfoInPara(p.Pfspara));
++                else if (p.Idobj == PtsHost.TableParagraphId)
++                {
++                    TableObj to = Get<TableObj>(p.Pfspara);
++                    if (to != null)
++                    {
++                        to.Upd = FSKUPDATE.fskupdNoChange;
++                        foreach (TableRowRec r in to.Rows) r.Upd = FSKUPDATE.fskupdNoChange;
++                        foreach (IntPtr cell in to.Cells) Ck(c.Table.tablecbkcell.pfnClearUpdateInfoInCell(cell));
++                    }
++                }
 +                else if (p.Idobj == PtsHost.FloaterParagraphId)
 +                {
 +                    FloaterPara fp = Get<FloaterPara>(p.Pfspara);
@@ -2080,6 +2321,11 @@ index 0000000..4a5a9e6
 +                    FloaterPara fp = Get<FloaterPara>(p.Pfspara);
 +                    if (fp != null) fp.Rect.v += dv;
 +                }
++                else if (p.Idobj == PtsHost.TableParagraphId)
++                {
++                    TableObj to = Get<TableObj>(p.Pfspara);
++                    if (to != null) to.Rect.v += dv;
++                }
 +                else
 +                {
 +                    int m = MethodIndex(p.Idobj);
@@ -2155,14 +2401,17 @@ index 0000000..4a5a9e6
 +        }
 +
 +        // ------------------------------------------------------------------
-+        // Queries
++        // Queries. Only a page says whether it changed (new, or no change since
++        // its update information was cleared); what is in it is "inherited":
++        // the client goes by its parent's -- a table cell's subpage, cleared
++        // when the cell is arranged, is drawn as its row says, as PTS does.
 +        // ------------------------------------------------------------------
 +        internal static int FsQueryFloaterDetails(IntPtr pfsContext, IntPtr pfsfloater, out FSFLOATERDETAILS fsfloaterdetails)
 +        {
 +            fsfloaterdetails = new FSFLOATERDETAILS();
 +            FloaterPara fp = Get<FloaterPara>(pfsfloater);
 +            if (fp == null) return tserrInvalidParameter;
-+            fsfloaterdetails.fskupdContent = fp.Upd;
++            fsfloaterdetails.fskupdContent = FSKUPDATE.fskupdInherited;
 +            fsfloaterdetails.fsnmFloater = fp.Name;
 +            fsfloaterdetails.fsrcFloater = fp.Rect;
 +            fsfloaterdetails.pfsFloaterContent = fp.Content;
@@ -2177,7 +2426,7 @@ index 0000000..4a5a9e6
 +            pPageDetails.fskupd = pg.Upd;
 +            pPageDetails.fSimple = False;
 +            pPageDetails.u.complex.fswdirPageProper = pg.Fswdir;
-+            pPageDetails.u.complex.fsupdinfPageBody.fskupd = pg.Upd;
++            pPageDetails.u.complex.fsupdinfPageBody.fskupd = FSKUPDATE.fskupdInherited;
 +            pPageDetails.u.complex.fsrcPageBody = pg.Body;
 +            pPageDetails.u.complex.fsrcPageMarginActual = pg.Margin;
 +            pPageDetails.u.complex.fsbboxPageBody = pg.BBox;
@@ -2194,7 +2443,7 @@ index 0000000..4a5a9e6
 +            if (pg.Sec == null) return fserrNone;
 +            if (cArraySize < 1) return tserrOutputArrayTooSmall;
 +            FSSECTIONDESCRIPTION d = new FSSECTIONDESCRIPTION();
-+            d.fsupdinf.fskupd = pg.Upd;
++            d.fsupdinf.fskupd = FSKUPDATE.fskupdInherited;
 +            d.nms = pg.Sec.Nms;
 +            d.fsrc = pg.Sec.Rect;
 +            d.fsbbox = pg.Sec.BBox;
@@ -2220,7 +2469,7 @@ index 0000000..4a5a9e6
 +        private static FSTRACKDESCRIPTION Describe(Track t, FSKUPDATE upd)
 +        {
 +            FSTRACKDESCRIPTION d = new FSTRACKDESCRIPTION();
-+            d.fsupdinf.fskupd = upd;
++            d.fsupdinf.fskupd = FSKUPDATE.fskupdInherited;
 +            d.nms = t.Nms;
 +            d.fsrc = t.Rect;
 +            d.fsbbox = t.BBox;
@@ -2257,7 +2506,7 @@ index 0000000..4a5a9e6
 +            {
 +                Para p = t.Paras[i];
 +                FSPARADESCRIPTION d = new FSPARADESCRIPTION();
-+                d.fsupdinf.fskupd = p.Upd;
++                d.fsupdinf.fskupd = FSKUPDATE.fskupdInherited;
 +                d.pfspara = p.Pfspara;
 +                d.pfsparaclient = p.Client;
 +                d.nmp = p.Nmp;
@@ -2311,7 +2560,7 @@ index 0000000..4a5a9e6
 +            pSubTrackDetails = new FSSUBTRACKDETAILS();
 +            Track t = Get<Track>(pSubTrack);
 +            if (t == null) return tserrInvalidParameter;
-+            pSubTrackDetails.fsupdinf.fskupd = t.Upd;
++            pSubTrackDetails.fsupdinf.fskupd = FSKUPDATE.fskupdInherited;
 +            pSubTrackDetails.nms = t.Nms;
 +            pSubTrackDetails.fsrc = t.Rect;
 +            pSubTrackDetails.cParas = t.Paras.Count;
@@ -2409,33 +2658,76 @@ index 0000000..4a5a9e6
 +        internal static unsafe int FsQueryTableObjDetails(IntPtr pfscontext, IntPtr pfstableobj, out FSTABLEOBJDETAILS pfstableobjdetails)
 +        {
 +            pfstableobjdetails = new FSTABLEOBJDETAILS();
-+            return tserrNotImplemented;
++            TableObj to = Get<TableObj>(pfstableobj);
++            if (to == null) return tserrInvalidParameter;
++            pfstableobjdetails.fsnmTable = to.Name;
++            pfstableobjdetails.fsrcTableObj = to.Rect;
++            pfstableobjdetails.fswdirTable = to.Fswdir;
++            pfstableobjdetails.fskupdTableProper = FSKUPDATE.fskupdInherited;
++            pfstableobjdetails.pfstableProper = to.Proper;
++            return fserrNone;
 +        }
 +
 +        internal static unsafe int FsQueryTableObjTableProperDetails(IntPtr pfscontext, IntPtr pfstableProper, out FSTABLEDETAILS pfstabledetailsProper)
 +        {
 +            pfstabledetailsProper = new FSTABLEDETAILS();
-+            return tserrNotImplemented;
++            TableObj to = Get<TableObj>(pfstableProper);
++            if (to == null) return tserrInvalidParameter;
++            pfstabledetailsProper.dvrTable = to.DvrTable;
++            pfstabledetailsProper.cRows = to.Rows.Count;
++            return fserrNone;
 +        }
 +
 +        internal static unsafe int FsQueryTableObjRowList(IntPtr pfscontext, IntPtr pfstableProper, int cRows,
 +            FSTABLEROWDESCRIPTION* rgtablerowdescr, out int pcRowsActual)
 +        {
 +            pcRowsActual = 0;
-+            return tserrNotImplemented;
++            TableObj to = Get<TableObj>(pfstableProper);
++            if (to == null) return tserrInvalidParameter;
++            if (cRows < to.Rows.Count) return tserrOutputArrayTooSmall;
++            for (int i = 0; i < to.Rows.Count; i++)
++            {
++                FSTABLEROWDESCRIPTION d = new FSTABLEROWDESCRIPTION();
++                d.fsupdinf.fskupd = FSKUPDATE.fskupdInherited;
++                d.fsnmRow = to.Rows[i].Name;
++                d.pfstablerow = to.Rows[i].Handle;
++                d.fRowInSeparateRect = False;
++                d.u.dvrRow = to.Rows[i].DvrRow;
++                rgtablerowdescr[i] = d;
++            }
++            pcRowsActual = to.Rows.Count;
++            return fserrNone;
 +        }
 +
 +        internal static unsafe int FsQueryTableObjRowDetails(IntPtr pfscontext, IntPtr pfstablerow, out FSTABLEROWDETAILS ptableorowdetails)
 +        {
 +            ptableorowdetails = new FSTABLEROWDETAILS();
-+            return tserrNotImplemented;
++            TableRowRec r = Get<TableRowRec>(pfstablerow);
++            if (r == null) return tserrInvalidParameter;
++            ptableorowdetails.fskboundaryAbove = r.Above;
++            ptableorowdetails.dvrAbove = r.DvrAbove;
++            ptableorowdetails.fskboundaryBelow = r.Below;
++            ptableorowdetails.dvrBelow = r.DvrBelow;
++            ptableorowdetails.cCells = r.Cells.Length;
++            ptableorowdetails.fForcedRow = False;
++            return fserrNone;
 +        }
 +
 +        internal static unsafe int FsQueryTableObjCellList(IntPtr pfscontext, IntPtr pfstablerow, int cCells, FSKUPDATE* rgfskupd,
 +            IntPtr* rgpfscell, FSTABLEKCELLMERGE* rgkcellmerge, out int pcCellsActual)
 +        {
 +            pcCellsActual = 0;
-+            return tserrNotImplemented;
++            TableRowRec r = Get<TableRowRec>(pfstablerow);
++            if (r == null) return tserrInvalidParameter;
++            if (cCells < r.Cells.Length) return tserrOutputArrayTooSmall;
++            for (int i = 0; i < r.Cells.Length; i++)
++            {
++                rgfskupd[i] = FSKUPDATE.fskupdInherited;
++                rgpfscell[i] = r.Cells[i];
++                rgkcellmerge[i] = r.Merge[i];
++            }
++            pcCellsActual = r.Cells.Length;
++            return fserrNone;
 +        }
 +
 +        // ------------------------------------------------------------------
