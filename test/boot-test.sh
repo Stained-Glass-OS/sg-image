@@ -511,8 +511,25 @@ if [[ "${SG_GUEST_CHECK:-session}" == session && $RC -eq 0 && "${SG_TEST_LOCK:-1
     if ssh_guest "pgrep -u sgsystem -f 'sg-greeter64.exe /lock' >/dev/null" 2>/dev/null; then
         echo "PASS  the lock screen is up, running as the machine account"
     else echo "FAIL  no lock screen appeared"; RC=1; fi
-    sleep 6
-    python3 "$HERE/test/qmp.py" "$QMP_SOCK" screendump "$ARTIFACTS/screenshot-locked.ppm" >/dev/null || true
+    # The greeter's process is up well before it has drawn: on a slow runner
+    # (software rendering, CI) the password went to a black screen. Wait
+    # until the screen shows something, then type.
+    _w=0
+    while (( _w < 180 )); do
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" screendump "$ARTIFACTS/screenshot-locked.ppm" >/dev/null 2>&1 || true
+        if python3 - "$ARTIFACTS/screenshot-locked.ppm" <<'PY'
+import sys
+d = open(sys.argv[1], 'rb').read()
+parts = d.split(b'\n', 3)                     # P6, W H, 255, pixels
+px = parts[3] if len(parts) == 4 else b''
+lit = sum(1 for i in range(0, len(px), 3 * 97) if px[i] + px[i + 1] + px[i + 2] > 60) if px else 0
+sys.exit(0 if lit > 50 else 1)
+PY
+        then break; fi
+        sleep 3; _w=$((_w + 3))
+    done
+    echo "info  the lock screen drew after ${_w}s"
+    sleep 3
     # The lock screen's X server is freshly started, and its first keystrokes
     # are lost while XWayland loads the keymap -- which would corrupt the
     # password's first characters. Warm up with a throwaway key and clear it,
