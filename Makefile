@@ -17,8 +17,9 @@ SG_WINE     ?= ../wine-sg
 SG_COMPOSITOR ?= ../sg-compositor
 SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
+SG_MAIL     ?= ../sg-mail
 
-.PHONY: image-deps-test mono-config-test mono-fork-test wpf-flow-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
+.PHONY: image-deps-test mono-config-test mono-fork-test wpf-flow-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
 
 all: image
 
@@ -42,11 +43,11 @@ $(SSH_KEY):
 staged-debs: $(SSH_KEY) lab-password
 	@mkdir -p $(EXTRA_TREE)/opt/sg-packages
 	@rm -f $(EXTRA_TREE)/opt/sg-packages/*.deb
-	$(MAKE) wine-deb compositor-deb shell-deb session-deb office-deb
+	$(MAKE) wine-deb compositor-deb shell-deb session-deb office-deb mail-deb
 	@# The source each package was built from (repo/build-repo.sh publishes it
 	@# beside the .deb): a rebuild of an unchanged, already-published version
 	@# keeps the published build instead of being refused.
-	@for p in wine-sg:$(SG_WINE) sg-compositor:$(SG_COMPOSITOR) sg-shell:$(SG_SHELL) sg-office:$(SG_SHELL) sg-session:$(SG_SESSION) sg-office-editors:$(SG_OFFICE); do \
+	@for p in wine-sg:$(SG_WINE) sg-compositor:$(SG_COMPOSITOR) sg-shell:$(SG_SHELL) sg-office:$(SG_SHELL) sg-session:$(SG_SESSION) sg-office-editors:$(SG_OFFICE) sg-mail:$(SG_MAIL); do \
 	  d=$${p#*:}; [ -d "$$d" ] || continue; c=$$(git -C $$d rev-parse HEAD); \
 	  git -C $$d diff --quiet HEAD -- . 2>/dev/null || c=$$c-dirty; \
 	  echo "$${p%%:*} $$c"; done > $(EXTRA_TREE)/opt/sg-packages/SOURCES
@@ -121,6 +122,30 @@ office-deb:
 	fi && test -f "$$deb" && \
 	mkdir -p $(EXTRA_TREE)/opt/sg-packages && \
 	rm -f $(EXTRA_TREE)/opt/sg-packages/sg-office-editors_*.deb && \
+	cp "$$deb" $(EXTRA_TREE)/opt/sg-packages/
+
+# SG Mail (package sg-mail): Stained Glass OS's mail and calendar, our window
+# (a Thunderbird extension, a launcher) on Debian's unmodified Thunderbird,
+# which mkosi.conf installs. Nothing to compile: the package is the extension
+# zipped and laid out. Its launcher gate runs here (seconds); its Thunderbird
+# gates (make -C ../sg-mail test: a test root with Dovecot, Radicale and an
+# SMTP stand-in, about twenty minutes) are the developer's.
+# SG_NO_MAIL=1 leaves it out.
+mail-deb:
+	@if [ "$(SG_NO_MAIL)" = 1 ]; then \
+		rm -f $(EXTRA_TREE)/opt/sg-packages/sg-mail_*.deb; \
+		echo "SG_NO_MAIL=1: SG Mail left out of this image"; exit 0; fi; \
+	test -d $(SG_MAIL) || { \
+		echo "sg-mail checkout not found at $(SG_MAIL)."; \
+		echo "clone it beside this repo, or set SG_MAIL=/path/to/sg-mail"; \
+		echo "(or SG_NO_MAIL=1 for an image without SG Mail)"; \
+		exit 1; }; \
+	ver=$$(dpkg-parsechangelog -l $(SG_MAIL)/debian/changelog -SVersion) && \
+	sh $(SG_MAIL)/test/launcher-gate.sh >/dev/null && \
+	$(MAKE) -C $(SG_MAIL) deb && \
+	deb=$(SG_MAIL)/../sg-mail_$${ver}_all.deb && test -f "$$deb" && \
+	mkdir -p $(EXTRA_TREE)/opt/sg-packages && \
+	rm -f $(EXTRA_TREE)/opt/sg-packages/sg-mail_*.deb && \
 	cp "$$deb" $(EXTRA_TREE)/opt/sg-packages/
 
 compositor-deb:

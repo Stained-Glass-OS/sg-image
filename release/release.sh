@@ -35,7 +35,9 @@ mkdir -p "$REL"
 # sg-office (SG Office's editors) joined later: a machine without its main
 # checkout gets one, as the others were made
 [[ -d "$ROOT/sg-office/.git" ]] || git clone -q https://github.com/Stained-Glass-OS/sg-office.git "$ROOT/sg-office"
-for r in wine-sg sg-session sg-shell sg-compositor sg-office sg-image; do
+# sg-mail (SG Mail) likewise
+[[ -d "$ROOT/sg-mail/.git" ]] || git clone -q https://github.com/Stained-Glass-OS/sg-mail.git "$ROOT/sg-mail"
+for r in wine-sg sg-session sg-shell sg-compositor sg-office sg-mail sg-image; do
     git -C "$ROOT/$r" fetch -q origin
     if [[ -d "$REL/$r" ]]; then
         git -C "$REL/$r" checkout -q --detach origin/main
@@ -47,7 +49,7 @@ done
 [[ -e "$REL/sg-image/build" ]] || ln -s "$HERE/build" "$REL/sg-image/build"
 
 export SG_WINE="$REL/wine-sg" SG_SESSION="$REL/sg-session" SG_SHELL="$REL/sg-shell" SG_COMPOSITOR="$REL/sg-compositor" \
-    SG_OFFICE="$REL/sg-office"
+    SG_OFFICE="$REL/sg-office" SG_MAIL="$REL/sg-mail"
 cd "$REL/sg-image"
 L="$HERE/build/release-logs"; mkdir -p "$L"
 # Checks that depend on how fast a VM boots: the same image passes on its next
