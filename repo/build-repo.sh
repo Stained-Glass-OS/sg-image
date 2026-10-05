@@ -33,6 +33,8 @@ mkdir -p "$OUT/dists/$SUITE/$COMPONENT/binary-$ARCH"
 for deb in "$@"; do
     pkg=$(dpkg-deb -f "$deb" Package)
     ver=$(dpkg-deb -f "$deb" Version)
+    # an SG_NO_OFFICE/SG_NO_MAIL image's empty stand-in (Makefile placeholder_deb)
+    [[ "$ver" != 0~placeholder ]] || { log "skipping the placeholder $pkg"; continue; }
     dest="$OUT/pool/$COMPONENT/$pkg"
     mkdir -p "$dest"
     cp "$deb" "$dest/"

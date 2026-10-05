@@ -104,9 +104,22 @@ shell-deb:
 # and nearly ran the host out of memory when a release re-ran it for nothing.
 # SG_OFFICE_REBUILD=1 builds it anyway.
 # no editors, and sg-shell's sg-office package, which needs them, unstaged.
+# sg-session depends on sg-office and sg-mail (so machines installed before
+# them get them with an update); an image built without one (SG_NO_OFFICE,
+# SG_NO_MAIL: CI) stages an empty placeholder of that name so the staged
+# packages still install. $(1): the package. Never published: release.sh
+# builds both for real.
+define placeholder_deb
+	d=$$(mktemp -d) && mkdir -p "$$d/DEBIAN" && \
+	printf 'Package: %s\nVersion: 0~placeholder\nArchitecture: all\nMaintainer: Stained Glass OS <dev@stained-glass.example>\nDescription: placeholder: %s left out of this image\n' $(1) $(1) > "$$d/DEBIAN/control" && \
+	mkdir -p $(EXTRA_TREE)/opt/sg-packages && \
+	dpkg-deb --root-owner-group -b "$$d" $(EXTRA_TREE)/opt/sg-packages/$(1)_0~placeholder_all.deb >/dev/null && rm -rf "$$d"
+endef
+
 office-deb:
 	@if [ "$(SG_NO_OFFICE)" = 1 ]; then \
 		rm -f $(EXTRA_TREE)/opt/sg-packages/sg-office_*.deb; \
+		$(call placeholder_deb,sg-office); \
 		echo "SG_NO_OFFICE=1: SG Office left out of this image"; exit 0; fi; \
 	test -d $(SG_OFFICE) || { \
 		echo "sg-office checkout not found at $(SG_OFFICE)."; \
@@ -134,6 +147,7 @@ office-deb:
 mail-deb:
 	@if [ "$(SG_NO_MAIL)" = 1 ]; then \
 		rm -f $(EXTRA_TREE)/opt/sg-packages/sg-mail_*.deb; \
+		$(call placeholder_deb,sg-mail); \
 		echo "SG_NO_MAIL=1: SG Mail left out of this image"; exit 0; fi; \
 	test -d $(SG_MAIL) || { \
 		echo "sg-mail checkout not found at $(SG_MAIL)."; \
