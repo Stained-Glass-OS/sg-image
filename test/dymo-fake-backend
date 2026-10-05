@@ -1,0 +1,40 @@
+#!/usr/bin/python3
+# A CUPS backend that plays a LabelWriter 5xx with labels loaded: it keeps
+# what the driver sends (in the file the URI names, dymofake:/PATH) and
+# answers each status request (ESC A n) with a 32-byte status of an idle
+# printer -- print engine idle, no job, main bay ok, print head ok. While a
+# file PATH.stall exists it does not answer (a printer that stopped talking).
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+import os, sys
+if len(sys.argv) == 1:
+    print('direct dymofake "Unknown" "LabelWriter 5xx simulator"')
+    sys.exit(0)
+uri = os.environ.get("DEVICE_URI", "")
+path = uri.split(":", 1)[1] if ":" in uri else "/dev/null"
+src = open(sys.argv[6], "rb") if len(sys.argv) > 6 else sys.stdin.buffer
+out = open(path, "ab")
+data = b""
+pos = 0
+while True:
+    chunk = os.read(src.fileno(), 65536)
+    if not chunk:
+        break
+    out.write(chunk)
+    out.flush()
+    data += chunk
+    while True:
+        i = data.find(b"\x1bA", pos)
+        if i < 0 or i + 2 >= len(data):
+            pos = max(pos, len(data) - 2)
+            break
+        while os.path.exists(path + ".stall"):
+            import time
+            time.sleep(0.2)
+        try:
+            os.write(3, bytes(32))
+        except OSError:
+            pass
+        pos = i + 3
+out.close()
+sys.exit(0)

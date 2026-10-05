@@ -1,0 +1,143 @@
+Subject: one job at a time per printer through an flock()ed file, not a boost named semaphore
+
+The filter serialised its jobs on a boost::interprocess named_mutex (a POSIX
+semaphore in /dev/shm) named after the CUPS destination it looked up from
+argv[0]. When the lookup failed the name was empty and every job stopped
+with "ERROR: Unable to get synchronization lock: Invalid argument"; a filter
+killed while it held the semaphore (a cancelled job, a crash) left it taken,
+so every later job waited 30 seconds and failed until the machine was
+restarted; and a semaphore made by another user could not be opened by lp.
+
+The lock is now an flock() on TMPDIR/dymo-lw-PRINTER.lock (CUPS's spool
+tmp, which every filter shares as lp), PRINTER from the destination's
+DymoLockName option, else its name, else $PRINTER: the kernel drops it with
+its process. 30 seconds' wait as before. No more boost.
+---
+--- a/src/common/CupsFilter.h
++++ b/src/common/CupsFilter.h
+@@ -24,17 +24,19 @@
+ #include <fcntl.h>
+ #include <memory>
+ #include <string>
+-
+-#include <boost/thread/thread_time.hpp>
+-#include <boost/interprocess/sync/named_mutex.hpp>
++#include <cstdlib>
++#include <cerrno>
++#include <cstring>
++#include <ctime>
++#include <stdexcept>
++#include <sys/file.h>
++#include <unistd.h>
+ 
+ #include "CupsPrintEnvironment.h"
+ #include "ErrorDiffusionHalftoning.h"
+ #include "NonLinearLaplacianHalftoning.h"
+ #include "CupsUtils.h"
+ 
+-using namespace boost::interprocess;
+-
+ namespace DymoPrinterDriver
+ {
+ 
+@@ -60,8 +62,15 @@
+     std::string HalftoningMethod_;
+ 
+     // Synchronization for printer communication
++    // Stained Glass OS: an flock()ed file in the job's TMPDIR (CUPS's
++    // spool tmp, shared by every filter, as user lp), not a boost named
++    // semaphore: its name came from argv[0] and was empty when the
++    // destination could not be looked up ("Unable to get synchronization
++    // lock: Invalid argument"), and a filter that died holding it locked the
++    // printer for good; a file lock goes away with its process.
+     std::string LockName_;
+-    std::unique_ptr<named_mutex> Mutex_;
++    int LockFd_ = -1;
++    bool Lock();
+ };
+ 
+ template <class D, class DI, class LM> CCupsFilter<D, DI, LM>::CCupsFilter():
+@@ -79,15 +88,53 @@
+ 
+ template <class D, class DI, class LM> void CCupsFilter<D, DI, LM>::Cleanup()
+ {
+-    if(Mutex_)
++    if(LockFd_ != -1)
+     {
+-        Mutex_->unlock();
+-        Mutex_.reset(nullptr);
++        flock(LockFd_, LOCK_UN);
++        close(LockFd_);
++        LockFd_ = -1;
+ 
+         fprintf(stderr, "Unlock(%s)\n", LockName_.c_str());
+     }
+ }
+ 
++template <class D, class DI, class LM> bool CCupsFilter<D, DI, LM>::Lock()
++{
++    std::string name = LockName_;
++    if(name.empty())
++    {
++        const char* printer = getenv("PRINTER");
++        name = printer && *printer ? printer : "default";
++    }
++    for(auto& c: name)
++        if(c == '/' || c == '\\' || c == ' ')
++            c = '_';
++    const char* tmp = getenv("TMPDIR");
++    std::string path = std::string(tmp && *tmp ? tmp : "/tmp") + "/dymo-lw-" + name + ".lock";
++
++    LockFd_ = open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0660);
++    if(LockFd_ == -1)
++    {
++        fprintf(stderr, "ERROR: Unable to open the lock file %s: %s\n", path.c_str(), strerror(errno));
++        return false;
++    }
++    for(int i = 0; i < 300; i++)        // 30 seconds, as before
++    {
++        if(!flock(LockFd_, LOCK_EX | LOCK_NB))
++        {
++            fprintf(stderr, "DEBUG: locked %s\n", path.c_str());
++            return true;
++        }
++        if(errno != EWOULDBLOCK && errno != EINTR)
++            break;
++        usleep(100000);
++    }
++    fprintf(stderr, "ERROR: Unable to get synchronization lock %s: %s\n", path.c_str(), strerror(errno));
++    close(LockFd_);
++    LockFd_ = -1;
++    return false;
++}
++
+ template <class D, class DI, class LM> int CCupsFilter<D, DI, LM>::Run(int argc, char* argv[])
+ {
+     setbuf(stderr, NULL);
+@@ -130,13 +177,8 @@
+     {
+         fprintf(stderr, "TryLock(%s)\n", LockName_.c_str());
+ 
+-        Mutex_ = std::make_unique<named_mutex>(open_or_create, LockName_.c_str());
+-
+-        if(!Mutex_->timed_lock(boost::get_system_time() + boost::posix_time::seconds(30)))
+-        {
+-            perror("ERROR: Unable to get synchronization lock");
++        if(!Lock())
+             return 1;
+-        }
+ 
+         LanguageMonitor_.StartDoc();
+         Driver_.StartDoc();
+@@ -284,11 +326,6 @@
+ 
+         Cleanup();
+     }
+-    catch(interprocess_exception ex)
+-    {
+-       perror("ERROR: Unable to get synchronization lock");
+-       return 1;
+-    }
+     catch(std::exception const& ex)
+     {
+         Cleanup();

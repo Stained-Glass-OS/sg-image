@@ -1,0 +1,25 @@
+Subject: include <ctime> where time() and difftime() are used
+
+GCC 14's libstdc++ no longer brings <ctime> in through other headers: the
+language monitors did not compile ("'time' was not declared in this scope").
+---
+--- a/src/lw/LabelWriterLanguageMonitorV2.cpp
++++ b/src/lw/LabelWriterLanguageMonitorV2.cpp
+@@ -20,6 +20,7 @@
+ 
+ #include "LabelWriterDriverInitializer.h"
+ #include "LabelWriterLanguageMonitorV2.h"
++#include <ctime>
+ 
+ #include <cerrno>
+ #include <unistd.h>
+--- a/src/lm/LabelManagerLanguageMonitorV2.cpp
++++ b/src/lm/LabelManagerLanguageMonitorV2.cpp
+@@ -19,6 +19,7 @@
+ // Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ 
+ #include "LabelManagerLanguageMonitorV2.h"
++#include <ctime>
+ 
+ #include <unistd.h>
+ 

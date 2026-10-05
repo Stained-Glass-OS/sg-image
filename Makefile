@@ -19,7 +19,7 @@ SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 SG_MAIL     ?= ../sg-mail
 
-.PHONY: image-deps-test mono-config-test mono-fork-test wpf-flow-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
+.PHONY: image-deps-test mono-config-test mono-fork-test wpf-flow-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
 
 all: image
 
@@ -465,6 +465,21 @@ gtk-deb: staged-debs
 gtk-theme-test:
 	sh test/gtk-theme-test.sh
 
+# DYMO's CUPS driver for the LabelWriter 5xx (550, 550 Turbo, 5XL), built from
+# DYMO's GPL source at a pinned commit with dymo-deb/patches: sg-dymo-lw5xx.
+# sg-session depends on it and makes the queue when such a printer is plugged
+# in (sg-dymo-queue), so installed machines get it with their updates.
+DYMO_CACHE := $(BUILD)/dymo-cache
+
+dymo-deb: staged-debs
+	dymo-deb/build-deb.sh $(DYMO_CACHE) $(EXTRA_TREE)/opt/sg-packages
+	@echo "sg-dymo-lw5xx $$(cat dymo-deb/build-deb.sh dymo-deb/patches/*.patch | sha256sum | cut -c1-40)" >> $(EXTRA_TREE)/opt/sg-packages/SOURCES
+
+# The filter renders a LabelWriter 550 job through CUPS (a CUPS server of the
+# test's own, a simulated printer), and a killed job does not lock the printer.
+dymo-print-test:
+	sh test/dymo-print-test.sh $(DYMO_CACHE)
+
 image-deps-test:
 	sh test/image-deps-test.sh $(EXTRA_TREE)/opt/sg-packages
 
@@ -509,7 +524,7 @@ repo: staged-debs
 repo-check: repo
 	repo/check-repo.sh $(BUILD)/apt
 
-publish: staged-debs speech d3d-deb mono-deb gecko-deb gtk-deb
+publish: staged-debs speech d3d-deb mono-deb gecko-deb gtk-deb dymo-deb
 	repo/publish.sh $(REPO_DEBS)
 
 # --- the boot splash ---------------------------------------------------------
@@ -534,7 +549,7 @@ splash: staged-debs
 
 # --- image -----------------------------------------------------------------
 
-image: staged-debs d3d-deb apps addons mono-deb gecko-deb gtk-deb speech splash
+image: staged-debs d3d-deb apps addons mono-deb gecko-deb gtk-deb dymo-deb speech splash
 	@# Our packages go in with dpkg: their dependencies must be in mkosi.conf
 	@# (or come with what is), else the build fails at its very end.
 	sh test/image-deps-test.sh $(EXTRA_TREE)/opt/sg-packages || [ $$? = 77 ]
