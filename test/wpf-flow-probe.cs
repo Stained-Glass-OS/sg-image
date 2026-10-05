@@ -238,6 +238,53 @@ class Probe
                 Console.WriteLine("TABLEPAGES " + pag5.PageCount);
                 Save(pag5.GetPage(1).Visual, 300, 200, "tablepage1.png");
 
+                // floaters and figures (attached objects): drawn, at their side, the text beside them
+                {
+                    Func<Visual, int, int, Func<byte, byte, byte, bool>, string> span = (v, bw, bh, want) => {
+                        var b = new RenderTargetBitmap(bw, bh, 96, 96, PixelFormats.Pbgra32);
+                        var white = new DrawingVisual(); using (var dc = white.RenderOpen()) dc.DrawRectangle(Brushes.White, null, new Rect(0, 0, bw, bh));
+                        b.Render(white); b.Render(v);
+                        byte[] pxs = new byte[bw * 4 * bh]; b.CopyPixels(pxs, bw * 4, 0);
+                        int left = 0, right = 0, minX = bw, maxX = -1, minY = bh, maxY = -1, beside = 0;
+                        for (int y = 0; y < bh; y++) for (int x = 0; x < bw; x++)
+                        {
+                            int o = (y * bw + x) * 4;
+                            if (!want(pxs[o + 2], pxs[o + 1], pxs[o])) continue;
+                            if (x < bw / 2) left++; else right++;
+                            minX = Math.Min(minX, x); maxX = Math.Max(maxX, x); minY = Math.Min(minY, y); maxY = Math.Max(maxY, y);
+                        }
+                        // text (dark) on the rows of the object, on the other side of it
+                        for (int y = minY; y <= maxY && maxY >= 0; y++) for (int x = 0; x < bw; x++)
+                        {
+                            int o = (y * bw + x) * 4;
+                            if (pxs[o + 2] < 90 && pxs[o + 1] < 90 && pxs[o] < 90 && (minX > bw / 2 ? x < minX - 4 : x > maxX + 4)) beside++;
+                        }
+                        return left + " " + right + " " + (maxX - minX + 1) + " " + beside;
+                    };
+                    var doc6 = new FlowDocument { PagePadding = new Thickness(10), FontFamily = new FontFamily("Arial"), FontSize = 14 };
+                    var p6 = new Paragraph(new Run("Before. "));
+                    p6.Inlines.Add(new Floater(new Paragraph(new Run("FLOAT")) { Background = Brushes.Yellow }) { Width = 120, HorizontalAlignment = HorizontalAlignment.Right });
+                    p6.Inlines.Add(new Run("Text after the floater, long enough to wrap beside it for a few lines in this window, and then some more of it."));
+                    doc6.Blocks.Add(p6);
+                    rtb.Document = doc6;
+                    w.UpdateLayout();
+                    Console.WriteLine("FLOATER " + span(w, (int)w.ActualWidth, 200, (r, g, b) => r > 200 && g > 200 && b < 80));
+                    Save(w, (int)w.ActualWidth, (int)w.ActualHeight, "floater.png");
+
+                    var doc7 = new FlowDocument { PagePadding = new Thickness(20), FontFamily = new FontFamily("Arial"), FontSize = 14, ColumnWidth = 1000 };
+                    var p7 = new Paragraph(new Run("Paginated. "));
+                    p7.Inlines.Add(new Figure(new Paragraph(new Run("FIGURE")) { Background = Brushes.Cyan })
+                        { Width = new FigureLength(120), HorizontalAnchor = FigureHorizontalAnchor.ContentRight });
+                    p7.Inlines.Add(new Run("Text after the figure that goes on so that it wraps beside the figure on its page for several lines more."));
+                    doc7.Blocks.Add(p7);
+                    var pag7 = ((IDocumentPaginatorSource)doc7).DocumentPaginator;
+                    pag7.PageSize = new Size(400, 300);
+                    pag7.ComputePageCount();
+                    var page7 = pag7.GetPage(0).Visual;
+                    Console.WriteLine("FIGURE " + span(page7, 400, 300, (r, g, b) => r < 80 && g > 200 && b > 200));
+                    Save(page7, 400, 300, "figure.png");
+                }
+
                 // a long document
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 rtb.Document = MakeDoc(500);

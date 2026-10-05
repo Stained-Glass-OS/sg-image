@@ -21,13 +21,16 @@
 #   - a table: cells of a row side by side at one height, a cell spanning
 #     two rows as high as they are, what follows below it; a long table
 #     paginated breaks between rows over several pages;
+#   - a Floater and a Figure (attached objects) are drawn at their side, as
+#     wide as asked, with the text beside them (they were not drawn at all);
 #   - no exception anywhere.
 #
 #   test/wpf-flow-test.sh [WINE]      (needs make mono-deb first)
 # Mutation: sg2 (no wpf patches) fails at once (EntryPointNotFoundException);
 # PresentationFramework/PresentationCore built with -define:SG_MUTANT_PTS_NO_BREAK,
 # SG_MUTANT_PTS_NO_TABLE, SG_MUTANT_NO_MARKER, SG_MUTANT_NO_EMBED_CACHE,
-# SG_MUTANT_NO_ALIGN, SG_MUTANT_TF_RESHAPE or SG_MUTANT_TF_NO_RTL each fail
+# SG_MUTANT_NO_ALIGN, SG_MUTANT_TF_RESHAPE, SG_MUTANT_TF_NO_RTL,
+# SG_MUTANT_PTS_NO_ATTACHED or SG_MUTANT_PTS_NO_SUBPAGE_BBOX each fail
 # their check (SG_MONO_DIR= a Mono tree with the mutant assemblies in its GAC).
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
@@ -90,6 +93,16 @@ else
     fail "table: $(grep -m1 "^TABLE " "$T/out")"
 fi
 tp=$(sed -n 's/^TABLEPAGES \([0-9]*\).*/\1/p' "$T/out"); [ "${tp:-0}" -ge 3 ] && pass "a 40-row table at 300 x 200 breaks between rows over $tp pages" || fail "table pages: ${tp:-?}"
+# shellcheck disable=SC2046  # the four numbers, split
+set -- $(sed -n 's/^FLOATER //p' "$T/out")
+if [ "${1:-x}" = 0 ] && [ "${2:-0}" -ge 1000 ] && [ "${3:-0}" -ge 100 ] && [ "${4:-0}" -ge 50 ]; then
+    pass "a Floater (right, 120 wide) is drawn at the right, $3 px wide, the text beside it ($4 dark pixels)"
+else fail "Floater: yellow left/right/width/text beside = '$*' (want 0, >=1000, >=100, >=50)"; fi
+# shellcheck disable=SC2046
+set -- $(sed -n 's/^FIGURE //p' "$T/out")
+if [ "${1:-x}" = 0 ] && [ "${2:-0}" -ge 1000 ] && [ "${3:-0}" -ge 100 ] && [ "${4:-0}" -ge 50 ]; then
+    pass "a Figure (ContentRight, 120 wide) on a page is drawn at the right, $3 px wide, the text beside it ($4 dark pixels)"
+else fail "Figure: cyan left/right/width/text beside = '$*' (want 0, >=1000, >=100, >=50)"; fi
 r=$(sed -n 's/^RTLTEXTBLOCK left \([0-9]*\) right \([0-9]*\).*/\1 \2/p' "$T/out")
 case "$r" in "0 "[1-9]*) pass "a right-to-left TextBlock's text is at its right (ink left/right: $r)";;
              *) fail "right-to-left TextBlock ink left/right: '${r:-?}' (drew at the left)";; esac

@@ -672,10 +672,10 @@ index 9c65339..a30d925 100644
          /// </summary>
 diff --git a/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/PtsEngine.cs b/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/PtsEngine.cs
 new file mode 100644
-index 0000000..94c8904
+index 0000000..904df08
 --- /dev/null
 +++ b/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/PtsEngine.cs
-@@ -0,0 +1,2077 @@
+@@ -0,0 +1,2376 @@
 +// Stained Glass OS: the PTS formatting engine, in managed code.
 +//
 +// WPF's flow layout (FlowDocument, RichTextBox, FlowDocumentScrollViewer,
@@ -693,10 +693,11 @@ index 0000000..94c8904
 +//
 +// Tables: rows down the column, each as high as its tallest cell (a cell
 +// spanning rows as high as its rows together), broken between rows across
-+// pages. Not yet: floaters that float (they are placed as blocks, as
-+// BlockUIContainer's are), figures, column balancing, text around obstacles,
-+// optimal paragraphs (lines are always the client's FormatLine), repeated
-+// table headers, footnotes. Updates format again from the start.
++// pages. Floaters and figures in text (attached objects): put at the line
++// of their anchor (a figure where its anchors say), the lines beside them
++// narrowed. Not yet: text on both sides of one, column balancing, optimal
++// paragraphs (lines are always the client's FormatLine), repeated table
++// headers, footnotes. Updates format again from the start.
 +//
 +// SPDX-License-Identifier: MIT
 +
@@ -798,6 +799,7 @@ index 0000000..94c8904
 +            internal FSTABLEOBJINIT Table;
 +            internal bool HaveTable, TriedTable;
 +            internal int PageLeft;                // the page's left margin, for FormatLine
++            internal FSRECT PageRect, MarginRect; // for a figure's position
 +        }
 +
 +        private sealed class Line
@@ -812,6 +814,25 @@ index 0000000..94c8904
 +            internal uint Fswdir;
 +            internal int SuppressTop;
 +            internal List<Line> Lines = new List<Line>();
++            internal List<Attached> Attached = new List<Attached>();
++        }
++
++        // a floater or figure anchored in a text paragraph: the lines go round it
++        private sealed class Attached
++        {
++            internal IntPtr Nmp, Client, Handle;  // Handle: its FloaterPara or FigurePara
++            internal int Idobj, Dcp;              // Dcp: its anchor
++            internal FSRECT Rect;                 // where it is
++            internal FSRECT Wrap;                 // what the text keeps clear of
++            internal bool NoText;                 // no text beside it
++        }
++
++        private sealed class FigurePara
++        {
++            internal IntPtr Handle;
++            internal FSRECT Flow;
++            internal FSBBOX BBox;
++            internal FSPOINT Prelim;
 +        }
 +
 +        private sealed class FloaterPara
@@ -1110,8 +1131,12 @@ index 0000000..94c8904
 +            {
 +                TextPara tp = Get<TextPara>(p.Pfspara);
 +                if (tp != null)
++                {
 +                    foreach (Line l in tp.Lines)
 +                        if (l.BrIn != IntPtr.Zero) Ck(c.Cb.cbktxt.pfnDestroyLineBreakRecord(c.Client, l.BrIn));
++                    foreach (Attached a in tp.Attached) DestroyAttached(c, a);
++                    tp.Attached.Clear();
++                }
 +                FreeHandle(p.Pfspara);
 +            }
 +            else if (p.Idobj == PtsHost.FloaterParagraphId)
@@ -1292,6 +1317,7 @@ index 0000000..94c8904
 +            int dvrTop = 0, vr, dcp, lastHeight = 0;
 +            IntPtr br = IntPtr.Zero, lastLine = IntPtr.Zero;
 +            bool ended = false;
++            HashSet<long> placed = new HashSet<long>();
 +
 +            mcsOut = IntPtr.Zero;
 +            next = null;
@@ -1312,15 +1338,43 @@ index 0000000..94c8904
 +                int dcpLine, forced, ascent, descent, urBBox, durBBox, dcpDepend, reformat;
 +                FSFLRES res;
 +                bool firstInPara = inside == null && n == 0;
-+                Ck(c.Cb.cbktxt.pfnFormatLine(c.Client, p.Client, p.Nmp, 0, dcp, br, t.Fswdir,
-+                    t.Rect.u, t.Rect.du, t.Rect.u, t.Rect.du, c.PageLeft, True, False, False,
-+                    firstInPara ? True : False, False, (suppressTop && n == 0) ? True : False,
-+                    out line, out dcpLine, out brOut, out forced, out res, out ascent, out descent,
-+                    out urBBox, out durBBox, out dcpDepend, out reformat));
++                int ur = t.Rect.u, dur = t.Rect.du;
++#if !SG_MUTANT_PTS_NO_ATTACHED
++                // floaters and figures anchored before the line, then in it:
++                // each placed once, the line formatted again beside them
++                PlaceAttached(c, t, p, tp, placed, dcp, IntPtr.Zero, 0, vr, finite);
++#endif
++                int guess = lastHeight > 0 ? lastHeight : 1;
++                for (int attempt = 0; ; attempt++)
++                {
++#if !SG_MUTANT_PTS_NO_ATTACHED
++                    vr = LineBand(tp, t, vr, guess, out ur, out dur);
++#endif
++                    Ck(c.Cb.cbktxt.pfnFormatLine(c.Client, p.Client, p.Nmp, 0, dcp, br, t.Fswdir,
++                        ur, dur, t.Rect.u, t.Rect.du, c.PageLeft, True, False, False,
++                        firstInPara ? True : False, False, (suppressTop && n == 0) ? True : False,
++                        out line, out dcpLine, out brOut, out forced, out res, out ascent, out descent,
++                        out urBBox, out durBBox, out dcpDepend, out reformat));
++                    if (attempt >= 4) break;
++#if !SG_MUTANT_PTS_NO_ATTACHED
++                    bool more = dcpLine > 0 && PlaceAttached(c, t, p, tp, placed, dcp, line, dcpLine, vr, finite);
++                    int ur2, dur2;
++                    int h = ascent + descent;
++                    bool moved = tp.Attached.Count > 0 && (LineBand(tp, t, vr, Math.Max(h, 1), out ur2, out dur2) != vr || ur2 != ur || dur2 != dur);
++                    if (!more && !moved) break;
++                    Ck(c.Cb.cbktxt.pfnDestroyLine(c.Client, line));
++                    if (brOut != IntPtr.Zero) Ck(c.Cb.cbktxt.pfnDestroyLineBreakRecord(c.Client, brOut));
++                    guess = Math.Max(h, 1);
++#else
++                    break;
++#endif
++                }
 +                int height = ascent + descent;
 +                if (finite && vr + height > limit && (n > 0 || emptyOk))
 +                {
-+                    // it does not fit: the next column or page goes on from here
++                    // it does not fit: the next column or page goes on from here,
++                    // with the floaters and figures anchored from here
++                    DropAttached(c, tp, dcp);
 +                    Ck(c.Cb.cbktxt.pfnDestroyLine(c.Client, line));
 +                    if (brOut != IntPtr.Zero) Ck(c.Cb.cbktxt.pfnDestroyLineBreakRecord(c.Client, brOut));
 +                    if (n > 0)
@@ -1338,7 +1392,7 @@ index 0000000..94c8904
 +                }
 +                Line l = new Line();
 +                l.BrIn = br; l.DcpFirst = dcp; l.DcpLim = dcp + dcpLine;
-+                l.Ur = t.Rect.u; l.Dur = t.Rect.du; l.UrBBox = urBBox; l.DurBBox = durBBox;
++                l.Ur = ur; l.Dur = dur; l.UrBBox = urBBox; l.DurBBox = durBBox;
 +                l.Vr = vr; l.Ascent = ascent; l.Descent = descent;
 +                l.First = firstInPara ? True : False; l.Forced = forced;
 +                tp.Lines.Add(l);
@@ -1359,7 +1413,10 @@ index 0000000..94c8904
 +            if (br != IntPtr.Zero) Ck(c.Cb.cbktxt.pfnDestroyLineBreakRecord(c.Client, br));
 +
 +            if (tp.Lines.Count == 0)
++            {
++                DropAttached(c, tp, 0);
 +                return false;
++            }
 +            if (ended)
 +                Ck(c.Cb.cbktxt.pfnFormatBottomText(c.Client, p.Client, p.Nmp, 0, t.Fswdir, lastLine, lastHeight, out mcsOut));
 +            if (lastLine != IntPtr.Zero) Ck(c.Cb.cbktxt.pfnDestroyLine(c.Client, lastLine));
@@ -1367,6 +1424,12 @@ index 0000000..94c8904
 +            p.DvrTop = dvrTop;
 +            p.DvrUsed = vr - p.Vr;
 +            foreach (Line l in tp.Lines) Union(ref p.BBox, Box(l.UrBBox, l.Vr, l.DurBBox, l.Ascent + l.Descent));
++            // what follows goes below the paragraph's floaters and figures
++            foreach (Attached a in tp.Attached)
++            {
++                p.DvrUsed = Math.Max(p.DvrUsed, a.Wrap.v + a.Wrap.dv - p.Vr);
++                Union(ref p.BBox, Box(a.Rect.u, a.Rect.v, a.Rect.du, a.Rect.dv));
++            }
 +            tp.Handle = NewHandle(tp);
 +            p.Pfspara = tp.Handle;
 +            return true;
@@ -1421,6 +1484,186 @@ index 0000000..94c8904
 +            p.DvrTop = dvrTop;
 +            p.BBox = bbox;
 +            return true;
++        }
++
++        // ------------------------------------------------------------------
++        // Floaters and figures in a text paragraph (attached objects): the
++        // client names those anchored before a line and in it; each is laid
++        // out once (a floater's content, a figure's subpage -- the client
++        // makes both), put at the line's top against its side, and the lines
++        // beside it are narrowed (or moved below it when no text may be
++        // beside it). Not done: text on both sides, overlap between pages.
++        // ------------------------------------------------------------------
++        private static unsafe bool PlaceAttached(Ctx c, Track t, Para p, TextPara tp, HashSet<long> placed, int dcp,
++            IntPtr line, int dcpLine, int vr, bool finite)
++        {
++            const int max = 64;
++            IntPtr* names = stackalloc IntPtr[max];
++            int* idobjs = stackalloc int[max];
++            int* anchors = stackalloc int[max];
++            int count = 0, end;
++            bool any = false;
++
++            if (line == IntPtr.Zero)
++            {
++                int n;
++                Ck(c.Cb.cbktxt.pfnGetNumberAttachedObjectsBeforeTextLine(c.Client, p.Nmp, dcp, out n));
++                if (n <= 0) return false;
++                Ck(c.Cb.cbktxt.pfnGetAttachedObjectsBeforeTextLine(c.Client, p.Nmp, dcp, Math.Min(n, max), names, idobjs, anchors,
++                    out count, out end));
++            }
++            else
++            {
++                int n;
++                Ck(c.Cb.cbktxt.pfnGetNumberAttachedObjectsInTextLine(c.Client, line, p.Nmp, dcp, dcp + dcpLine, False, 0, out n));
++                if (n <= 0) return false;
++                Ck(c.Cb.cbktxt.pfnGetAttachedObjectsInTextLine(c.Client, line, p.Nmp, dcp, dcp + dcpLine, False, 0,
++                    Math.Min(n, max), names, idobjs, anchors, out count));
++            }
++            for (int i = 0; i < Math.Min(count, max); i++)
++            {
++                if (!placed.Add(names[i].ToInt64())) continue;
++                Attached a = null;
++                if (idobjs[i] == fsidobjFigure) a = PlaceFigure(c, t, names[i], vr, finite);
++                else if (idobjs[i] == PtsHost.FloaterParagraphId && Floaters(c)) a = PlaceFloater(c, t, tp, names[i], vr);
++                else Trace("attached object kind " + idobjs[i] + " not laid out");
++                if (a == null) continue;
++                a.Dcp = anchors[i];
++                tp.Attached.Add(a);
++                any = true;
++            }
++            return any;
++        }
++
++        private static Attached PlaceFloater(Ctx c, Track t, TextPara tp, IntPtr nmp, int vr)
++        {
++            FSFLOATERPROPS props;
++            IntPtr pc, content;
++            int dur, dvr, cPolygons, cVertices;
++            FSBBOX bbox;
++            FSFMTRBL r;
++
++            Ck(c.Cb.cbkgen.pfnCreateParaclient(c.Client, nmp, out pc));
++            Ck(c.Floater.pfnGetFloaterProperties(c.Client, nmp, t.Fswdir, out props));
++            Ck(c.Floater.pfnFormatFloaterContentBottomless(c.Client, pc, nmp, False, t.Fswdir,
++                True, t.Rect.du, MaxPageSize, out r, out content, out dur, out dvr, out bbox, out cPolygons, out cVertices));
++            dur = Math.Min(Math.Max(dur, 0), t.Rect.du);
++            dvr = Math.Max(dvr, 0);
++            int u = t.Rect.u;
++            if (props.fskfloatalignment == FSKFLOATALIGNMENT.fskfloatalignCenter) u += (t.Rect.du - dur) / 2;
++            else if (props.fskfloatalignment == FSKFLOATALIGNMENT.fskfloatalignMax) u += t.Rect.du - dur;
++            // below what is already on that side
++            int v = vr;
++            for (bool again = true; again; )
++            {
++                again = false;
++                foreach (Attached o in tp.Attached)
++                    if (o.Rect.v < v + dvr && o.Rect.v + o.Rect.dv > v && o.Rect.u < u + dur && o.Rect.u + o.Rect.du > u)
++                    { v = o.Rect.v + o.Rect.dv; again = true; }
++            }
++            FloaterPara fp = new FloaterPara();
++            fp.Name = nmp;
++            fp.Content = content;
++            fp.Rect = new FSRECT(u, v, dur, dvr);
++            fp.Upd = FSKUPDATE.fskupdInherited;
++            fp.Handle = NewHandle(fp);
++            Attached a = new Attached { Nmp = nmp, Client = pc, Handle = fp.Handle, Idobj = PtsHost.FloaterParagraphId, Rect = fp.Rect };
++            a.Wrap = new FSRECT(u - props.durDistTextLeft, v - props.dvrDistTextTop,
++                dur + props.durDistTextLeft + props.durDistTextRight, dvr + props.dvrDistTextTop + props.dvrDistTextBottom);
++            a.NoText = props.fskwr == FSKWRAP.fskwrNone || dur >= t.Rect.du;
++            return a;
++        }
++
++        private static Attached PlaceFigure(Ctx c, Track t, IntPtr nmp, int vr, bool finite)
++        {
++            FSFIGUREPROPS props;
++            IntPtr pc;
++            int dur, dvr, cPolygons, cVertices, dl, dr, dt, db, push;
++            FSRECT flow, overlap, search;
++            FSBBOX bbox;
++
++            Ck(c.Cb.cbkgen.pfnCreateParaclient(c.Client, nmp, out pc));
++            Ck(c.Cb.cbkfig.pfnGetFigureProperties(c.Client, pc, nmp, True, t.Fswdir, finite ? False : True,
++                out dur, out dvr, out props, out cPolygons, out cVertices, out dl, out dr, out dt, out db));
++            FSRECT page = c.PageRect, margin = c.MarginRect, track = t.Rect;
++            dur = Math.Max(dur, 0); dvr = Math.Max(dvr, 0);
++            // where its anchor puts it (HorizontalAnchor, VerticalAnchor): against
++            // the page, the page's content or the column; at the line for the
++            // paragraph or a character
++            FSRECT refU = props.fskrefU == FSKREF.fskrefPage ? page : props.fskrefU == FSKREF.fskrefMargin ? margin : track;
++            FSRECT refV = props.fskrefV == FSKREF.fskrefPage ? page : props.fskrefV == FSKREF.fskrefMargin ? margin
++                : new FSRECT(track.u, vr, track.du, dvr);
++            FSRECT prelim = new FSRECT(Align(refU.u, refU.du, dur, props.fskalfU), Align(refV.v, refV.dv, dvr, props.fskalfV), dur, dvr);
++            Ck(c.Cb.cbkfig.pfnCalcFigurePosition(c.Client, pc, nmp, t.Fswdir, ref page, ref margin, ref track, ref prelim,
++                True, True, out push, out flow, out overlap, out bbox, out search));
++            FigurePara fg = new FigurePara { Flow = flow, BBox = bbox, Prelim = new FSPOINT(prelim.u, prelim.v) };
++            fg.Handle = NewHandle(fg);
++            Attached a = new Attached { Nmp = nmp, Client = pc, Handle = fg.Handle, Idobj = fsidobjFigure, Rect = flow };
++            a.Wrap = new FSRECT(flow.u - dl, flow.v - dt, flow.du + dl + dr, flow.dv + dt + db);
++            a.NoText = props.fskwrap == FSKWRAP.fskwrNone || flow.du >= t.Rect.du;
++            return a;
++        }
++
++        private static int Align(int start, int size, int length, FSKALIGNFIG al)
++        {
++            if (al == FSKALIGNFIG.fskalfCenter) return start + (size - length) / 2;
++            if (al == FSKALIGNFIG.fskalfMax) return start + size - length;
++            return start;
++        }
++
++        // Where a line at vr, about 'height' high, may go beside the
++        // paragraph's floaters and figures: its start and width; returns its
++        // top (moved below those that leave no room).
++        private static int LineBand(TextPara tp, Track t, int vr, int height, out int ur, out int dur)
++        {
++            int minWidth = Math.Max(t.Rect.du / 8, 1);
++            for (int guard = 0; ; guard++)
++            {
++                int left = t.Rect.u, right = t.Rect.u + t.Rect.du, below = int.MaxValue;
++                bool blocked = false;
++                foreach (Attached a in tp.Attached)
++                {
++                    FSRECT w = a.Wrap;
++                    if (w.v >= vr + height || w.v + w.dv <= vr || w.u >= right || w.u + w.du <= left) continue;
++                    below = Math.Min(below, w.v + w.dv);
++                    if (a.NoText) { blocked = true; continue; }
++                    // the side it is on keeps clear of it
++                    if (w.u + w.du / 2 < t.Rect.u + t.Rect.du / 2) left = Math.Max(left, w.u + w.du);
++                    else right = Math.Min(right, w.u);
++                }
++                if ((blocked || right - left < minWidth) && below != int.MaxValue && guard < 64)
++                {
++                    vr = below;
++                    continue;
++                }
++                ur = left;
++                dur = Math.Max(right - left, 1);
++                return vr;
++            }
++        }
++
++        private static void DestroyAttached(Ctx c, Attached a)
++        {
++            if (a.Idobj == PtsHost.FloaterParagraphId)
++            {
++                FloaterPara fp = Get<FloaterPara>(a.Handle);
++                if (fp != null && fp.Content != IntPtr.Zero && c.HaveFloater) Ck(c.Floater.pfnDestroyFloaterContent(fp.Content));
++            }
++            FreeHandle(a.Handle);
++            a.Handle = IntPtr.Zero;
++            if (a.Client != IntPtr.Zero) Ck(c.Cb.cbkgen.pfnDestroyParaclient(c.Client, a.Client));
++            a.Client = IntPtr.Zero;
++        }
++
++        // the objects anchored at or after dcp go (they go with their line to the next page)
++        private static void DropAttached(Ctx c, TextPara tp, int dcp)
++        {
++            for (int i = tp.Attached.Count - 1; i >= 0; i--)
++                if (tp.Attached[i].Dcp >= dcp)
++                {
++                    DestroyAttached(c, tp.Attached[i]);
++                    tp.Attached.RemoveAt(i);
++                }
 +        }
 +
 +        // A floater: placed as a block (BlockUIContainer is one; a floating one is too, for now).
@@ -1679,6 +1922,8 @@ index 0000000..94c8904
 +            Ck(c.Cb.cbkgen.pfnGetSectionProperties(c.Client, nms, out fNewPage, out secdir, out fBalance, out ccol, out cSegAreas, out cHeightAreas));
 +            Ck(c.Cb.cbkgen.pfnGetMainTextSegment(c.Client, nms, out segment));
 +            c.PageLeft = margin.u;
++            c.PageRect = new FSRECT(0, 0, durPage, dvrPage);
++            c.MarginRect = margin;
 +            pg.Fswdir = fswdir;
 +            pg.Margin = margin;
 +
@@ -1876,6 +2121,17 @@ index 0000000..94c8904
 +                p.Upd = FSKUPDATE.fskupdNoChange;
 +                int m = MethodIndex(p.Idobj);
 +                if (m >= 0 && p.Pfspara != IntPtr.Zero) Ck(c.Methods[m].pfnClearUpdateInfoInPara(p.Pfspara));
++                else if (p.Idobj == fsidobjText)
++                {
++                    TextPara tp = Get<TextPara>(p.Pfspara);
++                    if (tp != null)
++                        foreach (Attached a in tp.Attached)
++                        {
++                            FloaterPara fp = Get<FloaterPara>(a.Handle);
++                            if (fp != null && fp.Content != IntPtr.Zero && c.HaveFloater)
++                                Ck(c.Floater.pfnClearUpdateInfoInFloaterContent(fp.Content));
++                        }
++                }
 +                else if (p.Idobj == PtsHost.TableParagraphId)
 +                {
 +                    TableObj to = Get<TableObj>(p.Pfspara);
@@ -1998,6 +2254,9 @@ index 0000000..94c8904
 +                Resume next = FormatSubpage(c, sp, SubpageColumns(rcMargin.u, rcMargin.v, rcMargin.du, rcMargin.dv, cColumns, rgColumnInfo, true),
 +                    br != null ? br.At : null, true, fEmptyOk != False, fSuppressTopSpace != False, fFromPreviousPage != False,
 +                    out done, out progress, out dvrUsed, out pfsMcsClient, out topSpace);
++#if !SG_MUTANT_PTS_NO_SUBPAGE_BBOX
++                fsBBox = sp.BBox;     // what it holds: a floater or figure of auto width shrinks to it
++#endif
 +                sp.Handle = NewHandle(sp);
 +                pSubPage = sp.Handle;
 +                if (!progress && !done && fEmptyOk != False)
@@ -2029,6 +2288,9 @@ index 0000000..94c8904
 +                bool done, progress;
 +                FormatSubpage(c, sp, SubpageColumns(urMargin, vrMargin, durMargin, 0, cColumns, rgColumnInfo, false), null, false,
 +                    true, fSuppressTopSpace != False, false, out done, out progress, out pdvrUsed, out pfsMcsClient, out pTopSpace);
++#if !SG_MUTANT_PTS_NO_SUBPAGE_BBOX
++                pfsBBox = sp.BBox;
++#endif
 +                sp.Handle = NewHandle(sp);
 +                ppSubPage = sp.Handle;
 +                return fserrNone;
@@ -2061,6 +2323,9 @@ index 0000000..94c8904
 +                    true, fSuppressTopSpace != False, false, out done, out progress, out pdvrUsed, out pfsMcsClient, out pTopSpace);
 +                ReplaceColumns(c, old, sp.Columns);
 +                sp.Upd = FSKUPDATE.fskupdNew;
++#if !SG_MUTANT_PTS_NO_SUBPAGE_BBOX
++                pfsBBox = sp.BBox;
++#endif
 +                return fserrNone;
 +            }
 +            catch (Exception e) { return Fail(e); }
@@ -2314,7 +2579,18 @@ index 0000000..94c8904
 +                if (p.Idobj == fsidobjText)
 +                {
 +                    TextPara tp = Get<TextPara>(p.Pfspara);
-+                    if (tp != null) foreach (Line l in tp.Lines) l.Vr += dv;
++                    if (tp != null)
++                    {
++                        foreach (Line l in tp.Lines) l.Vr += dv;
++                        foreach (Attached a in tp.Attached)
++                        {
++                            a.Rect.v += dv; a.Wrap.v += dv;
++                            FloaterPara fp = Get<FloaterPara>(a.Handle);
++                            if (fp != null) fp.Rect.v += dv;
++                            FigurePara fg = Get<FigurePara>(a.Handle);
++                            if (fg != null) { fg.Flow.v += dv; if (fg.BBox.fDefined != False) fg.BBox.fsrc.v += dv; }
++                        }
++                    }
 +                }
 +                else if (p.Idobj == PtsHost.FloaterParagraphId)
 +                {
@@ -2586,7 +2862,7 @@ index 0000000..94c8904
 +            pTextDetails.u.full.fsklines = FSKTEXTLINES.fsklinesNormal;
 +            pTextDetails.u.full.fLinesComposite = False;
 +            pTextDetails.u.full.cLines = tp.Lines.Count;
-+            pTextDetails.u.full.cAttachedObjects = 0;
++            pTextDetails.u.full.cAttachedObjects = tp.Attached.Count;
 +            if (tp.Lines.Count > 0)
 +            {
 +                pTextDetails.u.full.dcpFirst = tp.Lines[0].DcpFirst;
@@ -2646,13 +2922,36 @@ index 0000000..94c8904
 +            FSATTACHEDOBJECTDESCRIPTION* rgAttachedObjects, out int cAttachedObjectDesc)
 +        {
 +            cAttachedObjectDesc = 0;
++            TextPara tp = Get<TextPara>(pPara);
++            if (tp == null) return tserrInvalidParameter;
++            if (cAttachedObject < tp.Attached.Count) return tserrOutputArrayTooSmall;
++            for (int i = 0; i < tp.Attached.Count; i++)
++            {
++                Attached a = tp.Attached[i];
++                FSATTACHEDOBJECTDESCRIPTION d = new FSATTACHEDOBJECTDESCRIPTION();
++                d.fsupdinf.fskupd = FSKUPDATE.fskupdInherited;
++                d.pfspara = a.Handle;
++                d.pfsparaclient = a.Client;
++                d.nmp = a.Nmp;
++                d.idobj = a.Idobj;
++                d.vrStart = a.Rect.v;
++                d.dvrUsed = a.Rect.dv;
++                rgAttachedObjects[i] = d;
++            }
++            cAttachedObjectDesc = tp.Attached.Count;
 +            return fserrNone;
 +        }
 +
 +        internal static unsafe int FsQueryFigureObjectDetails(IntPtr pfsContext, IntPtr pPara, out FSFIGUREDETAILS fsFigureDetails)
 +        {
 +            fsFigureDetails = new FSFIGUREDETAILS();
-+            return tserrNotImplemented;
++            FigurePara fg = Get<FigurePara>(pPara);
++            if (fg == null) return tserrInvalidParameter;
++            fsFigureDetails.fsrcFlowAround = fg.Flow;
++            fsFigureDetails.fsbbox = fg.BBox;
++            fsFigureDetails.fsptPosPreliminary = fg.Prelim;
++            fsFigureDetails.fDelayed = False;
++            return fserrNone;
 +        }
 +
 +        internal static unsafe int FsQueryTableObjDetails(IntPtr pfscontext, IntPtr pfstableobj, out FSTABLEOBJDETAILS pfstableobjdetails)
