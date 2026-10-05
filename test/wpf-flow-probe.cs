@@ -153,6 +153,23 @@ class Probe
                 Console.WriteLine("INLINE checkX " + check.TranslatePoint(new Point(0, 0), rtb).X.ToString("F1"));
                 Save(w, (int)w.ActualWidth, (int)w.ActualHeight, "mixed.png");
 
+                {
+                    var heb = new TextBlock { Text = "\u05e9\u05dc\u05d5\u05dd", FlowDirection = FlowDirection.RightToLeft, Width = 300, FontSize = 20 };
+                    heb.Measure(new Size(300, 50)); heb.Arrange(new Rect(0, 0, 300, 50));
+                    var bmpH = new RenderTargetBitmap(300, 50, 96, 96, PixelFormats.Pbgra32); bmpH.Render(heb);
+                    byte[] ph = new byte[300 * 4 * 50]; bmpH.CopyPixels(ph, 300 * 4, 0);
+                    int hl = 0, hr = 0;
+                    for (int y = 0; y < 50; y++) for (int x = 0; x < 300; x++) if (ph[(y * 300 + x) * 4 + 3] > 128) { if (x < 150) hl++; else hr++; }
+                    Console.WriteLine("RTLHEBREW left " + hl + " right " + hr);
+                    { var enc = new PngBitmapEncoder(); enc.Frames.Add(BitmapFrame.Create(bmpH)); using (var fs = File.Create(Path.Combine(outDir, "heb.png"))) enc.Save(fs); }
+                    var rtl = new TextBlock { Text = "Hello", FlowDirection = FlowDirection.RightToLeft, Width = 300, FontSize = 20 };
+                    rtl.Measure(new Size(300, 50)); rtl.Arrange(new Rect(0, 0, 300, 50));
+                    var bmpR = new RenderTargetBitmap(300, 50, 96, 96, PixelFormats.Pbgra32); bmpR.Render(rtl);
+                    byte[] pr = new byte[300 * 4 * 50]; bmpR.CopyPixels(pr, 300 * 4, 0);
+                    int left = 0, right = 0;
+                    for (int y = 0; y < 50; y++) for (int x = 0; x < 300; x++) if (pr[(y * 300 + x) * 4 + 3] > 128) { if (x < 150) left++; else right++; }
+                    Console.WriteLine("RTLTEXTBLOCK left " + left + " right " + right);
+                }
                 var ft = new FormattedText("Centred", System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight, new Typeface("Arial"), 14, Brushes.Black, 1.0);
                 ft.MaxTextWidth = 300; ft.TextAlignment = TextAlignment.Center;
                 Console.WriteLine("FORMATTEDTEXT boundsX " + ft.BuildHighlightGeometry(new Point(0, 0)).Bounds.X.ToString("F1") + " width " + ft.Width.ToString("F1") + " widthWS " + ft.WidthIncludingTrailingWhitespace.ToString("F1"));

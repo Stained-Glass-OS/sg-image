@@ -77,7 +77,7 @@ index 2703a74..ef759f1 100644
              /// <summary>
              /// Total formatted width
 diff --git a/src/Microsoft.DotNet.Wpf/src/PresentationCore/Managed/TextFormatting/FullTextLine.cs b/src/Microsoft.DotNet.Wpf/src/PresentationCore/Managed/TextFormatting/FullTextLine.cs
-index 4c41699..e386a2a 100644
+index 4c41699..5b75b5d 100644
 --- a/src/Microsoft.DotNet.Wpf/src/PresentationCore/Managed/TextFormatting/FullTextLine.cs
 +++ b/src/Microsoft.DotNet.Wpf/src/PresentationCore/Managed/TextFormatting/FullTextLine.cs
 @@ -169,6 +169,7 @@ FormattedTextSymbols    collapsingSymbol
@@ -107,7 +107,7 @@ index 4c41699..e386a2a 100644
  
                  TextStore store = fullText.TextStore;
                  FormatSettings settings = store.Settings;
-@@ -381,6 +385,26 @@ FormattedTextSymbols    collapsingSymbol
+@@ -381,6 +385,37 @@ FormattedTextSymbols    collapsingSymbol
                          }
                      }
                  }
@@ -131,10 +131,21 @@ index 4c41699..e386a2a 100644
 +						_metrics._paragraphToText = 0;
 +						break;
 +				}
++#if !SG_MUTANT_TF_NO_RTL
++				// Stained Glass OS: a right-to-left paragraph starts at the right. The
++				// line is drawn under a mirror (the element's) and un-mirrored around
++				// the paragraph's width; laid out from the left, its text came back to
++				// the left (RTL TextBlocks and flow paragraphs, Arabic and Hebrew).
++				if (settings.Pap.RightToLeft)
++				{
++					_statusFlags |= StatusFlags.RightToLeft;
++					_metrics._paragraphToText = paragraphWidth - _metrics._textWidthAtTrailing - _metrics._paragraphToText;
++				}
++#endif
  			}
  
  			private int GetShapeableSymbolsWidth(TextShapeableSymbols textRun)
-@@ -427,7 +451,50 @@ private FormattedTextSymbols GetFormattedTextSymbols(TextCharacters textRun, Cha
+@@ -427,7 +462,50 @@ private FormattedTextSymbols GetFormattedTextSymbols(TextCharacters textRun, Cha
  					false); // isSideways
  			}
  
@@ -185,7 +196,7 @@ index 4c41699..e386a2a 100644
  			{
  				if (textRun is TextCharacters)
  				{
-@@ -444,8 +511,7 @@ private TextMetrics GetRunMetrics(FullTextState textState, TextRun textRun, Char
+@@ -444,8 +522,7 @@ private TextMetrics GetRunMetrics(FullTextState textState, TextRun textRun, Char
  					result._baselineOffset = result._textAscent;
  
  					// width calculation
@@ -195,7 +206,7 @@ index 4c41699..e386a2a 100644
  
  					return result;
  				}
-@@ -453,6 +519,13 @@ private TextMetrics GetRunMetrics(FullTextState textState, TextRun textRun, Char
+@@ -453,6 +530,13 @@ private TextMetrics GetRunMetrics(FullTextState textState, TextRun textRun, Char
  				{
  					var result = new TextMetrics();
  					var metric = ((TextEmbeddedObject)textRun).Format((double)remainingParagraphWidth / TextFormatterImp.ToIdeal);
@@ -209,16 +220,18 @@ index 4c41699..e386a2a 100644
  
  					result._textHeight = (int)Math.Round(metric.Height * TextFormatterImp.ToIdeal);
  					result._textWidth = (int)Math.Round(metric.Width * TextFormatterImp.ToIdeal);
-@@ -481,7 +554,7 @@ private TextMetrics GetRunMetrics(FullTextState textState, TextRun textRun, Char
+@@ -481,7 +565,9 @@ private TextMetrics GetRunMetrics(FullTextState textState, TextRun textRun, Char
  
  			private Point GetOffsetToFirstRun()
  			{
 -				return new Point(_metrics._formatter.IdealToReal(_fullText.TextStore.Settings.TextIndent, PixelsPerDip), 0);
-+				return new Point(_metrics._formatter.IdealToReal(_fullText.TextStore.Settings.TextIndent + _metrics._paragraphToText, PixelsPerDip), 0);
++				// (right to left: the indent is in the mirrored offset already)
++				int indent = (_statusFlags & StatusFlags.RightToLeft) != 0 ? 0 : _fullText.TextStore.Settings.TextIndent;
++				return new Point(_metrics._formatter.IdealToReal(indent + _metrics._paragraphToText, PixelsPerDip), 0);
  			}
  
  			private Point AdjustOffset(Point orig)
-@@ -532,6 +605,57 @@ public override void Draw(DrawingContext drawingContext, Point origin, InvertAxe
+@@ -532,6 +618,57 @@ public override void Draw(DrawingContext drawingContext, Point origin, InvertAxe
                  }
  
  				DrawInternal(drawingContext, origin, inversion);
@@ -276,7 +289,7 @@ index 4c41699..e386a2a 100644
  			}
  
  			private void CheckBoundingBox()
-@@ -644,7 +768,7 @@ MatrixTransform     antiInversion
+@@ -644,7 +781,7 @@ MatrixTransform     antiInversion
  
  						boundingBox.Union(Rect.Offset(runBoundingBox, origin.X, origin.Y));
  
@@ -285,7 +298,66 @@ index 4c41699..e386a2a 100644
  					}
  					else if (ordered.TextRun is TextHidden)
  					{
-@@ -725,7 +849,7 @@ public override CharacterHit GetCharacterHitFromDistance(double distance)
+@@ -677,7 +814,58 @@ public override IList<TextCollapsedRange> GetTextCollapsedRanges()
+ 				throw new NotImplementedException("Managed.TextFormatting.FullTextLine.GetTextCollapsedRanges");
+ 			}
+ 
++			// Stained Glass OS: a right-to-left line is drawn from the right (see
++			// FormatLine) and its caret positions are counted from the right, as
++			// the element is mirrored: distances and bounds mirror around the
++			// paragraph's width.
++			private bool MirroredHits
++			{
++				get
++				{
++#if !SG_MUTANT_TF_NO_RTL
++					return (_statusFlags & StatusFlags.RightToLeft) != 0;
++#else
++					return false;
++#endif
++				}
++			}
++
+ 			public override CharacterHit GetCharacterHitFromDistance(double distance)
++			{
++				if (MirroredHits)
++					distance = (double)_paragraphWidth / TextFormatterImp.ToIdeal - distance;
++				return GetCharacterHitFromDistanceVisual(distance);
++			}
++
++			public override IList<TextBounds> GetTextBounds(int firstTextSourceCharacterIndex, int textLength)
++			{
++				IList<TextBounds> visual = GetTextBoundsVisual(firstTextSourceCharacterIndex, textLength);
++				if (!MirroredHits)
++					return visual;
++				double p = (double)_paragraphWidth / TextFormatterImp.ToIdeal;
++				var result = new List<TextBounds>(visual.Count);
++				foreach (TextBounds b in visual)
++				{
++					List<TextRunBounds> runs = null;
++					if (b.TextRunBounds != null)
++					{
++						runs = new List<TextRunBounds>(b.TextRunBounds.Count);
++						foreach (TextRunBounds r in b.TextRunBounds)
++							runs.Add(new TextRunBounds(Mirror(r.Rectangle, p), r.TextSourceCharacterIndex,
++								r.TextSourceCharacterIndex + r.Length, r.TextRun));
++					}
++					result.Add(new TextBounds(Mirror(b.Rectangle, p), b.FlowDirection, runs));
++				}
++				return result;
++			}
++
++			private static Rect Mirror(Rect r, double p)
++			{
++				if (r.IsEmpty) return r;
++				return new Rect(p - r.Right, r.Top, r.Width, r.Height);
++			}
++
++			private CharacterHit GetCharacterHitFromDistanceVisual(double distance)
+ 			{
+ 				if (distance < 0)
+ 					return new CharacterHit(_fullText.TextStore.CpFirst, 0);
+@@ -725,7 +913,7 @@ public override CharacterHit GetCharacterHitFromDistance(double distance)
  					}
  					else if (ordered.TextRun is TextEmbeddedObject)
  					{
@@ -294,7 +366,16 @@ index 4c41699..e386a2a 100644
  
  						index = ordered.CpFirst;
  						length = ordered.Length;  // trailing edge
-@@ -996,7 +1120,7 @@ public override IList<TextBounds> GetTextBounds(int firstTextSourceCharacterInde
+@@ -917,7 +1105,7 @@ public override CharacterHit GetBackspaceCaretCharacterHit(CharacterHit characte
+ 				}
+ 			}
+ 
+-			public override IList<TextBounds> GetTextBounds(int firstTextSourceCharacterIndex, int textLength)
++			private IList<TextBounds> GetTextBoundsVisual(int firstTextSourceCharacterIndex, int textLength)
+ 			{
+ 				var result = new List<TextBounds>();
+ 				double x = GetOffsetToFirstRun().X;
+@@ -996,7 +1184,7 @@ public override IList<TextBounds> GetTextBounds(int firstTextSourceCharacterInde
  					}
  					else if (ordered.TextRun is TextEmbeddedObject)
  					{
@@ -303,7 +384,7 @@ index 4c41699..e386a2a 100644
  
  						if (ordered.CpFirst <= firstTextSourceCharacterIndex + textLength - 1 &&
  							ordered.CpFirst + ordered.Length >= firstTextSourceCharacterIndex)
-@@ -1136,7 +1260,7 @@ public override int DependentLength
+@@ -1136,7 +1324,7 @@ public override int DependentLength
  			{
  				get
  				{
@@ -312,7 +393,7 @@ index 4c41699..e386a2a 100644
  				}
  			}
  
-@@ -1184,7 +1308,7 @@ public override double TextHeight
+@@ -1184,7 +1372,7 @@ public override double TextHeight
  			{
  				get
  				{
@@ -321,7 +402,7 @@ index 4c41699..e386a2a 100644
  				}
  			}
  
-@@ -1200,7 +1324,7 @@ public override double TextBaseline
+@@ -1200,7 +1388,7 @@ public override double TextBaseline
  			{
  				get
  				{
@@ -330,7 +411,7 @@ index 4c41699..e386a2a 100644
  				}
  			}
  
-@@ -1208,7 +1332,7 @@ public override double MarkerBaseline
+@@ -1208,7 +1396,7 @@ public override double MarkerBaseline
  			{
  				get
  				{
@@ -339,7 +420,7 @@ index 4c41699..e386a2a 100644
  				}
  			}
  
-@@ -1216,7 +1340,7 @@ public override double MarkerHeight
+@@ -1216,7 +1404,7 @@ public override double MarkerHeight
  			{
  				get
  				{
@@ -348,7 +429,7 @@ index 4c41699..e386a2a 100644
  				}
  			}
  
-@@ -1282,7 +1406,7 @@ public override bool IsTruncated
+@@ -1282,7 +1470,7 @@ public override bool IsTruncated
  			{
  				get
  				{

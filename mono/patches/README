@@ -62,5 +62,7 @@ wpf-0002-managed-textformatter.patch
       (centre, right) is applied -- centred text drew at the left; a
       line's break is searched with each run shaped once (prefix widths
       summed; the search shaped every prefix again -- 2.8 ms a line in a
-      flow document, now well under 1).
+      flow document, now well under 1); a right-to-left paragraph's lines
+      start at the right, and its carets and bounds are counted from there
+      (right-to-left text drew at the left, under the element's mirror).
 

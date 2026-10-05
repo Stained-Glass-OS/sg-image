@@ -14,6 +14,8 @@
 #   - an inline control (InlineUIContainer) sits in its line;
 #   - centred text is centred (a paragraph and FormattedText);
 #   - 500 paragraphs lay out in under 3 s (SG_WPF_LONG_MS);
+#   - right-to-left text starts at the right (a TextBlock, a paragraph's
+#     caret);
 #   - a table: cells of a row side by side at one height, a cell spanning
 #     two rows as high as they are, what follows below it; a long table
 #     paginated breaks between rows over several pages;
@@ -23,7 +25,7 @@
 # Mutation: sg2 (no wpf patches) fails at once (EntryPointNotFoundException);
 # PresentationFramework/PresentationCore built with -define:SG_MUTANT_PTS_NO_BREAK,
 # SG_MUTANT_PTS_NO_TABLE, SG_MUTANT_NO_MARKER, SG_MUTANT_NO_EMBED_CACHE,
-# SG_MUTANT_NO_ALIGN or SG_MUTANT_TF_RESHAPE each fail
+# SG_MUTANT_NO_ALIGN, SG_MUTANT_TF_RESHAPE or SG_MUTANT_TF_NO_RTL each fail
 # their check (SG_MONO_DIR= a Mono tree with the mutant assemblies in its GAC).
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
@@ -86,6 +88,11 @@ else
     fail "table: $(grep -m1 "^TABLE " "$T/out")"
 fi
 tp=$(sed -n 's/^TABLEPAGES \([0-9]*\).*/\1/p' "$T/out"); [ "${tp:-0}" -ge 3 ] && pass "a 40-row table at 300 x 200 breaks between rows over $tp pages" || fail "table pages: ${tp:-?}"
+r=$(sed -n 's/^RTLTEXTBLOCK left \([0-9]*\) right \([0-9]*\).*/\1 \2/p' "$T/out")
+case "$r" in "0 "[1-9]*) pass "a right-to-left TextBlock's text is at its right (ink left/right: $r)";;
+             *) fail "right-to-left TextBlock ink left/right: '${r:-?}' (drew at the left)";; esac
+x=$(sed -n 's/^FLOW centredX [0-9.]* rtlX \([0-9.]*\).*/\1/p' "$T/out")
+[ "${x%.*}" -ge 250 ] 2>/dev/null && pass "a right-to-left paragraph's caret is at its text, on the right (x $x)" || fail "right-to-left caret at x ${x:-?}"
 # speed: the managed TextFormatter shaped each prefix of a line again while
 # searching its break (4.6 s for these 500 paragraphs on the dev host);
 # shaped once per run it takes about 1.3 s
