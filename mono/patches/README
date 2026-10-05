@@ -59,5 +59,8 @@ wpf-0002-managed-textformatter.patch
       inline object (InlineUIContainer) is measured while its line is
       formatted, not again when drawn or queried (the flow layout can only
       measure it then: InvalidCastException); the paragraph's alignment
-      (centre, right) is applied -- centred text drew at the left.
+      (centre, right) is applied -- centred text drew at the left; a
+      line's break is searched with each run shaped once (prefix widths
+      summed; the search shaped every prefix again -- 2.8 ms a line in a
+      flow document, now well under 1).
 
