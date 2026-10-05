@@ -315,9 +315,9 @@ $(APPS_DIR)/VERSION: Makefile
 # upstream tarball (dl.winehq.org, sha256 fd772219...bf13858) is what it
 # replaces; test/mono-fork-test.sh tells them apart.
 MONO_VERSION       := 9.4.0
-MONO_BUILD         := sg6
+MONO_BUILD         := sg7
 MONO_URL           := https://freesoft.page/addons/wine-mono-$(MONO_VERSION)-$(MONO_BUILD)-x86.tar.xz
-MONO_SHA256        := 2b62d570c6ed95a214871470d3f8b2db2655328079f3f1438628b98307102155
+MONO_SHA256        := baa86568634f593cbdedf52a40d309c96efabf98cadc028a1895bba374931847
 GECKO_VERSION      := 2.47.4
 GECKO_X86_SHA256   := 2cfc8d5c948602e21eff8a78613e1826f2d033df9672cace87fed56e8310afb6
 GECKO_X64_SHA256   := fd88fc7e537d058d7a8abf0c1ebc90c574892a466de86706a26d254710a82814

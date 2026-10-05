@@ -66,3 +66,10 @@ wpf-0002-managed-textformatter.patch
       start at the right, and its carets and bounds are counted from there
       (right-to-left text drew at the left, under the element's mirror).
 
+wpf-0003-composite-font-fallbacks.patch
+    PresentationCore's composite fonts (Global User Interface, Sans Serif,
+      Serif, Monospace): every family map's Target ends with families a
+      Stained Glass OS machine has -- Liberation, DejaVu, Noto CJK,
+      Symbola. They named only Windows' (Segoe UI, Tahoma, MS Gothic...),
+      so Hebrew, Arabic, CJK and symbols in WPF text were boxes.
+

@@ -162,6 +162,19 @@ class Probe
                     for (int y = 0; y < 50; y++) for (int x = 0; x < 300; x++) if (ph[(y * 300 + x) * 4 + 3] > 128) { if (x < 150) hl++; else hr++; }
                     Console.WriteLine("RTLHEBREW left " + hl + " right " + hr);
                     { var enc = new PngBitmapEncoder(); enc.Frames.Add(BitmapFrame.Create(bmpH)); using (var fs = File.Create(Path.Combine(outDir, "heb.png"))) enc.Save(fs); }
+                    var multi = new TextBlock { Text = "A \u05e9\u05dc\u05d5\u05dd \u4e2d\u6587 \u3072\u3089\u304c\u306a \U0001F600 \u2605", Width = 400, FontSize = 20 };
+                    multi.Measure(new Size(400, 50)); multi.Arrange(new Rect(0, 0, 400, 50));
+                    var bmpM = new RenderTargetBitmap(400, 50, 96, 96, PixelFormats.Pbgra32); bmpM.Render(multi);
+                    { var enc = new PngBitmapEncoder(); enc.Frames.Add(BitmapFrame.Create(bmpM)); using (var fs = File.Create(Path.Combine(outDir, "multi.png"))) enc.Save(fs); }
+                    Func<string, byte[]> ink = txt => {
+                        var tb2 = new TextBlock { Text = txt, FontSize = 20 };
+                        tb2.Measure(new Size(300, 50)); tb2.Arrange(new Rect(0, 0, 300, 50));
+                        var b2 = new RenderTargetBitmap(300, 50, 96, 96, PixelFormats.Pbgra32); b2.Render(tb2);
+                        byte[] px2 = new byte[300 * 4 * 50]; b2.CopyPixels(px2, 300 * 4, 0); return px2; };
+                    Func<byte[], byte[], bool> same = (a, b) => { for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false; return true; };
+                    byte[] boxes4 = ink("\ue000\ue001\ue002\ue003"), boxes1 = ink("\ue000");
+                    Console.WriteLine("FALLBACK hebrew " + (same(ink("\u05e9\u05dc\u05d5\u05dd"), boxes4) ? "boxes" : "glyphs")
+                        + " symbol " + (same(ink("\u2605"), boxes1) ? "boxes" : "glyphs"));
                     var rtl = new TextBlock { Text = "Hello", FlowDirection = FlowDirection.RightToLeft, Width = 300, FontSize = 20 };
                     rtl.Measure(new Size(300, 50)); rtl.Arrange(new Rect(0, 0, 300, 50));
                     var bmpR = new RenderTargetBitmap(300, 50, 96, 96, PixelFormats.Pbgra32); bmpR.Render(rtl);

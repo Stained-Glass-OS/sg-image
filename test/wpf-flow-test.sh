@@ -16,6 +16,8 @@
 #   - 500 paragraphs lay out in under 3 s (SG_WPF_LONG_MS);
 #   - right-to-left text starts at the right (a TextBlock, a paragraph's
 #     caret);
+#   - Hebrew and a symbol come from the machine's fonts, not as boxes
+#     (wpf-0003; sg6 drew boxes);
 #   - a table: cells of a row side by side at one height, a cell spanning
 #     two rows as high as they are, what follows below it; a long table
 #     paginated breaks between rows over several pages;
@@ -93,6 +95,8 @@ case "$r" in "0 "[1-9]*) pass "a right-to-left TextBlock's text is at its right 
              *) fail "right-to-left TextBlock ink left/right: '${r:-?}' (drew at the left)";; esac
 x=$(sed -n 's/^FLOW centredX [0-9.]* rtlX \([0-9.]*\).*/\1/p' "$T/out")
 [ "${x%.*}" -ge 250 ] 2>/dev/null && pass "a right-to-left paragraph's caret is at its text, on the right (x $x)" || fail "right-to-left caret at x ${x:-?}"
+f=$(sed -n 's/^FALLBACK //p' "$T/out" | tr -d '\r')
+[ "$f" = "hebrew glyphs symbol glyphs" ] && pass "Hebrew and symbols drawn from the machine's fonts (not boxes)" || fail "fallback fonts: '${f:-?}'"
 # speed: the managed TextFormatter shaped each prefix of a line again while
 # searching its break (4.6 s for these 500 paragraphs on the dev host);
 # shaped once per run it takes about 1.3 s
