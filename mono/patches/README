@@ -12,6 +12,23 @@ wine-mono-0002-assemblyfolders-v3.patch
     their absence for .NET 3.5 missing and ran Microsoft's 3.5 SP1 setup,
     which refuses on Windows 10 ("Turn Windows features on or off").
 
+wine-mono-0003-netfx35-feature-files.patch (sg10)
+    The support MSI leaves what a machine with the .NET Framework 3.5
+    feature on has: NDP\v3.5 InstallPath and CBS, NDP\v2.0.50727/v3.0 CBS,
+    NDP\v3.0\Setup\Windows Presentation/Communication Foundation
+    InstallSuccess+Version, AssemblyFolders\DX_1.0.2902.0 (Managed DirectX,
+    which Mono implements; MeediOS's setup ran DirectX's setup without it),
+    the 64-bit view's AssemblyFolders in [ProgramFiles64Folder]; files:
+    Framework(64)\v3.5\csc.exe (3.5's compiler: the 2.0 runtime with the 3.5
+    libraries) and Program Files (both views)\Reference Assemblies\
+    Microsoft\Framework\v3.0 and v3.5 with Mono's 2.0-api reference
+    assemblies (System.Core 3.5, System.Xml.Linq, System.ServiceModel...),
+    where AssemblyFolders points. build-msi-tables.sh: a top-level
+    ProgramFilesFolder/ProgramFiles64Folder in the image is the MSI's own
+    folder of that name. Existing prefixes get it through sg-session's
+    sg_mono_support_refresh (0.1.0-109), which re-applies the support MSI
+    when it changed -- Wine does not while the version stays 9.4.0.
+
 mono-0001-sg-fixes.patch
     System.Core: System.Diagnostics.Eventing.Reader (EventLogWatcher,
       EventLogSession, EventLogReader...), our own; there are no event logs

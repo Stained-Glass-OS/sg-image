@@ -1,0 +1,114 @@
+diff --git a/msi-tables/support/registry.idt b/msi-tables/support/registry.idt
+--- a/msi-tables/support/registry.idt
++++ b/msi-tables/support/registry.idt
+@@ -26,6 +26,15 @@
+ NDP351033Install	2	Software\Microsoft\NET Framework Setup\NDP\v3.5\1033	Install	#1	mono-registry
+ AsmFolders30	2	Software\Microsoft\.NETFramework\AssemblyFolders\v3.0		[ProgramFilesFolder]Reference Assemblies\Microsoft\Framework\v3.0\	mono-registry
+ AsmFolders35	2	Software\Microsoft\.NETFramework\AssemblyFolders\v3.5		[ProgramFilesFolder]Reference Assemblies\Microsoft\Framework\v3.5\	mono-registry
++NDP20CBS	2	Software\Microsoft\NET Framework Setup\NDP\v2.0.50727	CBS	#1	mono-registry
++NDP30CBS	2	Software\Microsoft\NET Framework Setup\NDP\v3.0	CBS	#1	mono-registry
++NDP30WCFInstallSuccess	2	Software\Microsoft\NET Framework Setup\NDP\v3.0\Setup\Windows Communication Foundation	InstallSuccess	#1	mono-registry
++NDP30WCFVersion	2	Software\Microsoft\NET Framework Setup\NDP\v3.0\Setup\Windows Communication Foundation	Version	3.0.4506.4926	mono-registry
++NDP30WPFInstallSuccess	2	Software\Microsoft\NET Framework Setup\NDP\v3.0\Setup\Windows Presentation Foundation	InstallSuccess	#1	mono-registry
++NDP30WPFVersion	2	Software\Microsoft\NET Framework Setup\NDP\v3.0\Setup\Windows Presentation Foundation	Version	3.0.6920.4902	mono-registry
++NDP35CBS	2	Software\Microsoft\NET Framework Setup\NDP\v3.5	CBS	#1	mono-registry
++NDP35InstallPath	2	Software\Microsoft\NET Framework Setup\NDP\v3.5	InstallPath	[WindowsFolder]Microsoft.NET\Framework\v3.5\	mono-registry
++AsmFoldersDX	2	Software\Microsoft\.NETFramework\AssemblyFolders\DX_1.0.2902.0		[WindowsFolder]Microsoft.NET\DirectX for Managed Code\1.0.2902.0\	mono-registry
+ NDP4ClientInstall	2	Software\Microsoft\NET Framework Setup\NDP\v4\Client	Install	#1	mono-registry
+ NDP4ClientRelease	2	Software\Microsoft\NET Framework Setup\NDP\v4\Client	Release	#533320	mono-registry
+ NDP4ClientVersion	2	Software\Microsoft\NET Framework Setup\NDP\v4\Client	Version	4.7.03190	mono-registry
+@@ -80,8 +89,17 @@
+ NDP35SP_64	2	Software\Microsoft\NET Framework Setup\NDP\v3.5	SP	#1	mono-registry64
+ NDP35Version_64	2	Software\Microsoft\NET Framework Setup\NDP\v3.5	Version	3.5.30729.4926	mono-registry64
+ NDP351033Install_64	2	Software\Microsoft\NET Framework Setup\NDP\v3.5\1033	Install	#1	mono-registry64
+-AsmFolders30_64	2	Software\Microsoft\.NETFramework\AssemblyFolders\v3.0		[ProgramFilesFolder]Reference Assemblies\Microsoft\Framework\v3.0\	mono-registry64
+-AsmFolders35_64	2	Software\Microsoft\.NETFramework\AssemblyFolders\v3.5		[ProgramFilesFolder]Reference Assemblies\Microsoft\Framework\v3.5\	mono-registry64
++AsmFolders30_64	2	Software\Microsoft\.NETFramework\AssemblyFolders\v3.0		[ProgramFiles64Folder]Reference Assemblies\Microsoft\Framework\v3.0\	mono-registry64
++AsmFolders35_64	2	Software\Microsoft\.NETFramework\AssemblyFolders\v3.5		[ProgramFiles64Folder]Reference Assemblies\Microsoft\Framework\v3.5\	mono-registry64
++NDP20CBS_64	2	Software\Microsoft\NET Framework Setup\NDP\v2.0.50727	CBS	#1	mono-registry64
++NDP30CBS_64	2	Software\Microsoft\NET Framework Setup\NDP\v3.0	CBS	#1	mono-registry64
++NDP30WCFInstallSuccess_64	2	Software\Microsoft\NET Framework Setup\NDP\v3.0\Setup\Windows Communication Foundation	InstallSuccess	#1	mono-registry64
++NDP30WCFVersion_64	2	Software\Microsoft\NET Framework Setup\NDP\v3.0\Setup\Windows Communication Foundation	Version	3.0.4506.4926	mono-registry64
++NDP30WPFInstallSuccess_64	2	Software\Microsoft\NET Framework Setup\NDP\v3.0\Setup\Windows Presentation Foundation	InstallSuccess	#1	mono-registry64
++NDP30WPFVersion_64	2	Software\Microsoft\NET Framework Setup\NDP\v3.0\Setup\Windows Presentation Foundation	Version	3.0.6920.4902	mono-registry64
++NDP35CBS_64	2	Software\Microsoft\NET Framework Setup\NDP\v3.5	CBS	#1	mono-registry64
++NDP35InstallPath_64	2	Software\Microsoft\NET Framework Setup\NDP\v3.5	InstallPath	[WindowsFolder]Microsoft.NET\Framework64\v3.5\	mono-registry64
++AsmFoldersDX_64	2	Software\Microsoft\.NETFramework\AssemblyFolders\DX_1.0.2902.0		[WindowsFolder]Microsoft.NET\DirectX for Managed Code\1.0.2902.0\	mono-registry64
+ NDP4ClientInstall_64	2	Software\Microsoft\NET Framework Setup\NDP\v4\Client	Install	#1	mono-registry64
+ NDP4ClientRelease_64	2	Software\Microsoft\NET Framework Setup\NDP\v4\Client	Release	#533320	mono-registry64
+ NDP4ClientVersion_64	2	Software\Microsoft\NET Framework Setup\NDP\v4\Client	Version	4.7.03190	mono-registry64
+diff --git a/support.make b/support.make
+index 416e128..3c56f6c 100644
+--- a/support.make
++++ b/support.make
+@@ -39,6 +39,30 @@ $(foreach arch,Framework Framework64,$(BUILDDIR)/image-support/Microsoft.NET/$(a
+ 	$(MONO_ENV) mcs $(SRCDIR)/tools/csc-wrapper/csc-wrapper.cs /d:VERSION40 -out:$@ -r:WineMono.Posix
+ IMAGE_SUPPORT_FILES += $(foreach arch,Framework Framework64,$(BUILDDIR)/image-support/Microsoft.NET/$(arch)/v4.0.30319/csc.exe)
+ 
++# Stained Glass OS: .NET Framework 3.5's own folder has a compiler, as on a
++# machine with the 3.5 feature on (3.5's C# compiler targets the 2.0 runtime
++# with the 3.5 libraries -- Mono's 2.0-api, which holds System.Core 3.5).
++$(foreach arch,Framework Framework64,$(BUILDDIR)/image-support/Microsoft.NET/$(arch)/v3.5/csc.exe): $(BUILDDIR)/mono-unix/.installed $(SRCDIR)/tools/csc-wrapper/csc-wrapper.cs
++	mkdir -p $(@D)
++	$(MONO_ENV) mcs $(SRCDIR)/tools/csc-wrapper/csc-wrapper.cs /d:VERSION20 -out:$@ -r:WineMono.Posix
++IMAGE_SUPPORT_FILES += $(foreach arch,Framework Framework64,$(BUILDDIR)/image-support/Microsoft.NET/$(arch)/v3.5/csc.exe)
++
++# Stained Glass OS: the reference assemblies .NET 3.0 and 3.5 put in Program
++# Files\Reference Assemblies\Microsoft\Framework\v3.0 and v3.5, where their
++# AssemblyFolders keys point (both views; ProgramFilesFolder and
++# ProgramFiles64Folder are the MSI's own folders, see build-msi-tables.sh).
++REFASM_V30 := System.IdentityModel System.IdentityModel.Selectors System.Runtime.Serialization System.ServiceModel WindowsBase
++REFASM_V35 := System.Core System.Data.DataSetExtensions System.Data.Linq System.Net System.ServiceModel.Web System.Web.Extensions System.Web.Extensions.Design System.Xml.Linq
++$(BUILDDIR)/.supportrefasm: $(BUILDDIR)/mono-unix/.installed $(SRCDIR)/support.make
++	for pf in ProgramFilesFolder ProgramFiles64Folder; do \
++	    d="$(BUILDDIR)/image-support/$$pf/Reference Assemblies/Microsoft/Framework"; \
++	    mkdir -p "$$d/v3.0" "$$d/v3.5"; \
++	    for a in $(REFASM_V30); do cp "$(BUILDDIR)/mono-unix-install/lib/mono/2.0-api/$$a.dll" "$$d/v3.0/" || exit 1; done; \
++	    for a in $(REFASM_V35); do cp "$(BUILDDIR)/mono-unix-install/lib/mono/2.0-api/$$a.dll" "$$d/v3.5/" || exit 1; done; \
++	done
++	touch $@
++IMAGE_SUPPORT_FILES += $(BUILDDIR)/.supportrefasm
++
+ # installutil.exe
+ $(foreach version,v2.0.50727 v4.0.30319,$(BUILDDIR)/image-support/Microsoft.NET/Framework/$(version)/installutil.exe): $(BUILDDIR)/mono-unix/.installed $(BUILDDIR)/fixupclr.exe
+ 	mkdir -p $(@D)
+@@ -58,12 +82,12 @@ $(BUILDDIR)/.supportemptydirs: $(SRCDIR)/support.make
+ 	mkdir -p $(BUILDDIR)/image-support/Microsoft.NET/Framework64/v3.0/wpf
+ 	mkdir -p $(BUILDDIR)/image-support/Microsoft.NET/Framework64/v3.0/"windows communication foundation"
+ 	mkdir -p $(BUILDDIR)/image-support/Microsoft.NET/Framework64/v3.5
+-	mkdir -p $(BUILDDIR)/image-support/Microsoft.NET/"DirectX for Managed Code"
++	mkdir -p $(BUILDDIR)/image-support/Microsoft.NET/"DirectX for Managed Code"/1.0.2902.0
+ 	touch $@
+ IMAGE_SUPPORT_FILES += $(BUILDDIR)/.supportemptydirs
+ 
+ clean-image-support:
+-	rm -rf $(BUILDDIR)/image-support $(BUILDDIR)/.supportemptydirs
++	rm -rf $(BUILDDIR)/image-support $(BUILDDIR)/.supportemptydirs $(BUILDDIR)/.supportrefasm
+ .PHONY: clean-image-support
+ clean-build: clean-image-support
+ 
+diff --git a/tools/build-msi-tables.sh b/tools/build-msi-tables.sh
+index 776cdfa..14abf0b 100644
+--- a/tools/build-msi-tables.sh
++++ b/tools/build-msi-tables.sh
+@@ -35,11 +35,19 @@ find . '!' -name '*.pdb' | cut -d '/' -f2- | while read -r f; do
+     fi
+ 
+     if test -d "$f"; then
++        # Stained Glass OS: a top-level ProgramFilesFolder or ProgramFiles64Folder
++        # is the MSI's own folder of that name (Program Files, both views),
++        # not a folder under the root.
++        case "$f" in
++        ProgramFilesFolder|ProgramFiles64Folder)
++            printf "%s\tTARGETDIR\t.\n" "$f" >> ${TABLEDIR}/directory.idt
++            continue;;
++        esac
+         GUID=`uuidgen -s -n 26a7bdb4-1612-4e2b-a26e-e548a12e4d48 -N "$f" | tr [a-z] [A-Z]`
+         KEYPATH=`find "$f" -maxdepth 1 -type f '!' -name '*.pdb'|sort|head -n 1|sed -e "$FILEKEY_EXPR"`
+ 
+         case "$f" in
+-        Microsoft.NET/Framework64*) CONDITION='(VersionNT64)';;
++        Microsoft.NET/Framework64*|ProgramFiles64Folder/*) CONDITION='(VersionNT64)';;
+         *) CONDITION=;;
+         esac
+ 

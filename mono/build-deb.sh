@@ -21,7 +21,7 @@ TARBALL=${1:?usage: build-deb.sh TARBALL OUT_DIR}
 OUT=${2:?usage}
 PKG=sg-wine-mono
 MONO_VERSION=9.4.0
-VERSION=$MONO_VERSION+sg9-1
+VERSION=$MONO_VERSION+sg10-1
 
 W=$(mktemp -d "${TMPDIR:-/var/tmp}/sg-mono-deb.XXXXXX")
 trap 'rm -rf "$W"' EXIT

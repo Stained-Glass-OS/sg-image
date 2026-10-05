@@ -11,7 +11,14 @@
 #     .NETFramework\AssemblyFolders\v3.0/v3.5 (installers take that for
 #     .NET 3.5 SP1 being there);
 #   - System.Drawing has .NET Framework's private names that programs reach by
-#     reflection (AmbirScan's GdPicture).
+#     reflection (AmbirScan's GdPicture);
+#   - (sg10) .NET 3.5 as a machine with the NetFx3 feature on has it: NDP\v3.5
+#     InstallPath and CBS, NDP\v3.0\Setup WPF/WCF, AssemblyFolders\DX_1.0.2902.0
+#     (Managed DirectX, which Mono has; MeediOS's setup ran DirectX's without
+#     it), the 64-bit view's AssemblyFolders in Program Files (not x86), and
+#     the files: Framework\v3.5\csc.exe (compiles a LINQ program for the 2.0
+#     runtime), Program Files\Reference Assemblies\Microsoft\Framework\v3.0
+#     and v3.5 with their reference assemblies (System.Core 3.5...).
 # Programs are compiled here with Mono's own mcs.exe, under Wine; the image's
 # addons tree is the Mono that runs them.
 #
@@ -41,12 +48,45 @@ rows=$(msiinfo export "$MONO/support/winemono-support.msi" Registry 2>/dev/null 
 [ "$rows" = 4 ] && pass "the support MSI writes NDP v4 Client/Full InstallPath, both views" || fail "InstallPath rows: $rows"
 rows=$(msiinfo export "$MONO/support/winemono-support.msi" Registry 2>/dev/null | grep -c 'NETFramework.AssemblyFolders.v3\.[05]'"$(printf '\t')"'.*Reference Assemblies')
 [ "$rows" = 4 ] && pass "and .NETFramework AssemblyFolders v3.0 and v3.5, both views (Meedio's setup ran .NET 3.5 SP1's, refused on Windows 10)" || fail "AssemblyFolders rows: $rows"
+REG=$(msiinfo export "$MONO/support/winemono-support.msi" Registry 2>/dev/null)
+rows=$(printf '%s\n' "$REG" | grep -c -e 'NDP\\v3\.5	InstallPath	\[WindowsFolder\]Microsoft\.NET\\Framework\(64\)\?\\v3\.5\\' -e 'NDP\\v3\.5	CBS	#1')
+[ "$rows" = 4 ] && pass "NDP v3.5 InstallPath and CBS (the feature's), both views" || fail "NDP v3.5 InstallPath/CBS rows: $rows"
+rows=$(printf '%s\n' "$REG" | grep -c 'NDP\\v3\.0\\Setup\\Windows \(Presentation\|Communication\) Foundation	InstallSuccess	#1')
+[ "$rows" = 4 ] && pass "NDP v3.0 Setup: WPF and WCF InstallSuccess, both views" || fail "v3.0 WPF/WCF rows: $rows"
+rows=$(printf '%s\n' "$REG" | grep -c 'AssemblyFolders\\DX_1\.0\.2902\.0		\[WindowsFolder\]Microsoft\.NET\\DirectX for Managed Code\\1\.0\.2902\.0\\')
+[ "$rows" = 2 ] && pass "AssemblyFolders DX_1.0.2902.0 (Managed DirectX), both views" || fail "DX rows: $rows"
+rows=$(printf '%s\n' "$REG" | grep -c 'AssemblyFolders\\v3\.[05]		\[ProgramFiles64Folder\].*mono-registry64')
+[ "$rows" = 2 ] && pass "the 64-bit view's AssemblyFolders v3.0/v3.5 in Program Files (64-bit)" || fail "64-bit AssemblyFolders rows: $rows"
+FILES=$(msiinfo export "$MONO/support/winemono-support.msi" File 2>/dev/null)
+rows=$(printf '%s\n' "$FILES" | grep -c -e '^Microsoft\.NET\\Framework\(64\)\?\\v3\.5\\csc\.exe	' -e '^ProgramFiles\(64\)\?Folder\\Reference Assemblies\\Microsoft\\Framework\\v3\.5\\System\.Core\.dll	')
+[ "$rows" = 4 ] && pass "files: Framework(64) v3.5 csc.exe, Reference Assemblies v3.5 System.Core.dll (both Program Files)" || fail "v3.5 file rows: $rows"
 msiinfo export "$MONO/support/winemono-support.msi" Property 2>/dev/null | grep -q '^ProductCode	{[0-9A-F-]\{36\}}' \
     && pass "and has a ProductCode (a build without uuidgen had {})" || fail "support MSI ProductCode"
 
 "$WINE" wineboot -i >/dev/null 2>&1; "$WINESERVER" -w
 "$WINE" reg add 'HKCU\Software\Wine\Mono' /v RuntimePath /d "$("$WINE" winepath -w "$MONO" | tr -d '\r')" /f >/dev/null 2>&1
 C="$WINEPREFIX/drive_c"
+# (sg10) the support MSI applied as sg-session applies it to a machine made
+# before it: the 3.5 files land, and 3.5's csc.exe compiles for the 2.0 runtime
+"$WINE" msiexec /i "$("$WINE" winepath -w "$MONO/support/winemono-support.msi" | tr -d '\r')" REINSTALL=ALL REINSTALLMODE=vomus /qn >/dev/null 2>&1
+for f in "Program Files (x86)/Reference Assemblies/Microsoft/Framework/v3.5/System.Core.dll" \
+         "Program Files/Reference Assemblies/Microsoft/Framework/v3.5/System.Xml.Linq.dll" \
+         "Program Files (x86)/Reference Assemblies/Microsoft/Framework/v3.0/System.ServiceModel.dll" \
+         "windows/Microsoft.NET/Framework/v3.5/csc.exe" "windows/Microsoft.NET/Framework64/v3.5/csc.exe"; do
+    [ -s "$C/$f" ] && pass "installed: C:/$f" || fail "not installed: C:/$f"
+done
+[ -d "$C/windows/Microsoft.NET/DirectX for Managed Code/1.0.2902.0" ] && pass "installed: DirectX for Managed Code/1.0.2902.0" || fail "no DirectX for Managed Code/1.0.2902.0"
+"$WINE" reg query 'HKLM\Software\Microsoft\.NETFramework\AssemblyFolders\v3.5' /reg:64 2>/dev/null | tr -d '\r' | grep -q 'C:\\Program Files\\Reference Assemblies' \
+    && pass "64-bit view AssemblyFolders v3.5 is C:/Program Files/Reference Assemblies/..." || fail "64-bit AssemblyFolders v3.5 value"
+cat > "$C/linq.cs" <<'CS'
+using System; using System.Linq; using System.Xml.Linq;
+class L { static void Main() { Console.WriteLine("linq=" + new XElement("a", Enumerable.Range(1, 3).Select(i => new XElement("b", i))).Elements().Count()); } }
+CS
+(cd "$C" && timeout 300 "$WINE" 'C:\windows\Microsoft.NET\Framework\v3.5\csc.exe' /r:System.Core.dll /r:System.Xml.Linq.dll /out:linq.exe linq.cs >"$T/csc35.out" 2>&1)
+out=$(cd "$C" && timeout 120 "$WINE" linq.exe 2>&1 | tr -d '\r')
+[ "$(printf '%s\n' "$out" | sed -n 's/^linq=//p')" = 3 ] && strings -a "$C/linq.exe" | grep -q '^v2\.0\.50727$' \
+    && pass "Framework v3.5 csc.exe compiles a LINQ program for the 2.0 runtime, and it runs" \
+    || fail "v3.5 csc: $(tail -2 "$T/csc35.out") / $out"
 cat > "$C/fork.cs" <<'CS'
 using System;
 using System.Configuration;
