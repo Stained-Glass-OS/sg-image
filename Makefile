@@ -19,7 +19,7 @@ SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 SG_MAIL     ?= ../sg-mail
 
-.PHONY: image-deps-test mono-config-test mono-fork-test wpf-flow-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
+.PHONY: image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants mono-config-test mono-fork-test wpf-flow-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
 
 all: image
 
@@ -433,6 +433,40 @@ $(MONO_ROOT)/.done: $(MONO_TARBALL) mono/build-deb.sh mono/mono-fixes.sh
 	dpkg-deb -x $(BUILD)/mono-deb/sg-wine-mono_*_all.deb $(MONO_ROOT)
 	@touch $@
 
+# Thunderbird, SG Mail's engine: our package of Mozilla's official build
+# (thunderbird/build-deb.sh: Mozilla's tarball unmodified, in place of
+# Debian's ESR; David 2026-10-05). Each image or publish asks Mozilla's
+# product-details for the newest version on SG_TB_CHANNEL (release); a newer
+# one is downloaded, verified against Mozilla's signed SHA512SUMS, built,
+# gated (thunderbird/gate-new.sh: the package gate, then SG Mail's gates
+# against it) and cached in $(TB_CACHE); otherwise the cached package is used.
+# Mozilla unreachable, or a new version failing any of that, keeps the
+# cached one (a WARNING in the log); only no package at all fails.
+TB_CACHE := $(BUILD)/thunderbird-cache
+
+thunderbird-deb: staged-debs
+	SG_TB_GATE="$(CURDIR)/thunderbird/gate-new.sh" SG_MAIL="$(abspath $(SG_MAIL))" \
+	  thunderbird/update.sh $(TB_CACHE) $(EXTRA_TREE)/opt/sg-packages
+
+# The gates on the cached package and the cached Mozilla release:
+# test/thunderbird-deb-test.sh (installs over Debian's thunderbird and fresh,
+# `thunderbird --version`, unmodified) and test/thunderbird-update-test.sh
+# (update.sh's decisions against stand-ins). The -mutants target runs each
+# against its mutants (each must fail).
+TB_TEST_RUN = rm -rf $(BUILD)/thunderbird-stage && mkdir -p $(BUILD)/thunderbird-stage && \
+	SG_TB_GATE= thunderbird/update.sh $(TB_CACHE) $(BUILD)/thunderbird-stage >/dev/null && \
+	deb=$$(ls $(TB_CACHE)/thunderbird_*_amd64.deb | head -1) && \
+	v=$$(dpkg-deb -f $$deb Version | sed 's/^[0-9]*://; s/-sg[0-9]*$$//') && \
+	test -f $(TB_CACHE)/dl/$$v/thunderbird-$$v.tar.xz || { echo "no Mozilla tarball cached for $$v (a package seeded from the repository): rm -rf $(TB_CACHE) to build one"; exit 77; }
+thunderbird-test:
+	@$(TB_TEST_RUN); \
+	  test/thunderbird-deb-test.sh $$deb $(TB_CACHE)/dl/$$v/thunderbird-$$v.tar.xz && \
+	  test/thunderbird-update-test.sh $(TB_CACHE)/dl/$$v
+thunderbird-test-mutants:
+	@$(TB_TEST_RUN); \
+	  test/thunderbird-deb-test.sh $$deb $(TB_CACHE)/dl/$$v/thunderbird-$$v.tar.xz --mutants && \
+	  test/thunderbird-update-test.sh $(TB_CACHE)/dl/$$v --mutants
+
 # Wine Mono with the image's fixes runs a WinForms program's .config
 # (Greenshot's DpiAwareness section); test/mono-config-test.sh.
 mono-config-test: $(MONO_ROOT)/.done
@@ -524,7 +558,7 @@ repo: staged-debs
 repo-check: repo
 	repo/check-repo.sh $(BUILD)/apt
 
-publish: staged-debs speech d3d-deb mono-deb gecko-deb gtk-deb dymo-deb
+publish: staged-debs speech d3d-deb mono-deb gecko-deb gtk-deb dymo-deb thunderbird-deb
 	repo/publish.sh $(REPO_DEBS)
 
 # --- the boot splash ---------------------------------------------------------
@@ -549,7 +583,7 @@ splash: staged-debs
 
 # --- image -----------------------------------------------------------------
 
-image: staged-debs d3d-deb apps addons mono-deb gecko-deb gtk-deb dymo-deb speech splash
+image: staged-debs d3d-deb apps addons mono-deb gecko-deb gtk-deb dymo-deb thunderbird-deb speech splash
 	@# Our packages go in with dpkg: their dependencies must be in mkosi.conf
 	@# (or come with what is), else the build fails at its very end.
 	sh test/image-deps-test.sh $(EXTRA_TREE)/opt/sg-packages || [ $$? = 77 ]

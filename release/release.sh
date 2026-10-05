@@ -101,6 +101,9 @@ done
 gate() { "$@"; }
 
 step image     gate make image
+# Thunderbird (thunderbird/update.sh): a newer Mozilla release built, or kept
+# back (Mozilla unreachable, or the new one failed its gates) -- say which
+grep -h '^\[thunderbird\] \(staged\|WARNING\)' "$L/image.log" | while read -r l; do log "$l"; done || true
 step boot-test gate make boot-test
 step net-test  gate make net-test
 if [[ $PUBLISH == 1 ]]; then step publish gate make publish; fi

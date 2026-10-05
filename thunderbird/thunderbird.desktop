@@ -1,0 +1,24 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Thunderbird
+GenericName=Mail Client
+Comment=Read and write mail, calendar and news with Thunderbird
+Exec=/usr/bin/thunderbird %u
+Terminal=false
+X-MultipleArgs=false
+Icon=thunderbird
+Categories=Network;Email;News;GTK;
+MimeType=message/rfc822;text/calendar;text/vcard;text/x-vcard;x-scheme-handler/mailto;x-scheme-handler/mid;x-scheme-handler/news;x-scheme-handler/webcal;x-scheme-handler/webcals;
+StartupWMClass=thunderbird
+StartupNotify=true
+Keywords=EMail;E-mail;Contact;Addressbook;News;Calendar;
+Actions=ComposeMessage;OpenAddressBook;
+
+[Desktop Action ComposeMessage]
+Name=Write new message
+Exec=/usr/bin/thunderbird -compose
+
+[Desktop Action OpenAddressBook]
+Name=Open address book
+Exec=/usr/bin/thunderbird -addressbook
