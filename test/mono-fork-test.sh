@@ -23,7 +23,10 @@
 #     (DYMO Connect's second start); ManagementEventWatcher.Start does not
 #     throw (DYMO Connect's launcher); System.Printing's LocalPrintServer
 #     lists the spooler's queues with their drivers and ports, and a queue's
-#     jobs (DYMO Connect's printer discovery).
+#     jobs (DYMO Connect's printer discovery);
+#   - (sg12) a queue's print ticket (the printer's DEVMODE) and capabilities;
+#     a font family's names (FamilyNames was always empty: DYMO Connect's
+#     label editor crashed at the first letter typed).
 # Programs are compiled here with Mono's own mcs.exe, under Wine; the image's
 # addons tree is the Mono that runs them.
 #
@@ -278,4 +281,37 @@ out=$(cd "$C" && timeout 120 "$WINE" sg11.exe 2>&1 | tr -d '\r')
 [ "$(v queue)" = "Label desk|SG Label 550|USB001|False" ] && pass "LocalPrintServer lists the queue with its driver and port (DYMO Connect's discovery)" \
     || fail "print queue: '$(v queue)' $(v printing)"
 [ "$(v jobs)" = "0|Label desk" ] && pass "a queue's jobs and full name" || fail "jobs: '$(v jobs)' $(v printing)"
+# (sg12) a queue's print ticket and capabilities (DYMO Connect prints with
+# them), and a font family's names (its text editor reads them as you type)
+cat > "$C/sg12.cs" <<'CS'
+using System;
+using System.Linq;
+using System.Printing;
+class P {
+    [STAThread] static void Main() {
+        try {
+            var q = new LocalPrintServer().GetPrintQueue("Label desk");
+            var t = q.UserPrintTicket;
+            Console.WriteLine("ticket=" + (t == null || t.PageMediaSize == null ? "<none>" :
+                Math.Round(t.PageMediaSize.Width ?? 0) + "x" + Math.Round(t.PageMediaSize.Height ?? 0)));
+            Console.WriteLine("defaultticket=" + (q.DefaultPrintTicket == null ? "<none>" : "ok"));
+            Console.WriteLine("caps=" + (q.GetPrintCapabilitiesAsXml().Length > 0 ? "xml" : "empty"));
+        } catch (Exception e) { Console.WriteLine("printing=" + e.GetType().Name + ": " + e.Message); }
+        try {
+            var f = new System.Windows.Media.FontFamily("Arial");
+            Console.WriteLine("familynames=" + f.FamilyNames.Count + "|" + f.FamilyNames.Values.First());
+        } catch (Exception e) { Console.WriteLine("familynames=" + e.GetType().Name + ": " + e.Message); }
+    }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -r:System.Core.dll -r:"$(gac System.Printing)" -r:"$(gac ReachFramework)" \
+    -r:"$(gac PresentationCore)" -r:"$(gac WindowsBase)" -out:sg12.exe sg12.cs >"$T/mcs12.out" 2>&1)
+[ -f "$C/sg12.exe" ] || { fail "the sg12 probe did not compile: $(cat "$T/mcs12.out")"; exit 1; }
+out=$(cd "$C" && timeout 120 "$WINE" sg12.exe 2>&1 | tr -d '\r')
+# 1 x 2.14 in (the PPD's w72h154) in WPF's 1/96 in
+[ "$(v ticket)" = "96x205" ] && pass "a queue's print ticket is its printer's DEVMODE: the label's size" || fail "ticket: '$(v ticket)' $(v printing)"
+[ "$(v defaultticket)" = ok ] && [ "$(v caps)" = xml ] && pass "and its default ticket and capabilities (PrintCapabilities XML)" \
+    || fail "default ticket '$(v defaultticket)', capabilities '$(v caps)' $(v printing)"
+case "$(v familynames)" in 1\|*) pass "a font family's names: $(v familynames)" ;;
+    *) fail "font family names: '$(v familynames)' (DYMO Connect's editor stops at the first letter typed)" ;; esac
 exit $RC

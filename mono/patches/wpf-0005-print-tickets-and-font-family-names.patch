@@ -1,0 +1,206 @@
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintQueue.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintQueue.cs
+@@ -48,11 +48,12 @@
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			if (sg_defaultPrintTicket == null) sg_defaultPrintTicket = SgSpooler.GetPrintTicket(sg_name);
++			return sg_defaultPrintTicket;
+ 		}
+ 		set
+ 		{
+-			throw new NotImplementedException();
++			sg_defaultPrintTicket = value;
+ 		}
+ 	}
+ 
+@@ -604,11 +605,12 @@
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			if (sg_userPrintTicket == null) sg_userPrintTicket = SgSpooler.GetPrintTicket(sg_name);
++			return sg_userPrintTicket;
+ 		}
+ 		set
+ 		{
+-			throw new NotImplementedException();
++			sg_userPrintTicket = value;
+ 		}
+ 	}
+ 
+@@ -744,22 +746,26 @@
+ 
+ 	public PrintCapabilities GetPrintCapabilities()
+ 	{
+-		throw new NotImplementedException();
++		return new PrintCapabilities(GetPrintCapabilitiesAsXml());
+ 	}
+ 
+ 	public PrintCapabilities GetPrintCapabilities(PrintTicket printTicket)
+ 	{
+-		throw new NotImplementedException();
++		return new PrintCapabilities(GetPrintCapabilitiesAsXml(printTicket));
+ 	}
+ 
+ 	public MemoryStream GetPrintCapabilitiesAsXml()
+ 	{
+-		throw new NotImplementedException();
++		return GetPrintCapabilitiesAsXml(UserPrintTicket);
+ 	}
+ 
+ 	public MemoryStream GetPrintCapabilitiesAsXml(PrintTicket printTicket)
+ 	{
+-		throw new NotImplementedException();
++		/* Stained Glass OS: the printer's capabilities, as prntvpt describes them */
++		var caps = SgSpooler.GetPrintCapabilities(sg_name, printTicket);
++		if (caps == null)
++			throw new PrintQueueException(0, "PrintSystemException.PrintQueue.GetPrintCapabilities", sg_name);
++		return caps;
+ 	}
+ 
+ 	public PrintJobInfoCollection GetPrintJobInfoCollection()
+@@ -803,6 +809,7 @@
+ 	PrintServer sg_server;
+ 	string sg_name;
+ 	SgPrinterInfo sg_info;
++	PrintTicket sg_defaultPrintTicket, sg_userPrintTicket;
+ 	bool sg_cancelled;
+ 
+ 	SgPrinterInfo Info
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/SgSpooler.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/SgSpooler.cs
+@@ -9,6 +9,8 @@
+ using System.ComponentModel;
+ using System.Runtime.InteropServices;
+ using System.Text;
++using System.IO;
++using System.Runtime.InteropServices.ComTypes;
+ 
+ namespace System.Printing {
+ 
+@@ -146,6 +148,112 @@
+ 		return list;
+ 	}
+ 
++	[DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
++	static extern int DocumentPropertiesW(IntPtr hwnd, IntPtr printer, string name, IntPtr devmodeOut, IntPtr devmodeIn, int mode);
++
++	[DllImport("prntvpt.dll", CharSet = CharSet.Unicode)]
++	static extern int PTOpenProvider(string printer, int version, out IntPtr provider);
++
++	[DllImport("prntvpt.dll")]
++	static extern int PTConvertDevModeToPrintTicket(IntPtr provider, int size, IntPtr devmode, int scope, IStream ticket);
++
++	[DllImport("prntvpt.dll")]
++	static extern int PTCloseProvider(IntPtr provider);
++
++	[DllImport("ole32.dll")]
++	static extern int CreateStreamOnHGlobal(IntPtr hglobal, bool deleteOnRelease, out IStream stream);
++
++	/* The printer's print ticket, from its default DEVMODE (prntvpt), as the
++	 * spooler has it; a ticket of WPF's defaults when that fails. */
++	public static PrintTicket GetPrintTicket(string printerName)
++	{
++		IntPtr h = IntPtr.Zero, dm = IntPtr.Zero, provider = IntPtr.Zero;
++		try {
++			if (!OpenPrinterW(printerName, out h, IntPtr.Zero)) return new PrintTicket();
++			int size = DocumentPropertiesW(IntPtr.Zero, h, printerName, IntPtr.Zero, IntPtr.Zero, 0);
++			if (size <= 0) return new PrintTicket();
++			dm = Marshal.AllocHGlobal(size);
++			if (DocumentPropertiesW(IntPtr.Zero, h, printerName, dm, IntPtr.Zero, 2 /* DM_OUT_BUFFER */) < 0) return new PrintTicket();
++			if (PTOpenProvider(printerName, 1, out provider) != 0) return new PrintTicket();
++			IStream stream;
++			if (CreateStreamOnHGlobal(IntPtr.Zero, true, out stream) != 0) return new PrintTicket();
++			if (PTConvertDevModeToPrintTicket(provider, size, dm, 2 /* kPTJobScope */, stream) != 0) return new PrintTicket();
++			var bytes = new MemoryStream();
++			var chunk = new byte[4096];
++			IntPtr read = Marshal.AllocHGlobal(4);
++			try {
++				stream.Seek(0, 0, IntPtr.Zero);
++				for (;;) {
++					stream.Read(chunk, chunk.Length, read);
++					int n = Marshal.ReadInt32(read);
++					if (n <= 0) break;
++					bytes.Write(chunk, 0, n);
++				}
++			} finally {
++				Marshal.FreeHGlobal(read);
++			}
++			bytes.Position = 0;
++			return bytes.Length > 0 ? new PrintTicket(bytes) : new PrintTicket();
++		} catch (Exception) {
++			return new PrintTicket();
++		} finally {
++			if (provider != IntPtr.Zero) PTCloseProvider(provider);
++			if (dm != IntPtr.Zero) Marshal.FreeHGlobal(dm);
++			if (h != IntPtr.Zero) ClosePrinter(h);
++		}
++	}
++
++	[DllImport("prntvpt.dll")]
++	static extern int PTGetPrintCapabilities(IntPtr provider, IStream ticket, IStream caps, IntPtr error);
++
++	static IStream ToIStream(Stream data)
++	{
++		IStream stream;
++		if (CreateStreamOnHGlobal(IntPtr.Zero, true, out stream) != 0) return null;
++		var buffer = new byte[4096];
++		int n;
++		data.Position = 0;
++		while ((n = data.Read(buffer, 0, buffer.Length)) > 0) stream.Write(buffer, n, IntPtr.Zero);
++		stream.Seek(0, 0, IntPtr.Zero);
++		return stream;
++	}
++
++	static MemoryStream FromIStream(IStream stream)
++	{
++		var bytes = new MemoryStream();
++		var chunk = new byte[4096];
++		IntPtr read = Marshal.AllocHGlobal(4);
++		try {
++			stream.Seek(0, 0, IntPtr.Zero);
++			for (;;) {
++				stream.Read(chunk, chunk.Length, read);
++				int n = Marshal.ReadInt32(read);
++				if (n <= 0) break;
++				bytes.Write(chunk, 0, n);
++			}
++		} finally {
++			Marshal.FreeHGlobal(read);
++		}
++		bytes.Position = 0;
++		return bytes;
++	}
++
++	public static MemoryStream GetPrintCapabilities(string printerName, PrintTicket ticket)
++	{
++		IntPtr provider = IntPtr.Zero;
++		try {
++			if (PTOpenProvider(printerName, 1, out provider) != 0) return null;
++			IStream input = ToIStream((ticket ?? new PrintTicket()).GetXmlStream()), caps;
++			if (input == null || CreateStreamOnHGlobal(IntPtr.Zero, true, out caps) != 0) return null;
++			if (PTGetPrintCapabilities(provider, input, caps, IntPtr.Zero) != 0) return null;
++			return FromIStream(caps);
++		} catch (Exception) {
++			return null;
++		} finally {
++			if (provider != IntPtr.Zero) PTCloseProvider(provider);
++		}
++	}
++
+ 	public static string GetDefaultPrinter()
+ 	{
+ 		int size = 0;
+--- a/src/Microsoft.DotNet.Wpf/src/DirectWriteForwarder/CPP/DWriteWrapper/LocalizedStrings.cs
++++ b/src/Microsoft.DotNet.Wpf/src/DirectWriteForwarder/CPP/DWriteWrapper/LocalizedStrings.cs
+@@ -133,7 +133,7 @@
+ 		internal LocalizedStringsEnumerator(LocalizedStrings localizedStrings)
+ 		{
+ 			_localizedStrings = localizedStrings;
+-			_currentIndex = 1;
++			_currentIndex = -1;
+ 		}
+ 
+ 		public virtual bool MoveNext()

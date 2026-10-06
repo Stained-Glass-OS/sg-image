@@ -12,7 +12,9 @@
 #     with upstream's boost semaphore every later job failed with "Unable to
 #     get synchronization lock" until a restart);
 #   - run outside CUPS (no destination to look up), the filter still locks
-#     ("Unable to get synchronization lock: Invalid argument" upstream).
+#     ("Unable to get synchronization lock: Invalid argument" upstream);
+#   - with the queue's defaults as sg-dymo-queue sets them (the loaded roll's
+#     page, landscape), two lines of text print along the label, whole.
 # No root, no printer, no network: a CUPS server of the test's own (a copy of
 # cupsd, so the system's AppArmor profile for /usr/sbin/cupsd does not keep
 # it from running the filter from a scratch dir) and a backend that plays a
@@ -21,6 +23,8 @@
 #   test/dymo-print-test.sh [CACHE_DIR]
 #   SG_DYMO_FILTER=/path/raster2dymolw_v2 test/dymo-print-test.sh   (a given
 #     build of the filter: the mutation run uses upstream's, unpatched)
+#   SG_DYMO_MUTANT=portrait test/dymo-print-test.sh   (the queue left portrait:
+#     the two-line label check must fail)
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -u
@@ -112,6 +116,53 @@ if [ -s "$OUT" ] && ! grep -q '^BAD' "$T/check.out"; then
 else
     fail "the 550 stream is not what DYMO's driver writes:"; sed 's/^/      /' "$T/check.out"
     grep -E 'raster2dymolw|ERROR|lock' "$T/log/error_log" | tail -5 | sed 's/^/      /'
+fi
+
+# the queue as sg-session's sg-dymo-queue leaves it: the loaded roll's page
+# (30336, 1 x 2-1/8 in) and landscape. Two lines of text printed without
+# options run along the label, whole: the raster is the label's length
+# (about 2 in of lines) by its width, and the text's dots fit inside it,
+# longer along the label than across. (Portrait, the text ran across the
+# 1 in label and was cut off: "Stained Gl".)
+ORIENT=4; [ "${SG_DYMO_MUTANT:-}" = portrait ] && ORIENT=3
+"$LPADMIN" -p LW550 -o PageSize=w72h154.1 -o orientation-requested-default=$ORIENT 2>/dev/null
+: > "$OUT"
+printf 'Stained Glass OS\nDYMO 550 test\n' > "$T/two.txt"
+lp -d LW550 "$T/two.txt" >/dev/null
+done_job 90 || fail "the two-line job did not finish in 90 s"
+python3 - "$OUT" > "$T/orient.out" <<'PY'
+import sys
+d = open(sys.argv[1], 'rb').read()
+h = d.find(b'\x1bD')
+if h < 0:
+    print('BAD  no raster'); sys.exit()
+lines = int.from_bytes(d[h + 4:h + 8], 'little')
+dots = int.from_bytes(d[h + 8:h + 12], 'little')
+nb = dots // 8
+xs, ys = [], []
+p = h + 12
+for x in range(lines):
+    row = d[p:p + nb]; p += nb
+    if len(row) < nb or row[:1] == b'\x1b':
+        break
+    for y in range(dots):
+        if row[y // 8] & (0x80 >> (y % 8)):
+            xs.append(x); ys.append(y)
+print('raster %d lines x %d dots' % (lines, dots))
+if not xs:
+    print('BAD  no text'); sys.exit()
+along, across = max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
+print('text %d along x %d across, lines %d-%d, dots %d-%d' % (along, across, min(xs), max(xs), min(ys), max(ys)))
+print(('ok   ' if 560 <= lines <= 660 else 'BAD  ') + 'the label is 2-1/8 in long (%d lines at 300 dpi)' % lines)
+print(('ok   ' if along > 2 * across else 'BAD  ') + 'the text runs along the label')
+# the text starts at the printable area's edge; whole, it ends before the
+# other end and keeps off both sides
+print(('ok   ' if min(ys) > 0 and max(ys) < dots - 1 and min(xs) > 0 else 'BAD  ') + 'the text is whole (ends before the label does, off both sides)')
+PY
+if grep -q '^ok' "$T/orient.out" && ! grep -q '^BAD' "$T/orient.out"; then
+    pass "two lines of text print along the 30336 label, whole ($(sed -n 's/^text //p' "$T/orient.out"))"
+else
+    fail "the two-line label:"; sed 's/^/      /' "$T/orient.out"
 fi
 
 # a filter killed while it holds the printer's lock

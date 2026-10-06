@@ -122,3 +122,14 @@ wpf-0004-system-printing-local-print-server-and-queues.patch (sg11)
       and it found no LabelWriter. Not yet: print tickets and capabilities,
       XPS writers, AddJob, installing or deleting queues, property
       dictionaries.
+
+wpf-0005-print-tickets-and-font-family-names.patch (sg12)
+    System.Printing: a queue's UserPrintTicket and DefaultPrintTicket are
+      its printer's DEVMODE as prntvpt writes it (DocumentProperties,
+      PTConvertDevModeToPrintTicket), settable; GetPrintCapabilities(AsXml)
+      are prntvpt's PTGetPrintCapabilities. They threw: DYMO Connect's Print
+      did nothing.
+    DirectWriteForwarder: LocalizedStrings' enumerator started at 1, not
+      before the first, so it skipped the first two strings -- a font
+      family's FamilyNames was always empty. DYMO Connect's label editor
+      takes the first of them as you type, and crashed at the first letter.
