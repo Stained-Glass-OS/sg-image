@@ -389,6 +389,32 @@ if [[ -n "${SG_POST_CHECK:-}" ]]; then
     [[ ${PIPESTATUS[0]} -eq 0 ]] || RC=1
 fi
 
+# --- the session's keyring (Secret Service) ---------------------------------
+# Signing in opens the person's keyring with their password (pam_gnome_keyring
+# in greetd's PAM file; gnome-keyring from sg-session's Depends): a program in
+# the session stores and finds a secret with secret-tool, and nothing prompts
+# (a prompt would fail here: no display in an ssh command). Eddie, browsers
+# and mail programs keep their passwords there. SG_TEST_KEYRING=0 skips.
+kr_session() {   # CMD... as the session user, on the session's bus
+    ssh_guest "uid=\$(id -u $LOGIN_USER); runuser -u $LOGIN_USER -- env XDG_RUNTIME_DIR=/run/user/\$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$uid/bus timeout 30 $*"
+}
+kr_locked() {
+    kr_session "gdbus call --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets/collection/login --method org.freedesktop.DBus.Properties.Get org.freedesktop.Secret.Collection Locked" 2>&1 \
+        | sed -n 's/.*<\(true\|false\)>.*/\1/p'
+}
+KR_SECRET="sg-boot-test-$RANDOM$RANDOM"
+if [[ "${SG_GUEST_CHECK:-session}" == session && $RC -eq 0 && "${SG_TEST_KEYRING:-1}" == 1 ]]; then
+    printf '%s' "$KR_SECRET" | kr_session "secret-tool store --label='SG boot test' app sg-boot-test" 2>"$ARTIFACTS/keyring-store.err"
+    got=$(kr_session "secret-tool lookup app sg-boot-test" 2>/dev/null | tr -d '\r')
+    if [[ "$got" == "$KR_SECRET" && "$(kr_locked)" == false ]]; then
+        echo "PASS  the session's keyring is open at sign-in: secret-tool stores and finds a secret, no prompt"
+    else
+        echo "FAIL  keyring: lookup '$got', locked '$(kr_locked)'; $(head -c 300 "$ARTIFACTS/keyring-store.err")"
+        ssh_guest "journalctl -b --no-pager -o cat | grep -i 'gkr-pam\|gnome-keyring' | tail -20" 2>/dev/null | sed 's/^/    /'
+        RC=1
+    fi
+fi
+
 # The session user must not be able to read raw input devices. Membership of
 # `input` would let any program in the session read keystrokes straight from
 # the kernel -- including a password typed at the lock screen -- going round
@@ -564,6 +590,75 @@ PY
     done
     if [[ "$(lock_status)" == "OK unlocked" ]]; then echo "PASS  the password typed at the lock screen unlocks"
     else echo "FAIL  still locked after typing the password: $(lock_status)"; RC=1; fi
+fi
+# ... and the lock screen leaves it open (stained-glass-lock reopens it if
+# something had closed it)
+if [[ "${SG_GUEST_CHECK:-session}" == session && $RC -eq 0 && "${SG_TEST_KEYRING:-1}" == 1 && "${SG_TEST_LOCK:-1}" == 1 ]]; then
+    got=$(kr_session "secret-tool lookup app sg-boot-test" 2>/dev/null | tr -d '\r')
+    if [[ "$got" == "$KR_SECRET" && "$(kr_locked)" == false ]]; then echo "PASS  after locking and unlocking, the keyring is open and has the secret"
+    else echo "FAIL  after lock/unlock: lookup '$got', locked '$(kr_locked)'"; RC=1; fi
+fi
+
+# --- changing your password keeps the keyring (make keyring-test) -----------
+# What Control Panel's "Change your password" runs (sg-admind's
+# user-password-own): sg-password-change, as root, with the current and the
+# new password. Then sign out and in again with the new password, through the
+# login screen: the keyring must open with it and still hold the secret.
+if [[ "${SG_GUEST_CHECK:-session}" == session && $RC -eq 0 && "${SG_TEST_KEYRING_PWCHANGE:-0}" == 1 ]]; then
+    LAB_PW=$(cat "$LAB_PASSWORD_FILE")
+    NEW_PW="Kr-${RANDOM}x${RANDOM}"
+    r=$(printf '%s\0%s\0%s\0' "$LOGIN_USER" "$LAB_PW" "$NEW_PW" | ssh_guest /usr/libexec/stained-glass/sg-password-change 2>&1 | tr -d '\r')
+    [[ "$r" == OK ]] && echo "PASS  the password changes, with the current one (sg-password-change)" \
+        || { echo "FAIL  sg-password-change: $r"; RC=1; }
+    got=$(kr_session "secret-tool lookup app sg-boot-test" 2>/dev/null | tr -d '\r')
+    [[ "$got" == "$KR_SECRET" ]] && echo "PASS  ... the running session keeps its secrets" || { echo "FAIL  after the change: '$got'"; RC=1; }
+    ready_before=$(ssh_guest "journalctl -b -t sg-login --no-pager -o cat | grep -c 'greeter ready'" 2>/dev/null | tr -d '\r')
+    log "signing out"
+    ssh_guest "loginctl terminate-user $LOGIN_USER" >/dev/null 2>&1 || true
+    deadline=$(( SECONDS + CHECK_TIMEOUT ))
+    until [[ "$(ssh_guest "journalctl -b -t sg-login --no-pager -o cat | grep -c 'greeter ready'" 2>/dev/null | tr -d '\r')" -gt "${ready_before:-0}" ]]; do
+        (( SECONDS > deadline )) && break; sleep 3
+    done
+    sleep 3
+    python3 "$HERE/test/qmp.py" "$QMP_SOCK" screendump "$ARTIFACTS/screenshot-login-again.ppm" >/dev/null 2>&1 || true
+    # The login screen's curtain lifts on the first key; then it asks for the
+    # account and the password as at the first sign-in -- or, offering the
+    # last account, only the password (the second try).
+    signed_in() { ssh_guest "test -S /run/user/\$(id -u $LOGIN_USER)/bus && pgrep -u $LOGIN_USER -f explorer.exe >/dev/null" 2>/dev/null; }
+    for _try in 1 2 3; do
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "x" >/dev/null
+        sleep 2
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" key ctrl+a >/dev/null
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" key backspace >/dev/null
+        sleep 1
+        if [[ $_try != 2 ]]; then
+            python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "$LOGIN_USER" >/dev/null
+            python3 "$HERE/test/qmp.py" "$QMP_SOCK" key ret >/dev/null
+            sleep 4
+        fi
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "$NEW_PW" >/dev/null
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" key ret >/dev/null
+        _w=0; until signed_in || (( _w >= 90 )); do sleep 3; _w=$((_w + 3)); done
+        signed_in && break
+    done
+    if signed_in; then
+        echo "PASS  signed out and in again with the new password"
+        sleep 10
+        got=$(kr_session "secret-tool lookup app sg-boot-test" 2>/dev/null | tr -d '\r')
+        if [[ "$got" == "$KR_SECRET" && "$(kr_locked)" == false ]]; then
+            echo "PASS  ... and the keyring opened with it, the secret still there, no prompt"
+        else
+            echo "FAIL  after signing in with the new password: lookup '$got', locked '$(kr_locked)'"
+            ssh_guest "journalctl -b --no-pager -o cat | grep -i 'gkr-pam\|gnome-keyring' | tail -20" 2>/dev/null | sed 's/^/    /'
+            RC=1
+        fi
+    else
+        echo "FAIL  could not sign in again with the new password"
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" screendump "$ARTIFACTS/screenshot-relogin-failed.ppm" >/dev/null 2>&1 || true
+        RC=1
+    fi
+    # the lab password back, for anything after this
+    printf '%s\0%s\0%s\0' "$LOGIN_USER" "$NEW_PW" "$LAB_PW" | ssh_guest /usr/libexec/stained-glass/sg-password-change >/dev/null 2>&1 || true
 fi
 set -e
 

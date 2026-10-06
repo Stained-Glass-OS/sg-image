@@ -19,7 +19,7 @@ SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 SG_MAIL     ?= ../sg-mail
 
-.PHONY: netlock-test gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test clean distclean
+.PHONY: keyring-test netlock-test gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test clean distclean
 
 all: image
 
@@ -693,6 +693,12 @@ image: staged-debs d3d-deb apps addons mono-deb gecko-deb gtk-deb gtk-scale-debs
 
 boot-test:
 	test/boot-test.sh
+
+# The session keyring across a password change: boot-test, then change the
+# password (sg-password-change, what "Change your password" runs), sign out
+# and in with the new one, and the keyring must open with it.
+keyring-test:
+	SG_TEST_KEYRING_PWCHANGE=1 test/boot-test.sh
 
 # The live ISO's boot, timed and watched: the splash on the screen, no text
 # console, and firmware-to-Setup within SG_BOOT_BUDGET seconds (QA B2, B4).
