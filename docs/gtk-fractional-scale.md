@@ -70,11 +70,33 @@ two sources goes to the apt repository only (`$(BUILD)/repo-only`), so
 machines that install GTK 4 programs, or have `gir1.2-gtk-3.0` or the -dev
 packages, get matching versions. The test is `test/gtk-scale-test.sh`.
 
+## 32-bit (i386) GTK: not built -- decided 2026-10-06
+
+Not built, on purpose. The image is amd64 only, with no i386 multiarch
+(mkosi.conf, ADR 0002): our Wine runs 32-bit Windows programs without it
+(`--enable-archs=i386,x86_64`), and nothing in the image, the Store or
+sg-session uses an i386 GTK. Steam, the one program people add i386 for,
+takes the 32-bit libraries it needs but not GTK 3 (`steam-libs-i386`
+suggests GTK 2 only; its portal Recommends is satisfied by the amd64
+`xdg-desktop-portal-gtk`, and Recommends are not installed here anyway).
+
+What happens if someone adds i386 and asks for `libgtk-3-0t64:i386` all the
+same: the package is Multi-Arch: same, so both architectures must be one
+version, and Debian has no i386 build of ours. apt says so (an unmet
+dependency or a conflict) and changes nothing; installing it means taking
+the amd64 GTK back to Debian's version too
+(`apt install libgtk-3-0t64:i386 libgtk-3-0t64=<Debian's version> libgtk-3-common=<Debian's version>`),
+and the machine's GTK programs are then at the whole-step scale (200% at
+175%) as with Debian's GTK. If a program ever needs i386 GTK 3,
+`gtk-scale/build-debs.sh` can build the same patched source for i386 in an
+i386 chroot (the patch is architecture-independent); the cost is a second
+full GTK 3 build per release.
+
 ## Limits
 
-- i386 GTK is not built (the image is amd64 only); a machine that adds i386
-  GTK keeps Debian's for both architectures (`libgtk-3-0t64` is
-  Multi-Arch: same) until it is removed.
+- i386 GTK is not built (above): a machine that adds i386 GTK 3 must take
+  both architectures back to Debian's version (`libgtk-3-0t64` is
+  Multi-Arch: same).
 - Programs in the self-scaling group are at the whole scale's text and
   their own layout, not GTK's fractional one.
 - A program that reads `gdk_window_get_scale_factor()` and draws bitmaps

@@ -110,6 +110,10 @@ rm -f "$QMP_SOCK"
 
 if [[ "${SG_GPU:-}" == virgl ]]; then
     SG_DISPLAY_ARGS=(-device virtio-vga-gl -display "egl-headless,rendernode=${SG_RENDER_NODE:-/dev/dri/renderD128}")
+elif [[ -n "${SG_DISPLAY_SIZE:-}" ]]; then
+    # a screen of that size (WxH, e.g. a Surface Pro 7's 2736x1824): the
+    # display scale, the splash and the login screen on a high-resolution one
+    SG_DISPLAY_ARGS=(-device "virtio-vga,xres=${SG_DISPLAY_SIZE%x*},yres=${SG_DISPLAY_SIZE#*x},max_outputs=1" -display none)
 else
     SG_DISPLAY_ARGS=(-device virtio-vga -display none)
 fi

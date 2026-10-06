@@ -133,3 +133,14 @@ wpf-0005-print-tickets-and-font-family-names.patch (sg12)
       before the first, so it skipped the first two strings -- a font
       family's FamilyNames was always empty. DYMO Connect's label editor
       takes the first of them as you type, and crashed at the first letter.
+
+wpf-0006-wpf-programs-aware-of-the-system-dpi.patch (sg13)
+    WindowsBase: a WPF program is aware of the system DPI, as on the .NET
+      Framework, unless its assembly says [DisableDpiAwareness] or its
+      manifest chose (per-monitor, for instance) -- done in the Dispatcher's
+      static constructor, before the first dispatcher makes its window (a
+      window procedure runs at its window's awareness, and WPF does its work
+      in the dispatcher's). Wine Mono's runtime left every WPF program
+      unaware: Wine drew it at 100% and scaled the picture, soft at 175%
+      (DYMO Connect, Sonos on a Surface Pro 7). Gate test/wpf-dpi-test.sh;
+      mutant -define:SG_MUTANT_WPF_DPI_UNAWARE.

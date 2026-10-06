@@ -19,7 +19,7 @@ SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 SG_MAIL     ?= ../sg-mail
 
-.PHONY: gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test clean distclean
+.PHONY: gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test clean distclean
 
 all: image
 
@@ -362,9 +362,9 @@ $(APPS_DIR)/VERSION: Makefile
 # upstream tarball (dl.winehq.org, sha256 fd772219...bf13858) is what it
 # replaces; test/mono-fork-test.sh tells them apart.
 MONO_VERSION       := 9.4.0
-MONO_BUILD         := sg12
+MONO_BUILD         := sg13
 MONO_URL           := https://freesoft.page/addons/wine-mono-$(MONO_VERSION)-$(MONO_BUILD)-x86.tar.xz
-MONO_SHA256        := da5aa659e24309f303d8df600390554c1ff2055dc6f706466b1f3578aeecaf67
+MONO_SHA256        := 482ca4e9e3a3e56f4a02e4e36642f583fa356a799fbfc1cf6dd9179010605c76
 GECKO_VERSION      := 2.47.4
 GECKO_X86_SHA256   := 2cfc8d5c948602e21eff8a78613e1826f2d033df9672cace87fed56e8310afb6
 GECKO_X64_SHA256   := fd88fc7e537d058d7a8abf0c1ebc90c574892a466de86706a26d254710a82814
@@ -547,6 +547,10 @@ mono-fork-test: $(MONO_ROOT)/.done
 # WPF's flow layout (rich text: FlowDocument, RichTextBox) in our Mono (wpf-*.patch)
 wpf-flow-test: $(MONO_ROOT)/.done
 	SG_MONO_DIR=$(MONO_ROOT)/usr/share/wine/mono sh test/wpf-flow-test.sh
+
+# WPF programs at the display scale (wpf-0006): aware of the system DPI.
+wpf-dpi-test: $(MONO_ROOT)/.done
+	SG_MONO_DIR=$(MONO_ROOT)/usr/share/wine/mono sh test/wpf-dpi-test.sh
 
 # --- Linux programs' look ------------------------------------------------------
 

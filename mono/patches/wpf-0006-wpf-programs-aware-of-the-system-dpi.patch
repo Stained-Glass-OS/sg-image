@@ -1,0 +1,44 @@
+--- a/src/Microsoft.DotNet.Wpf/src/WindowsBase/System/Windows/Threading/Dispatcher.cs
++++ b/src/Microsoft.DotNet.Wpf/src/WindowsBase/System/Windows/Threading/Dispatcher.cs
+@@ -31,8 +31,41 @@ namespace System.Windows.Threading
+     /// </summary>
+     public sealed class Dispatcher
+     {
++        // Stained Glass OS: a WPF program is aware of the system DPI, as on the
++        // .NET Framework, unless its assembly says [DisableDpiAwareness] or its
++        // manifest chose (a per-monitor one, for instance). Wine Mono's runtime
++        // left every WPF program unaware: Wine drew its windows at 100% and
++        // scaled the picture -- soft at 175%. Done before the first dispatcher
++        // makes its window (a window procedure runs at its window's awareness,
++        // and WPF does its work in the dispatcher's).
++        [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "SetProcessDPIAware", ExactSpelling = true)]
++        private static extern bool SgSetProcessDPIAware();
++
++        [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "GetAwarenessFromDpiAwarenessContext", ExactSpelling = true)]
++        private static extern int SgGetAwarenessFromDpiAwarenessContext(IntPtr context);
++
++        [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "GetDpiAwarenessContextForProcess", ExactSpelling = true)]
++        private static extern IntPtr SgGetDpiAwarenessContextForProcess(IntPtr process);
++
++        private static void SgEnsureDpiAwareness()
++        {
++#if !SG_MUTANT_WPF_DPI_UNAWARE
++            try
++            {
++                if (SgGetAwarenessFromDpiAwarenessContext(SgGetDpiAwarenessContextForProcess(IntPtr.Zero)) != 0) return;
++                System.Reflection.Assembly entry = System.Reflection.Assembly.GetEntryAssembly();
++                if (entry != null && entry.IsDefined(typeof(System.Windows.Media.DisableDpiAwarenessAttribute), false)) return;
++                SgSetProcessDPIAware();
++            }
++            catch (Exception)
++            {
++            }
++#endif
++        }
++
+         static Dispatcher()
+         {
++            SgEnsureDpiAwareness();
+             _msgProcessQueue = UnsafeNativeMethods.RegisterWindowMessage("DispatcherProcessQueue");
+             _globalLock = new object();
+             _dispatchers = new List<WeakReference>();
