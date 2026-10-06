@@ -415,7 +415,8 @@ POST_CHECK="set -e
 sz=\$(df -B1 --output=size / | tail -1); [ \"\$sz\" -gt 12000000000 ] && echo \"PASS  the root fills its partition (\$sz bytes)\" || { echo \"FAIL  root size (\$sz)\"; exit 1; }
 grep -q 'root=PARTUUID=' /proc/cmdline && [ \"\$(findmnt -n -o PARTUUID /)\" = \"\$(sed -n 's/.*root=PARTUUID=\\([^ ]*\\).*/\\1/p' /proc/cmdline)\" ] && echo 'PASS  the root is named on the kernel command line, and it is the one mounted' || { echo 'FAIL  root= on the command line'; cat /proc/cmdline; exit 1; }
 grep -q 'root=PARTUUID=' /etc/kernel/cmdline && echo 'PASS  later kernels get the same command line' || { echo 'FAIL  /etc/kernel/cmdline'; exit 1; }
-ls /boot /efi >/dev/null 2>&1; ! ls /boot/loader/entries/ /efi/loader/entries/ 2>/dev/null | grep -q -- -live.conf && echo 'PASS  no live entry on the installed machine' || { echo 'FAIL  live entry left behind'; exit 1; }
+ls /boot /efi /xbootldr >/dev/null 2>&1 || true; ! ls /boot/loader/entries/ /efi/loader/entries/ /xbootldr/loader/entries/ 2>/dev/null | grep -q -- -live.conf && echo 'PASS  no live entry on the installed machine' || { echo 'FAIL  live entry left behind'; exit 1; }
+[ \"\$(findmnt -n -o FSTYPE --target /boot)\" != vfat ] && ls /boot/vmlinuz-* >/dev/null 2>&1 && grep -q '^BOOT_ROOT=/' /etc/kernel/install.conf && grep -qx layout=bls /etc/kernel/install.conf && echo 'PASS  /boot is on the root file system with Debian'\"'\"'s kernels; kernel-install writes entries into the boot partition (BOOT_ROOT)' || { echo 'FAIL  the boot layout'; findmnt --target /boot; cat /etc/kernel/install.conf; exit 1; }
 ! getent passwd sguser >/dev/null && echo 'PASS  no lab account' || { echo 'FAIL  lab account left behind'; exit 1; }
 ! getent passwd live >/dev/null && ! systemctl is-active --quiet sg-live.service && [ ! -e /run/stained-glass-setup/installd.sock ] && echo 'PASS  no live account and no installer service' || { echo 'FAIL  live pieces on the installed machine'; exit 1; }
 id -nG $OWNER | tr ' ' '\\n' | grep -qx sg-admins && echo 'PASS  the owner is an administrator' || { echo 'FAIL  owner not in sg-admins'; exit 1; }
@@ -434,11 +435,11 @@ if timeout 300 apt-get -q update >/tmp/apt-update.log 2>&1; then
 else echo 'SKIP  the archive is unreachable from the VM: apt resolution not checked'; fi"
 if [[ "$SCENARIO" == dualboot ]]; then
     POST_CHECK="$POST_CHECK
-ls /boot >/dev/null; [ \"\$(lsblk -n -o PARTTYPE \"\$(findmnt -n -o SOURCE -t vfat /boot)\")\" = bc13c2ff-59e6-4262-a352-b275fd6f7172 ] && echo 'PASS  the kernels are on its own boot partition, not in Windows'\"'\"' system partition' || { echo 'FAIL  /boot'; findmnt /boot; exit 1; }
+ls /xbootldr >/dev/null; [ \"\$(lsblk -n -o PARTTYPE \"\$(findmnt -n -o SOURCE -t vfat /xbootldr)\")\" = bc13c2ff-59e6-4262-a352-b275fd6f7172 ] && grep -qx BOOT_ROOT=/xbootldr /etc/kernel/install.conf && echo 'PASS  the kernels are on its own boot partition (/xbootldr), not in Windows'\"'\"' system partition' || { echo 'FAIL  /xbootldr'; findmnt /xbootldr; exit 1; }
 [ -f /efi/EFI/Microsoft/Boot/bootmgfw.efi ] && echo 'PASS  the Windows boot manager is still in the system partition' || { echo 'FAIL  bootmgfw.efi'; exit 1; }"
 else
     POST_CHECK="$POST_CHECK
-[ -d /boot/stained-glass ] && [ -f /boot/loader/loader.conf ] && echo 'PASS  the kernels are in the system partition under its own name' || { echo 'FAIL  /boot layout'; ls -R /boot | head -20; exit 1; }"
+ls /efi >/dev/null; [ -d /efi/stained-glass ] && [ -f /efi/loader/loader.conf ] && grep -qx BOOT_ROOT=/efi /etc/kernel/install.conf && echo 'PASS  the kernels are in the system partition (/efi) under its own name' || { echo 'FAIL  /efi layout'; ls -R /efi | head -20; exit 1; }"
 fi
 
 # The first-run setup's choices, as the owner's session got them at the first

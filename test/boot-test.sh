@@ -415,7 +415,7 @@ fi
 # the switch to the real root (it only started after it, text until then) --
 # which proves Plymouth is in mkosi's initrd. Each initrd is listed on its own:
 # one cpio -t stops at the first archive's end.
-st=$(ssh_guest 'E=$(bootctl --print-boot-path 2>/dev/null || bootctl --print-esp-path 2>/dev/null); f=$(ls "$E"/loader/entries/*.conf 2>/dev/null | grep -v -- -live.conf | head -1); grep -c "^initrd /[^/]*/sg-theme.initrd" "$f"; for i in $(sed -n "s/^initrd //p" "$f"); do { zstd -dc "$E$i" 2>/dev/null || cat "$E$i"; } | cpio -t 2>/dev/null; done | grep -cE "themes/stained-glass/(stained-glass.script|diamond.png)$"; journalctl -b -o cat --no-pager | awk "/Plymouth Boot Screen/{if(!p)p=NR} /Switching root/{if(!r)r=NR} END{print (p && r && p < r) ? \"early\" : \"late\"}"' 2>/dev/null | tr '\n' ' ')
+st=$(ssh_guest 'E=$(sed -n "s/^BOOT_ROOT=//p" /etc/kernel/install.conf 2>/dev/null | tail -1); { [ -n "$E" ] && ls "$E/loader/entries" >/dev/null 2>&1; } || E=$(bootctl --print-boot-path 2>/dev/null || bootctl --print-esp-path 2>/dev/null); f=$(ls "$E"/loader/entries/*.conf 2>/dev/null | grep -v -- -live.conf | head -1); grep -c "^initrd /[^/]*/sg-theme.initrd" "$f"; for i in $(sed -n "s/^initrd //p" "$f"); do { zstd -dc "$E$i" 2>/dev/null || cat "$E$i"; } | cpio -t 2>/dev/null; done | grep -cE "themes/stained-glass/(stained-glass.script|diamond.png)$"; journalctl -b -o cat --no-pager | awk "/Plymouth Boot Screen/{if(!p)p=NR} /Switching root/{if(!r)r=NR} END{print (p && r && p < r) ? \"early\" : \"late\"}"' 2>/dev/null | tr '\n' ' ')
 if [[ "$st" == "1 2 early " ]]; then
     echo "PASS  the splash is in the initrd: Plymouth and our theme, shown before the switch to the real root"
 else

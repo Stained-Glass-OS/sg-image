@@ -338,3 +338,18 @@ package before its recovery-twin fix it failed as it should (a twin while on
 trial was the default: the kernel booted unblessed in recovery mode). Touch and the pen
 themselves need the hardware (iptsd reads the IPTS device); sg-compositor's
 `make test-pen` covers the pen-as-pointer path headlessly.
+
+## The boot layout gate
+
+Since sg-session 0.1.0-120 `/boot` is a directory of the root file system
+(Debian's kernel files: dpkg cannot replace them on FAT), the ESP is at `/efi`
+and our XBOOTLDR (beside Windows) at `/xbootldr`, and kernel-install writes
+into `BOOT_ROOT` (`/etc/kernel/install.conf`); see sg-session's CLAUDE.md
+(sg-boot-layout). The install gate checks the layout on both scenarios, and
+boot-test finds the entries through `BOOT_ROOT`. `make boot-layout-test`
+(`test/boot-layout-test.sh`, network and KVM) proves in QEMU: on a new install
+(`build/install-target.raw`) the running kernel's package reinstalls -- same
+name and version, what failed on FAT -- and its new entry, on trial, boots,
+is blessed, the desktop up; on an old disk (`SG_OLD_DISK`, updated to
+`SG_SESSION_DEB`) the layout moves over at the next boot, every entry kept,
+holds at the boot after, and the same reinstall boots.

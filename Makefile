@@ -19,7 +19,7 @@ SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 SG_MAIL     ?= ../sg-mail
 
-.PHONY: surface-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants mono-config-test mono-fork-test wpf-flow-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
+.PHONY: surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants mono-config-test mono-fork-test wpf-flow-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
 
 all: image
 
@@ -669,6 +669,13 @@ update-test:
 # package to test; SG_EXTRA_DEBS for dependencies not yet published).
 surface-test:
 	test/surface-test.sh
+
+# Kernel packages upgrade and the new kernel boots: /boot on the root file
+# system, the boot partition at /efi or /xbootldr (sg-session's
+# sg-boot-layout). A new install (build/install-target.raw) and, with
+# SG_OLD_DISK and SG_SESSION_DEB, an old one updated and moved over.
+boot-layout-test:
+	test/boot-layout-test.sh
 
 # F5: install from the live system onto a blank disk, then boot that disk
 # alone and sign in as the owner it created (needs sudo for the boot menu).
