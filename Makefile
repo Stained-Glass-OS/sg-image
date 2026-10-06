@@ -19,7 +19,7 @@ SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 SG_MAIL     ?= ../sg-mail
 
-.PHONY: gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants mono-config-test mono-fork-test wpf-flow-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
+.PHONY: gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
 
 all: image
 
@@ -444,8 +444,10 @@ $(MONO_ROOT)/.done: $(MONO_TARBALL) mono/build-deb.sh mono/mono-fixes.sh
 # cached one (a WARNING in the log); only no package at all fails.
 TB_CACHE := $(BUILD)/thunderbird-cache
 
-thunderbird-deb: staged-debs
+# (SG Mail's gates run on DavMail too: the sg-davmail package staged first)
+thunderbird-deb: staged-debs davmail-deb
 	SG_TB_GATE="$(CURDIR)/thunderbird/gate-new.sh" SG_MAIL="$(abspath $(SG_MAIL))" \
+	  SG_DAVMAIL_DEB="$$(ls $(abspath $(EXTRA_TREE))/opt/sg-packages/sg-davmail_*_all.deb | tail -1)" \
 	  thunderbird/update.sh $(TB_CACHE) $(EXTRA_TREE)/opt/sg-packages
 
 # The gates on the cached package and the cached Mozilla release:
@@ -466,6 +468,63 @@ thunderbird-test-mutants:
 	@$(TB_TEST_RUN); \
 	  test/thunderbird-deb-test.sh $$deb $(TB_CACHE)/dl/$$v/thunderbird-$$v.tar.xz --mutants && \
 	  test/thunderbird-update-test.sh $(TB_CACHE)/dl/$$v --mutants
+
+# DavMail, SG Mail's gateway to Microsoft calendars and contacts (David
+# 2026-10-06): sg-davmail (davmail/build-deb.sh), upstream's release
+# unmodified, pinned here with the corresponding source of its copyleft
+# parts; Debian's davmail (6.3.0) predates DavMail's Graph backend. SG Mail
+# depends on it, so updates carry it. A new upstream release: change the
+# version, build and hashes (measured on download from SourceForge, checked
+# against upstream's checksums.md5) and set DAVMAIL_REV back to 1; a
+# packaging change: bump DAVMAIL_REV.
+DAVMAIL_VERSION    := 7.0.0
+DAVMAIL_BUILD      := 4403
+DAVMAIL_REV        := 1
+DAVMAIL_URL        := https://downloads.sourceforge.net/project/davmail/davmail/$(DAVMAIL_VERSION)
+DAVMAIL_ZIP_SHA256 := cd137f36929b296ae80f199a98c09d626b7e5adb73764568f8b458595154fdc6
+DAVMAIL_SRC_SHA256 := c4fd9fef43364998e0ab6a2baa406aa279d3ec7c483183a88b5345ab129ce545
+MAVEN              := https://repo1.maven.org/maven2
+DAVMAIL_JCHARSET_SRC_SHA256   := ce6b2d916e9218cbc25123a0b7844af2c0aca067f85d8a26cb7922f4b168c6bf
+DAVMAIL_JAVAMAIL_SRC_SHA256   := 91024fcbc346764ed923ab9cb00ae856b0ca8aa4ff152988d7a7a3349cf49995
+DAVMAIL_ACTIVATION_SRC_SHA256 := 8f0625a411700ec64163f8d4bba860475519acb9799f47139c7f49740fd93703
+DAVMAIL_CACHE := $(BUILD)/davmail-cache
+DAVMAIL_ZIP   := $(DAVMAIL_CACHE)/davmail-$(DAVMAIL_VERSION)-$(DAVMAIL_BUILD).zip
+DAVMAIL_FILES := $(DAVMAIL_ZIP) \
+	$(DAVMAIL_CACHE)/davmail-srconly-$(DAVMAIL_VERSION)-$(DAVMAIL_BUILD).tgz \
+	$(DAVMAIL_CACHE)/jcharset-2.0-sources.jar \
+	$(DAVMAIL_CACHE)/javax.mail-1.6.2-sources.jar \
+	$(DAVMAIL_CACHE)/activation-1.1.1-sources.jar
+# fetch FILE URL SHA256: downloaded once, kept only if it matches its pin
+davmail_fetch = mkdir -p $(DAVMAIL_CACHE) && curl -fsSL --retry 3 -o $(1).part $(2) && \
+	echo "$(3)  $(1).part" | sha256sum -c - >/dev/null && mv $(1).part $(1)
+
+$(DAVMAIL_ZIP):
+	$(call davmail_fetch,$@,$(DAVMAIL_URL)/$(notdir $@),$(DAVMAIL_ZIP_SHA256))
+$(DAVMAIL_CACHE)/davmail-srconly-$(DAVMAIL_VERSION)-$(DAVMAIL_BUILD).tgz:
+	$(call davmail_fetch,$@,$(DAVMAIL_URL)/$(notdir $@),$(DAVMAIL_SRC_SHA256))
+$(DAVMAIL_CACHE)/jcharset-2.0-sources.jar:
+	$(call davmail_fetch,$@,$(MAVEN)/net/freeutils/jcharset/2.0/$(notdir $@),$(DAVMAIL_JCHARSET_SRC_SHA256))
+$(DAVMAIL_CACHE)/javax.mail-1.6.2-sources.jar:
+	$(call davmail_fetch,$@,$(MAVEN)/com/sun/mail/javax.mail/1.6.2/$(notdir $@),$(DAVMAIL_JAVAMAIL_SRC_SHA256))
+$(DAVMAIL_CACHE)/activation-1.1.1-sources.jar:
+	$(call davmail_fetch,$@,$(MAVEN)/javax/activation/activation/1.1.1/$(notdir $@),$(DAVMAIL_ACTIVATION_SRC_SHA256))
+
+davmail-deb: staged-debs $(DAVMAIL_FILES)
+	@echo "$(DAVMAIL_ZIP_SHA256)  $(DAVMAIL_ZIP)" | sha256sum -c - >/dev/null
+	davmail/build-deb.sh $(DAVMAIL_VERSION) $(DAVMAIL_BUILD) $(DAVMAIL_ZIP) $(DAVMAIL_CACHE) $(EXTRA_TREE)/opt/sg-packages $(DAVMAIL_REV)
+	@echo "sg-davmail $$( { echo $(DAVMAIL_ZIP_SHA256) $(DAVMAIL_SRC_SHA256) $(DAVMAIL_REV); cat davmail/build-deb.sh; } | sha256sum | cut -c1-40)" \
+	  >> $(EXTRA_TREE)/opt/sg-packages/SOURCES
+
+# The package alone (for SG Mail's gates: SG_DAVMAIL_DEB=build/davmail-deb/...),
+# and its gate: built from the pins, it installs and its DavMail answers
+# CalDAV on the loopback only (test/davmail-deb-test.sh, with mutants).
+davmail-pkg: $(DAVMAIL_FILES)
+	@rm -rf $(BUILD)/davmail-deb
+	davmail/build-deb.sh $(DAVMAIL_VERSION) $(DAVMAIL_BUILD) $(DAVMAIL_ZIP) $(DAVMAIL_CACHE) $(BUILD)/davmail-deb $(DAVMAIL_REV)
+davmail-test: davmail-pkg
+	sh test/davmail-deb-test.sh $(BUILD)/davmail-deb/sg-davmail_*_all.deb
+davmail-test-mutants: davmail-pkg
+	sh test/davmail-deb-test.sh $(BUILD)/davmail-deb/sg-davmail_*_all.deb --mutants
 
 # Wine Mono with the image's fixes runs a WinForms program's .config
 # (Greenshot's DpiAwareness section); test/mono-config-test.sh.
@@ -584,7 +643,7 @@ repo: staged-debs
 repo-check: repo
 	repo/check-repo.sh $(BUILD)/apt
 
-publish: staged-debs speech d3d-deb mono-deb gecko-deb gtk-deb gtk-scale-debs dymo-deb thunderbird-deb
+publish: staged-debs speech d3d-deb mono-deb gecko-deb gtk-deb gtk-scale-debs dymo-deb davmail-deb thunderbird-deb
 	repo/publish.sh $(REPO_DEBS)
 
 # --- the boot splash ---------------------------------------------------------
@@ -609,7 +668,7 @@ splash: staged-debs
 
 # --- image -----------------------------------------------------------------
 
-image: staged-debs d3d-deb apps addons mono-deb gecko-deb gtk-deb gtk-scale-debs dymo-deb thunderbird-deb speech splash
+image: staged-debs d3d-deb apps addons mono-deb gecko-deb gtk-deb gtk-scale-debs dymo-deb davmail-deb thunderbird-deb speech splash
 	@# Our packages go in with dpkg: their dependencies must be in mkosi.conf
 	@# (or come with what is), else the build fails at its very end.
 	sh test/image-deps-test.sh $(EXTRA_TREE)/opt/sg-packages || [ $$? = 77 ]
