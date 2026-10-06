@@ -74,20 +74,56 @@ else fail "oobed socket: $(ssh_guest 'ls -l /run/stained-glass-oobe/' 2>&1)"; fi
 # What is on the screen, not only in the X server: a pixel of the card's art
 # panel (a stale or black frame was the first image's bug: the compositor's
 # GL renderer on software rasterisation).
+# Any screen size and display scale (1280x800 at 100%, 2736x1824 at 175%):
+# the art panel is found along the screen's middle row, the heading compared
+# in the card's upper part, both relative to the screen's size.
 px() { convert "$ART/oobe-$1.ppm" -format "%[fx:int(255*p{$2,$3}.r)] %[fx:int(255*p{$2,$3}.g)] %[fx:int(255*p{$2,$3}.b)]" info: 2>/dev/null; }
-is_art() { local c; c=$(px "$1" 200 600); set -- $c; [[ -n "${3:-}" ]] && (( $1 > 40 && $1 < 80 && $2 < 45 && $3 > 90 && $3 < 140 )); }
+art_px() {   # the first pixel of the art panel's colour along the middle row, or nothing
+    python3 - "$ART/oobe-$1.ppm" <<'PY'
+import sys
+data = open(sys.argv[1], 'rb').read()
+parts, pos = [], 0
+while len(parts) < 4:                      # P6 width height maxval, then the pixels
+    while data[pos:pos+1].isspace(): pos += 1
+    if data[pos:pos+1] == b'#':
+        pos = data.index(b'\n', pos)
+        continue
+    end = pos
+    while not data[end:end+1].isspace(): end += 1
+    parts.append(data[pos:end]); pos = end
+pos += 1
+w, h = int(parts[1]), int(parts[2])
+def art(x, y):
+    r, g, b = data[pos + 3 * (y * w + x): pos + 3 * (y * w + x) + 3]
+    return 40 < r < 80 and g < 45 and 90 < b < 140
+# the panel is a band of the card: its colour at three heights in a column,
+# in columns a tenth of the screen's width together (a wallpaper of similar
+# colour has it in a few columns only)
+rows = (h // 2 - h * 15 // 100, h // 2, h // 2 + h * 15 // 100)
+hits = [x for x in range(0, w, 4) if all(art(x, y) for y in rows)]
+if len(hits) * 4 >= w // 10:
+    print(hits[0], h // 2, "(%d columns)" % (len(hits) * 4))
+PY
+}
+is_art() { [[ -n "$(art_px "$1" 2>/dev/null)" ]]; }
+heading() {  # the card's upper part, relative to the screen's size
+    local wh; wh=$(convert "$ART/oobe-$1.ppm" -format '%w %h' info: 2>/dev/null); set -- "$1" $wh
+    convert "$ART/oobe-$1.ppm" -crop "$(( $2 * 45 / 100 ))x$(( $3 * 28 / 100 ))+$(( $2 * 45 / 100 ))+$(( $3 * 12 / 100 ))" +repage -format '%#' info: 2>/dev/null
+}
+# input only once its first page is on the screen ("sg-oobe: ready", sg-session
+# 0.1.0-140; an older wizard: its state)
 wait_for 'sg-oobe: state' 1 60
+t=0; until [[ "$(seen 'sg-oobe: ready')" -ge 1 ]] || (( t >= 90 )); do sleep 2; t=$(( t + 2 )); done
 sleep 3; qmp key shift; sleep 1; shot region
-if is_art region; then pass "the first-run setup is on the screen (its art panel: $(px region 200 600))"
-else fail "the screen does not show the first-run setup: pixel $(px region 200 600)"; fi
+if is_art region; then pass "the first-run setup is on the screen (its art panel: $(art_px region))"
+else fail "the screen does not show the first-run setup: middle row $(px region 200 600)"; fi
 set +e
 choose u 'United Kingdom'
 qmp key ret
 wait_for 'page keyboard$' && sleep 2 && shot keyboard
 # The heading changed with the page: the screen follows the window (a stale
 # frame keeps the region page's).
-if [[ "$(convert "$ART/oobe-region.ppm" -crop 500x60+580+140 +repage -format '%#' info: 2>/dev/null)" != \
-      "$(convert "$ART/oobe-keyboard.ppm" -crop 500x60+580+140 +repage -format '%#' info: 2>/dev/null)" ]]; then
+if [[ -n "$(heading region)" && "$(heading region)" != "$(heading keyboard)" ]]; then
     pass "the screen follows the page (the heading changed)"
 else fail "the screen still shows the region page's heading on the keyboard page"; fi
 qmp key ret                                   # Yes: US
