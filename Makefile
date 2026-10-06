@@ -19,7 +19,7 @@ SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 SG_MAIL     ?= ../sg-mail
 
-.PHONY: gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test clean distclean
+.PHONY: netlock-test gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test clean distclean
 
 all: image
 
@@ -745,6 +745,11 @@ elevate-test:
 # also "Add someone else to this PC".
 elevated-test:
 	SG_GUEST_CHECK=elevated test/boot-test.sh
+
+# VPN kill switches (Eddie's Network Lock): nft and iptables work from a system
+# service, a desktop user cannot change the firewall, no firewall at boot.
+netlock-test:
+	SG_GUEST_CHECK=netlock test/boot-test.sh
 
 # Machine Group Policy: an admin's policy binds every user, a user cannot override.
 policy-test:

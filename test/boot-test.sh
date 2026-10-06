@@ -271,6 +271,14 @@ case "${SG_GUEST_CHECK:-session}" in
             /usr/bin/sg-elevate-check"
         CHECK_NAME="sg-elevate-check (ADR 0012 elevation)"
         ;;
+    netlock)
+        # A VPN client's kill switch (Eddie's Network Lock): the firewall
+        # tools a root helper uses, driven from a system service; a desktop
+        # user cannot change the firewall unelevated; no firewall of our own
+        # at boot. Root, after sign-in.
+        CHECK_CMD="/usr/bin/sg-netlock-check $LOGIN_USER"
+        CHECK_NAME="sg-netlock-check (VPN Network Lock)"
+        ;;
     policy)
         # Machine Group Policy: an administrator's policy binds every user and a
         # user cannot override it (both Windows programs and the shell honour

@@ -19,3 +19,8 @@ enable NetworkManager.service
 enable NetworkManager-wait-online.service
 enable systemd-resolved.service
 enable sg-netd.socket
+
+# nftables and iptables are here for VPN clients' kill switches (Eddie's
+# Network Lock), which load their own rules; the image loads no firewall of
+# its own at boot (/etc/nftables.conf), as before.
+disable nftables.service
