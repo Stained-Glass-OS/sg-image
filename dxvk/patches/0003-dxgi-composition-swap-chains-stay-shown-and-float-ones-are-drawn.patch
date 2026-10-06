@@ -1,0 +1,203 @@
+From: Stained Glass OS <ke7oxh@gmail.com>
+Subject: [PATCH] dxgi: composition swap chains stay shown; 16-bit float ones are drawn
+
+Paint.NET 5 under DXVK -- every installation's Direct3D -- showed a black
+canvas, colour wheel and History/Layers lists. Two causes in our
+composition swap chain (0001):
+
+- Windows.UI.Composition (wine-sg's dcomp) draws its window target --
+  cleared, then its visuals -- and only then tells each swap chain in the
+  tree where it shows (IWineDXGICompositionSwapChain::set_target). Ours
+  only remembered the place and drew at the next Present, so the cleared
+  window covered the frame until the program presented again; a program
+  that presents only when its picture changes stayed black. Anything else
+  that paints the window (its background on WM_PAINT) did the same. Now,
+  as wine-sg's own dxgi does (patch 0190): set_target draws the last frame
+  at once, and the frame is drawn again from memory 100 ms after it was
+  placed or presented, then every 500 ms.
+- Paint.NET's swap chains are R16G16B16A16_FLOAT (linear, scRGB) and only
+  8-bit formats were drawn (others grey). They are now encoded to sRGB,
+  clamped to [0, 1], as wine-sg's dxgi does (patch 0232).
+
+Test: test/dcomp-refresh-test.sh (make dcomp-refresh-test); mutants
+SG_MUTANT_NO_REFRESH (commit and refresh fail) and SG_MUTANT_NO_HALF
+(half fails), built with -Dcpp_args=-DSG_MUTANT_...
+
+diff --git a/src/dxgi/dxgi_composition.cpp b/src/dxgi/dxgi_composition.cpp
+index 2e0b77a..648527e 100644
+--- a/src/dxgi/dxgi_composition.cpp
++++ b/src/dxgi/dxgi_composition.cpp
+@@ -1,6 +1,9 @@
+ #include "dxgi_composition.h"
+ #include "dxgi_factory.h"
+ 
++#include <cmath>
++#include <cstring>
++
+ namespace dxvk {
+ 
+   DxgiCompositionSwapChain::DxgiCompositionSwapChain(
+@@ -15,12 +18,42 @@ namespace dxvk {
+ 
+ 
+   DxgiCompositionSwapChain::~DxgiCompositionSwapChain() {
++    if (m_refresh) {
++      SetThreadpoolTimer(m_refresh, nullptr, 0, 0);
++      WaitForThreadpoolTimerCallbacks(m_refresh, TRUE);
++      CloseThreadpoolTimer(m_refresh);
++    }
+     if (m_latencyEvent)
+       CloseHandle(m_latencyEvent);
+   }
+ 
+ 
++  /* The frame is drawn again on the window from memory: 100 ms after it was
++   * placed or presented, then every 500 ms. What the window draws under it
++   * (its background on WM_PAINT, Windows.UI.Composition's target, cleared
++   * before its swap chains are placed) would otherwise hide it until the
++   * program presents again -- Paint.NET's canvas and lists stayed black. */
++  void CALLBACK DxgiCompositionSwapChain::RefreshCallback(PTP_CALLBACK_INSTANCE, void* pContext, PTP_TIMER) {
++    static_cast<DxgiCompositionSwapChain*>(pContext)->Draw();
++  }
++
++
++  void DxgiCompositionSwapChain::ScheduleRefresh() {
++#ifndef SG_MUTANT_NO_REFRESH
++    if (!m_refresh)
++      return;
++    LARGE_INTEGER due;
++    due.QuadPart = -100 * 10000;
++    FILETIME ft;
++    ft.dwLowDateTime = due.LowPart;
++    ft.dwHighDateTime = due.HighPart;
++    SetThreadpoolTimer(m_refresh, &ft, 500, 50);
++#endif
++  }
++
++
+   HRESULT DxgiCompositionSwapChain::Init() {
++    m_refresh = CreateThreadpoolTimer(RefreshCallback, this, nullptr);
+     return CreateBuffers();
+   }
+ 
+@@ -92,6 +125,12 @@ namespace dxvk {
+     m_window = window;
+     m_x = x;
+     m_y = y;
++#ifndef SG_MUTANT_NO_REFRESH
++    /* placed (DirectComposition's Commit): shown there now, with the last
++     * frame, as Wine's own composition swap chains are */
++    DrawLocked();
++#endif
++    ScheduleRefresh();
+     return S_OK;
+   }
+ 
+@@ -125,6 +164,11 @@ namespace dxvk {
+     UINT w = std::max(m_desc.Width, 1u), h = std::max(m_desc.Height, 1u);
+     bool rgba = m_desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM || m_desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+     bool bgra = m_desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || m_desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
++#ifndef SG_MUTANT_NO_HALF
++    bool half = m_desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
++#else
++    bool half = false;
++#endif
+ 
+     {
+       std::lock_guard<std::mutex> lock(m_mutex);
+@@ -136,6 +180,8 @@ namespace dxvk {
+         uint32_t* dst = &m_frame[size_t(y) * w];
+         if (bgra) {
+           std::memcpy(dst, src, size_t(w) * 4);
++        } else if (half) {
++          ConvertHalfRow(dst, reinterpret_cast<const uint16_t*>(src), w);
+         } else if (rgba) {
+           for (UINT x = 0; x < w; x++) {
+             uint32_t p = src[x];
+@@ -152,14 +198,62 @@ namespace dxvk {
+ 
+     m_context->Unmap(m_staging.ptr(), 0);
+     Draw();
++    ScheduleRefresh();
+     return S_OK;
+   }
+ 
+ 
++  /* A 16-bit float swap chain holds linear (scRGB) values -- Paint.NET's
++   * canvas and lists are such; the window gets them sRGB encoded, clamped
++   * to [0, 1] (as wine-sg's dxgi, patch 0232). */
++  static float HalfToFloat(uint16_t h) {
++    uint32_t sign = uint32_t(h & 0x8000) << 16, exp = (h >> 10) & 0x1f, mant = h & 0x3ff;
++    if (!exp)
++      return (sign ? -1.0f : 1.0f) * float(mant) * (1.0f / 16777216.0f);
++    uint32_t u = exp == 31 ? (sign | 0x7f800000u | (mant << 13)) : (sign | ((exp + 112) << 23) | (mant << 13));
++    float f;
++    std::memcpy(&f, &u, sizeof(f));
++    return f;
++  }
++
++
++  static uint32_t EncodeSrgb(float c) {
++    static uint8_t table[4097];
++    static bool ready = false;
++    if (!ready) {
++      for (uint32_t i = 0; i <= 4096; i++) {
++        double l = i / 4096.0;
++        double e = l <= 0.0031308 ? l * 12.92 : 1.055 * std::pow(l, 1.0 / 2.4) - 0.055;
++        table[i] = uint8_t(e * 255.0 + 0.5);
++      }
++      ready = true;
++    }
++    if (!(c > 0.0f))
++      return 0;
++    if (c >= 1.0f)
++      return 255;
++    return table[uint32_t(c * 4096.0f + 0.5f)];
++  }
++
++
++  void DxgiCompositionSwapChain::ConvertHalfRow(uint32_t* dst, const uint16_t* src, UINT width) {
++    for (UINT x = 0; x < width; x++, src += 4) {
++      float a = HalfToFloat(src[3]);
++      uint32_t alpha = a >= 1.0f ? 255u : a > 0.0f ? uint32_t(a * 255.0f + 0.5f) : 0u;
++      dst[x] = EncodeSrgb(HalfToFloat(src[2])) | (EncodeSrgb(HalfToFloat(src[1])) << 8)
++             | (EncodeSrgb(HalfToFloat(src[0])) << 16) | (alpha << 24);
++    }
++  }
++
++
+   void DxgiCompositionSwapChain::Draw() {
+     std::lock_guard<std::mutex> lock(m_mutex);
++    DrawLocked();
++  }
++
+ 
+-    if (!m_window || !IsWindow(m_window) || m_frame.empty())
++  void DxgiCompositionSwapChain::DrawLocked() {
++    if (!m_window || !IsWindow(m_window) || !IsWindowVisible(m_window) || m_frame.empty())
+       return;
+ 
+     HDC dc = GetDCEx(m_window, nullptr, DCX_CACHE | DCX_CLIPSIBLINGS);
+diff --git a/src/dxgi/dxgi_composition.h b/src/dxgi/dxgi_composition.h
+index c124ed6..9668249 100644
+--- a/src/dxgi/dxgi_composition.h
++++ b/src/dxgi/dxgi_composition.h
+@@ -114,6 +114,10 @@ namespace dxvk {
+ 
+     HRESULT CreateBuffers();
+     void Draw();
++    void DrawLocked();
++    void ScheduleRefresh();
++    static void ConvertHalfRow(uint32_t* dst, const uint16_t* src, UINT width);
++    static void CALLBACK RefreshCallback(PTP_CALLBACK_INSTANCE pInstance, void* pContext, PTP_TIMER pTimer);
+ 
+     Com<DxgiFactory, false>     m_factory;
+     Com<ID3D11Device>           m_device;
+@@ -126,6 +130,7 @@ namespace dxvk {
+     UINT                        m_latency = 1;
+     UINT                        m_presents = 0;
+     HANDLE                      m_latencyEvent = nullptr;
++    PTP_TIMER                   m_refresh = nullptr;  /* draws the last frame again */
+ 
+     std::mutex                  m_mutex;      /* the target and the last frame */
+     HWND                        m_window = nullptr;
