@@ -319,3 +319,22 @@ stained-glass `docs/qa-2026-09-26.md` (B1).
 ## License
 
 **AGPL-3.0-or-later.** See [ADR 0004](https://github.com/Stained-Glass-OS/stained-glass/blob/main/docs/decisions/0004-licensing.md).
+
+## The Surface gate
+
+`make surface-test` (`test/surface-test.sh`, not in `make test`: it needs the
+network and a package under test, `SG_SESSION_DEB`) proves sg-session's
+Surface support end to end on a copy of the install gate's disk
+(`build/install-target.raw`; `SG_SURFACE_DISK`): QEMU says it is a Surface Pro 7
+(`-smbios type=1,manufacturer=Microsoft Corporation,product=Surface Pro 7`);
+updated to the package and restarted, `sg-hwsupport` installs the real
+linux-surface kernel, iptsd and libwacom from pkg.surfacelinux.com (the
+archive's other packages pinned away), the kernel's entry counting its tries;
+restarted, the Surface kernel runs, is blessed, and the compositor and
+Xwayland run on it; with its tries used up (`+0-3`) the stock kernel boots.
+A fresh copy with QEMU's own SMBIOS: the unit does not run and nothing of it
+is on the disk. Artifacts in `build/artifacts-surface/`. Run against the
+package before its recovery-twin fix it failed as it should (a twin while on
+trial was the default: the kernel booted unblessed in recovery mode). Touch and the pen
+themselves need the hardware (iptsd reads the IPTS device); sg-compositor's
+`make test-pen` covers the pen-as-pointer path headlessly.
