@@ -47,7 +47,7 @@ staged-debs: $(SSH_KEY) lab-password
 	@# The source each package was built from (repo/build-repo.sh publishes it
 	@# beside the .deb): a rebuild of an unchanged, already-published version
 	@# keeps the published build instead of being refused.
-	@for p in wine-sg:$(SG_WINE) sg-compositor:$(SG_COMPOSITOR) sg-shell:$(SG_SHELL) sg-office:$(SG_SHELL) sg-session:$(SG_SESSION) sg-office-editors:$(SG_OFFICE) sg-mail:$(SG_MAIL); do \
+	@for p in wine-sg:$(SG_WINE) sg-compositor:$(SG_COMPOSITOR) sg-shell:$(SG_SHELL) sg-office:$(SG_SHELL) sg-pdf:$(SG_SHELL) sg-session:$(SG_SESSION) sg-office-editors:$(SG_OFFICE) sg-mail:$(SG_MAIL); do \
 	  d=$${p#*:}; [ -d "$$d" ] || continue; c=$$(git -C $$d rev-parse HEAD); \
 	  git -C $$d diff --quiet HEAD -- . 2>/dev/null || c=$$c-dirty; \
 	  echo "$${p%%:*} $$c"; done > $(EXTRA_TREE)/opt/sg-packages/SOURCES
@@ -91,6 +91,8 @@ shell-deb:
 	@# SG Office (built from sg-shell's source): its programs, Get SG Office and
 	@# its registrations -- no LibreOffice binary (users fetch that themselves)
 	@cp "$$(ls -t $(SG_SHELL)/../sg-office_*_all.deb | head -1)" $(EXTRA_TREE)/opt/sg-packages/
+	@# SG PDF (built from sg-shell's source, sg-session depends on it)
+	@cp "$$(ls -t $(SG_SHELL)/../sg-pdf_*_all.deb | head -1)" $(EXTRA_TREE)/opt/sg-packages/
 
 # SG Office's editors (package sg-office-editors, based on ONLYOFFICE): built
 # from source by the sg-office repository's debian/rules -- its engines in a
