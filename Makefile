@@ -19,7 +19,7 @@ SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 SG_MAIL     ?= ../sg-mail
 
-.PHONY: surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants mono-config-test mono-fork-test wpf-flow-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
+.PHONY: gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants mono-config-test mono-fork-test wpf-flow-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test ctxstate-test clean distclean
 
 all: image
 
@@ -499,6 +499,32 @@ gtk-deb: staged-debs
 gtk-theme-test:
 	sh test/gtk-theme-test.sh
 
+# GTK 3 and GTK 4 at a fractional display scale on X11 (175% drawn at 175%,
+# not 200%; docs/gtk-fractional-scale.md): Debian's current gtk+3.0 and gtk4
+# rebuilt with gtk-scale/*.patch, version <Debian's>+sg<date>.<rev> (built
+# once per Debian version and patch, cached). The image has GTK 3's library
+# and data (libgtk-3-0t64, libgtk-3-common): those are staged for it; the
+# rest of both sources (GTK 4, gir, -bin, -dev) only goes to the apt
+# repository, so a machine installing them gets matching versions.
+GTK_SCALE_CACHE := $(BUILD)/gtk-scale-cache
+GTK_SCALE_OUT   := $(BUILD)/gtk-scale-out
+REPO_ONLY       := $(BUILD)/repo-only
+
+gtk-scale-debs: staged-debs
+	rm -rf $(GTK_SCALE_OUT) && mkdir -p $(GTK_SCALE_OUT) $(REPO_ONLY)
+	gtk-scale/build-debs.sh gtk3 $(GTK_SCALE_CACHE) $(GTK_SCALE_OUT)
+	gtk-scale/build-debs.sh gtk4 $(GTK_SCALE_CACHE) $(GTK_SCALE_OUT)
+	@rm -f $(REPO_ONLY)/*.deb
+	@for d in $(GTK_SCALE_OUT)/*.deb; do \
+	    case "$$(basename $$d)" in libgtk-3-0t64_*|libgtk-3-common_*) cp $$d $(EXTRA_TREE)/opt/sg-packages/ ;; *) cp $$d $(REPO_ONLY)/ ;; esac; \
+	done
+	@src="gtk-scale $$(cat gtk-scale/build-debs.sh gtk-scale/*.patch | sha256sum | cut -c1-40)"; \
+	for d in $(GTK_SCALE_OUT)/*.deb; do echo "$$(dpkg-deb -f $$d Package) $$src"; done > $(REPO_ONLY)/SOURCES; \
+	for d in libgtk-3-0t64 libgtk-3-common; do echo "$$d $$src"; done >> $(EXTRA_TREE)/opt/sg-packages/SOURCES
+
+gtk-scale-test:
+	sh test/gtk-scale-test.sh $(GTK_SCALE_OUT)
+
 # DYMO's CUPS driver for the LabelWriter 5xx (550, 550 Turbo, 5XL), built from
 # DYMO's GPL source at a pinned commit with dymo-deb/patches: sg-dymo-lw5xx.
 # sg-session depends on it and makes the queue when such a printer is plugged
@@ -550,7 +576,7 @@ speech: staged-debs
 #   make repo-check   verify it with apt, as a machine would (and that a
 #                     tampered index is rejected)
 #   make publish      fetch what is live, rebuild, verify, replace the live site
-REPO_DEBS = $(wildcard $(EXTRA_TREE)/opt/sg-packages/*.deb)
+REPO_DEBS = $(wildcard $(EXTRA_TREE)/opt/sg-packages/*.deb) $(wildcard $(REPO_ONLY)/*.deb)
 
 repo: staged-debs
 	repo/build-repo.sh $(BUILD)/apt $(REPO_DEBS)
@@ -558,7 +584,7 @@ repo: staged-debs
 repo-check: repo
 	repo/check-repo.sh $(BUILD)/apt
 
-publish: staged-debs speech d3d-deb mono-deb gecko-deb gtk-deb dymo-deb thunderbird-deb
+publish: staged-debs speech d3d-deb mono-deb gecko-deb gtk-deb gtk-scale-debs dymo-deb thunderbird-deb
 	repo/publish.sh $(REPO_DEBS)
 
 # --- the boot splash ---------------------------------------------------------
@@ -583,7 +609,7 @@ splash: staged-debs
 
 # --- image -----------------------------------------------------------------
 
-image: staged-debs d3d-deb apps addons mono-deb gecko-deb gtk-deb dymo-deb thunderbird-deb speech splash
+image: staged-debs d3d-deb apps addons mono-deb gecko-deb gtk-deb gtk-scale-debs dymo-deb thunderbird-deb speech splash
 	@# Our packages go in with dpkg: their dependencies must be in mkosi.conf
 	@# (or come with what is), else the build fails at its very end.
 	sh test/image-deps-test.sh $(EXTRA_TREE)/opt/sg-packages || [ $$? = 77 ]

@@ -1,0 +1,862 @@
+Description: X11: the surface scale may be fractional (Stained Glass OS)
+ GDK's X11 backend scales surfaces by a whole number (GDK_SCALE, the
+ XSETTINGS Gdk/WindowScalingFactor): at a display scale of 175% GTK drew at
+ 200%. GTK 4 draws at any scale (gdk_surface_get_scale, as on Wayland); the
+ X11 backend now gives it the XSETTINGS manager's Gdk/SgFractionalScale
+ (the scale in 1024ths, 1792 at 175%): the X window is the logical size
+ times the scale, rounded up, and the buffer is the X window's own size;
+ positions round, events are divided by the scale, monitors and the work
+ area are in logical pixels, and the text's DPI is Xft/DPI over the scale.
+ GDK_SG_FRACTIONAL=0 turns it off for a program. Without
+ Gdk/SgFractionalScale, or with GDK_SCALE set, GTK behaves as before; at a
+ whole-number scale every size is computed as before.
+Author: Stained Glass OS <ke7oxh@gmail.com>
+Forwarded: not-needed
+Last-Update: 2026-10-05
+---
+diff --git a/gdk/x11/gdkcursor-x11.c b/gdk/x11/gdkcursor-x11.c
+index c6b0b5c..fd5f8ad 100644
+--- a/gdk/x11/gdkcursor-x11.c
++++ b/gdk/x11/gdkcursor-x11.c
+@@ -308,7 +308,7 @@ _gdk_x11_display_set_cursor_theme (GdkDisplay  *display,
+   x11_screen = gdk_x11_display_get_screen (display);
+   xdisplay = GDK_DISPLAY_XDISPLAY (display);
+ 
+-  real_size = size * x11_screen->surface_scale;
++  real_size = gdk_x11_scale_size_up (size, x11_screen->surface_scale);
+ 
+   old_theme = XcursorGetTheme (xdisplay);
+   old_size = XcursorGetDefaultSize (xdisplay);
+diff --git a/gdk/x11/gdkdevice-xi2.c b/gdk/x11/gdkdevice-xi2.c
+index 7f5b966..42169f7 100644
+--- a/gdk/x11/gdkdevice-xi2.c
++++ b/gdk/x11/gdkdevice-xi2.c
+@@ -216,7 +216,7 @@ gdk_x11_device_xi2_query_state (GdkDevice        *device,
+   XIButtonState button_state;
+   XIModifierState mod_state;
+   XIGroupState group_state;
+-  int scale;
++  double scale;
+ 
+   display = gdk_device_get_display (device);
+   default_screen = GDK_X11_DISPLAY (display)->screen;
+diff --git a/gdk/x11/gdkdevicemanager-xi2.c b/gdk/x11/gdkdevicemanager-xi2.c
+index 90a6334..7124d95 100644
+--- a/gdk/x11/gdkdevicemanager-xi2.c
++++ b/gdk/x11/gdkdevicemanager-xi2.c
+@@ -1463,7 +1463,7 @@ gdk_x11_device_manager_xi2_translate_event (GdkEventTranslator *translator,
+   GdkDevice *device, *source_device;
+   GdkSurface *surface;
+   GdkX11Surface *impl;
+-  int scale;
++  double scale;
+   XIEvent *ev;
+   GdkEvent *event;
+ 
+diff --git a/gdk/x11/gdkdisplay-x11.c b/gdk/x11/gdkdisplay-x11.c
+index b6384ae..b0fbda2 100644
+--- a/gdk/x11/gdkdisplay-x11.c
++++ b/gdk/x11/gdkdisplay-x11.c
+@@ -709,13 +709,13 @@ gdk_x11_display_translate_event (GdkEventTranslator *translator,
+ 	GdkRectangle expose_rect;
+         int x2, y2;
+ 
+-        expose_rect.x = xevent->xexpose.x / surface_impl->surface_scale;
+-        expose_rect.y = xevent->xexpose.y / surface_impl->surface_scale;
++        expose_rect.x = (int) floor (xevent->xexpose.x / surface_impl->surface_scale);
++        expose_rect.y = (int) floor (xevent->xexpose.y / surface_impl->surface_scale);
+ 
+-        x2 = (xevent->xexpose.x + xevent->xexpose.width + surface_impl->surface_scale -1) / surface_impl->surface_scale;
++        x2 = (int) ceil ((xevent->xexpose.x + xevent->xexpose.width) / surface_impl->surface_scale);
+         expose_rect.width = x2 - expose_rect.x;
+ 
+-        y2 = (xevent->xexpose.y + xevent->xexpose.height + surface_impl->surface_scale -1) / surface_impl->surface_scale;
++        y2 = (int) ceil ((xevent->xexpose.y + xevent->xexpose.height) / surface_impl->surface_scale);
+         expose_rect.height = y2 - expose_rect.y;
+ 
+         gdk_surface_invalidate_rect (surface, &expose_rect);
+@@ -735,13 +735,13 @@ gdk_x11_display_translate_event (GdkEventTranslator *translator,
+         if (surface == NULL)
+           break;
+ 
+-        expose_rect.x = xevent->xgraphicsexpose.x / surface_impl->surface_scale;
+-        expose_rect.y = xevent->xgraphicsexpose.y / surface_impl->surface_scale;
++        expose_rect.x = (int) floor (xevent->xgraphicsexpose.x / surface_impl->surface_scale);
++        expose_rect.y = (int) floor (xevent->xgraphicsexpose.y / surface_impl->surface_scale);
+ 
+-        x2 = (xevent->xgraphicsexpose.x + xevent->xgraphicsexpose.width + surface_impl->surface_scale -1) / surface_impl->surface_scale;
++        x2 = (int) ceil ((xevent->xgraphicsexpose.x + xevent->xgraphicsexpose.width) / surface_impl->surface_scale);
+         expose_rect.width = x2 - expose_rect.x;
+ 
+-        y2 = (xevent->xgraphicsexpose.y + xevent->xgraphicsexpose.height + surface_impl->surface_scale -1) / surface_impl->surface_scale;
++        y2 = (int) ceil ((xevent->xgraphicsexpose.y + xevent->xgraphicsexpose.height) / surface_impl->surface_scale);
+         expose_rect.height = y2 - expose_rect.y;
+ 
+         gdk_surface_invalidate_rect (surface, &expose_rect);
+@@ -918,11 +918,9 @@ gdk_x11_display_translate_event (GdkEventTranslator *translator,
+           int new_abs_x, new_abs_y;
+ 
+           configured_width =
+-            (xevent->xconfigure.width + surface_impl->surface_scale - 1) /
+-            surface_impl->surface_scale;
++            gdk_x11_scale_size_down (xevent->xconfigure.width, surface_impl->surface_scale);
+           configured_height =
+-            (xevent->xconfigure.height + surface_impl->surface_scale - 1) /
+-            surface_impl->surface_scale;
++            gdk_x11_scale_size_down (xevent->xconfigure.height, surface_impl->surface_scale);
+ 
+ 	  if (!xevent->xconfigure.send_event &&
+ 	      !xevent->xconfigure.override_redirect &&
+@@ -941,15 +939,15 @@ gdk_x11_display_translate_event (GdkEventTranslator *translator,
+ 					 &tx, &ty,
+ 					 &child_window))
+ 		{
+-		  x = tx / surface_impl->surface_scale;
+-		  y = ty / surface_impl->surface_scale;
++		  x = gdk_x11_scale_pos_down (tx, surface_impl->surface_scale);
++		  y = gdk_x11_scale_pos_down (ty, surface_impl->surface_scale);
+ 		}
+ 	      gdk_x11_display_error_trap_pop_ignored (display);
+ 	    }
+ 	  else
+ 	    {
+-	      x = xevent->xconfigure.x / surface_impl->surface_scale;
+-	      y = xevent->xconfigure.y / surface_impl->surface_scale;
++	      x = gdk_x11_scale_pos_down (xevent->xconfigure.x, surface_impl->surface_scale);
++	      y = gdk_x11_scale_pos_down (xevent->xconfigure.y, surface_impl->surface_scale);
+ 	    }
+ 
+           new_abs_x = x;
+diff --git a/gdk/x11/gdkdrag-x11.c b/gdk/x11/gdkdrag-x11.c
+index 6039be4..7e34d28 100644
+--- a/gdk/x11/gdkdrag-x11.c
++++ b/gdk/x11/gdkdrag-x11.c
+@@ -514,9 +514,9 @@ gdk_surface_cache_new (GdkDisplay *display)
+ 	  impl = GDK_X11_SURFACE (surface);
+           gdk_surface_get_geometry (surface, &x, &y, &width, &height);
+           gdk_surface_cache_add (result, GDK_SURFACE_XID (surface),
+-                                x * impl->surface_scale, y * impl->surface_scale, 
+-				width * impl->surface_scale, 
+-				height * impl->surface_scale,
++                                gdk_x11_scale_pos_up (x, impl->surface_scale), gdk_x11_scale_pos_up (y, impl->surface_scale),
++				gdk_x11_scale_size_up (width, impl->surface_scale),
++				gdk_x11_scale_size_up (height, impl->surface_scale),
+                                 gdk_surface_get_mapped (surface));
+         }
+       return result;
+@@ -1315,8 +1315,8 @@ gdk_x11_drag_find_surface (GdkDrag         *drag,
+   dest = get_client_window_at_coords (window_cache,
+                                       drag_surface && GDK_IS_X11_SURFACE (drag_surface) ?
+                                       GDK_SURFACE_XID (drag_surface) : None,
+-                                      x_root * screen_x11->surface_scale,
+-                                      y_root * screen_x11->surface_scale);
++                                      gdk_x11_scale_pos_up (x_root, screen_x11->surface_scale),
++                                      gdk_x11_scale_pos_up (y_root, screen_x11->surface_scale));
+ 
+   if (drag_x11->dest_xid != dest)
+     {
+@@ -1465,7 +1465,7 @@ gdk_x11_drag_drag_motion (GdkDrag         *drag,
+           switch (drag_x11->protocol)
+             {
+             case GDK_DRAG_PROTO_XDND:
+-              xdnd_send_motion (drag_x11, x_root * screen_x11->surface_scale, y_root * screen_x11->surface_scale, suggested_action, time);
++              xdnd_send_motion (drag_x11, gdk_x11_scale_pos_up (x_root, screen_x11->surface_scale), gdk_x11_scale_pos_up (y_root, screen_x11->surface_scale), suggested_action, time);
+               break;
+ 
+             case GDK_DRAG_PROTO_ROOTWIN:
+diff --git a/gdk/x11/gdkdrop-x11.c b/gdk/x11/gdkdrop-x11.c
+index 3dd9e2d..9d1a7e3 100644
+--- a/gdk/x11/gdkdrop-x11.c
++++ b/gdk/x11/gdkdrop-x11.c
+@@ -657,8 +657,8 @@ xdnd_position_filter (GdkSurface   *surface,
+       drop_x11->suggested_action = xdnd_action_from_atom (display, action);
+       gdk_x11_drop_update_actions (drop_x11);
+ 
+-      drop_x11->last_x = x_root / impl->surface_scale;
+-      drop_x11->last_y = y_root / impl->surface_scale;
++      drop_x11->last_x = gdk_x11_scale_pos_down (x_root, impl->surface_scale);
++      drop_x11->last_y = gdk_x11_scale_pos_down (y_root, impl->surface_scale);
+ 
+       if (drop_x11->enter_emitted)
+         {
+diff --git a/gdk/x11/gdkmain-x11.c b/gdk/x11/gdkmain-x11.c
+index 52e0bf2..82a90dc 100644
+--- a/gdk/x11/gdkmain-x11.c
++++ b/gdk/x11/gdkmain-x11.c
+@@ -286,7 +286,7 @@ void
+ _gdk_x11_region_get_xrectangles (const cairo_region_t *region,
+                                  int              x_offset,
+                                  int              y_offset,
+-                                 int              scale,
++                                 double           scale,
+                                  XRectangle     **rects,
+                                  int             *n_rects)
+ {
+@@ -300,10 +300,15 @@ _gdk_x11_region_get_xrectangles (const cairo_region_t *region,
+   for (i = 0; i < n; i++)
+     {
+       cairo_region_get_rectangle (region, i, &box);
+-      rectangles[i].x = CLAMP ((box.x + x_offset) * scale, G_MINSHORT, G_MAXSHORT);
+-      rectangles[i].y = CLAMP ((box.y + y_offset) * scale, G_MINSHORT, G_MAXSHORT);
+-      rectangles[i].width = CLAMP (box.width * scale, G_MINSHORT, G_MAXSHORT);
+-      rectangles[i].height = CLAMP (box.height * scale, G_MINSHORT, G_MAXSHORT);
++      /* Stained Glass OS: a fractional scale -- each edge rounded, so
++       * neighbouring rectangles still meet */
++      int x0 = gdk_x11_scale_pos_up (box.x + x_offset, scale), y0 = gdk_x11_scale_pos_up (box.y + y_offset, scale);
++      int x1 = gdk_x11_scale_pos_up (box.x + x_offset + box.width, scale);
++      int y1 = gdk_x11_scale_pos_up (box.y + y_offset + box.height, scale);
++      rectangles[i].x = CLAMP (x0, G_MINSHORT, G_MAXSHORT);
++      rectangles[i].y = CLAMP (y0, G_MINSHORT, G_MAXSHORT);
++      rectangles[i].width = CLAMP (x1 - x0, G_MINSHORT, G_MAXSHORT);
++      rectangles[i].height = CLAMP (y1 - y0, G_MINSHORT, G_MAXSHORT);
+     }
+ 
+   *n_rects = n;
+diff --git a/gdk/x11/gdkprivate-x11.h b/gdk/x11/gdkprivate-x11.h
+index 358da4e..24969fd 100644
+--- a/gdk/x11/gdkprivate-x11.h
++++ b/gdk/x11/gdkprivate-x11.h
+@@ -28,6 +28,7 @@
+ 
+ #pragma once
+ 
++#include <math.h>
+ #include "gdkcursor.h"
+ #include "gdkx.h"
+ #include "gdksurface-x11.h"
+@@ -80,7 +81,7 @@ cairo_region_t* _gdk_x11_xwindow_get_shape  (Display *xdisplay,
+ void     _gdk_x11_region_get_xrectangles   (const cairo_region_t  *region,
+                                             int                    x_offset,
+                                             int                    y_offset,
+-                                            int                    scale,
++                                            double                    scale,
+                                             XRectangle           **rects,
+                                             int                   *n_rects);
+ 
+@@ -103,8 +104,41 @@ void _gdk_x11_surface_grab_check_destroy (GdkSurface *window);
+ #ifdef HAVE_XDAMAGE
+ void _gdk_x11_surface_set_frame_still_painting (GdkSurface *surface,
+                                                 gboolean    painting);
++
+ #endif
+ 
++/* Stained Glass OS: a fractional surface scale (1.75 at 175%), from the
++ * XSETTINGS manager's Gdk/SgFractionalScale (the scale in 1024ths). Sizes go
++ * up to whole pixels (ceil) and down to whole logical pixels (floor), with
++ * a margin for rounding; positions round. With a whole-number scale these
++ * are GTK's own (exact products, configure sizes rounded up). */
++static inline gboolean
++gdk_x11_scale_is_whole (double scale)
++{
++  return scale == (double) (int) scale;
++}
++static inline int
++gdk_x11_scale_size_up (int v, double scale)
++{
++  return gdk_x11_scale_is_whole (scale) ? v * (int) scale : (int) ceil (v * scale - 0.001);
++}
++static inline int
++gdk_x11_scale_size_down (int v, double scale)
++{
++  return gdk_x11_scale_is_whole (scale) ? (v + (int) scale - 1) / (int) scale : (int) floor (v / scale + 0.001);
++}
++static inline int
++gdk_x11_scale_pos_up (int v, double scale)
++{
++  return gdk_x11_scale_is_whole (scale) ? v * (int) scale : (int) floor (v * scale + 0.5);
++}
++static inline int
++gdk_x11_scale_pos_down (int v, double scale)
++{
++  return gdk_x11_scale_is_whole (scale) ? v / (int) scale : (int) floor (v / scale + 0.5);
++}
++
++
+ gboolean _gdk_x11_display_is_root_window (GdkDisplay *display,
+                                           Window      xroot_window);
+ 
+diff --git a/gdk/x11/gdkscreen-x11.c b/gdk/x11/gdkscreen-x11.c
+index 3e76990..d92bb43 100644
+--- a/gdk/x11/gdkscreen-x11.c
++++ b/gdk/x11/gdkscreen-x11.c
+@@ -261,10 +261,10 @@ _gdk_x11_screen_get_monitor_work_area (GdkX11Screen *x11_screen,
+       GdkRectangle work_area;
+ 
+       work_area = (GdkRectangle) {
+-        .x = workareas[0] / x11_screen->surface_scale,
+-        .y = workareas[1] / x11_screen->surface_scale,
+-        .width = workareas[2] / x11_screen->surface_scale,
+-        .height = workareas[3] / x11_screen->surface_scale,
++        .x = gdk_x11_scale_pos_down (workareas[0], x11_screen->surface_scale),
++        .y = gdk_x11_scale_pos_down (workareas[1], x11_screen->surface_scale),
++        .width = gdk_x11_scale_pos_down (workareas[2], x11_screen->surface_scale),
++        .height = gdk_x11_scale_pos_down (workareas[3], x11_screen->surface_scale),
+       };
+ 
+       if (gdk_rectangle_intersect (area, &work_area, &work_area))
+@@ -341,10 +341,10 @@ gdk_x11_screen_get_work_area (GdkX11Screen *x11_screen,
+   area->width = workareas[desktop * 4 + 2];
+   area->height = workareas[desktop * 4 + 3];
+ 
+-  area->x /= x11_screen->surface_scale;
+-  area->y /= x11_screen->surface_scale;
+-  area->width /= x11_screen->surface_scale;
+-  area->height /= x11_screen->surface_scale;
++  area->x = gdk_x11_scale_pos_down (area->x, x11_screen->surface_scale);
++  area->y = gdk_x11_scale_pos_down (area->y, x11_screen->surface_scale);
++  area->width = gdk_x11_scale_pos_down (area->width, x11_screen->surface_scale);
++  area->height = gdk_x11_scale_pos_down (area->height, x11_screen->surface_scale);
+ 
+ out:
+   if (ret_workarea)
+@@ -592,10 +592,10 @@ init_randr15 (GdkX11Screen *x11_screen)
+       gdk_monitor_get_geometry (GDK_MONITOR (monitor), &geometry);
+       name = g_strndup (output_info->name, output_info->nameLen);
+ 
+-      newgeo.x = rr_monitors[i].x / x11_screen->surface_scale;
+-      newgeo.y = rr_monitors[i].y / x11_screen->surface_scale;
+-      newgeo.width = rr_monitors[i].width / x11_screen->surface_scale;
+-      newgeo.height = rr_monitors[i].height / x11_screen->surface_scale;
++      newgeo.x = gdk_x11_scale_pos_down (rr_monitors[i].x, x11_screen->surface_scale);
++      newgeo.y = gdk_x11_scale_pos_down (rr_monitors[i].y, x11_screen->surface_scale);
++      newgeo.width = gdk_x11_scale_pos_down (rr_monitors[i].width, x11_screen->surface_scale);
++      newgeo.height = gdk_x11_scale_pos_down (rr_monitors[i].height, x11_screen->surface_scale);
+ 
+       gdk_monitor_set_geometry (GDK_MONITOR (monitor), &newgeo);
+       gdk_monitor_set_physical_size (GDK_MONITOR (monitor),
+@@ -604,7 +604,7 @@ init_randr15 (GdkX11Screen *x11_screen)
+       gdk_monitor_set_subpixel_layout (GDK_MONITOR (monitor),
+                                        translate_subpixel_order (output_info->subpixel_order));
+       gdk_monitor_set_refresh_rate (GDK_MONITOR (monitor), refresh_rate);
+-      gdk_monitor_set_scale_factor (GDK_MONITOR (monitor), x11_screen->surface_scale);
++      gdk_monitor_set_scale (GDK_MONITOR (monitor), x11_screen->surface_scale);
+       gdk_monitor_set_model (GDK_MONITOR (monitor), name);
+       gdk_monitor_set_connector (GDK_MONITOR (monitor), name);
+       gdk_monitor_set_manufacturer (GDK_MONITOR (monitor), manufacturer);
+@@ -753,10 +753,10 @@ init_randr13 (GdkX11Screen *x11_screen)
+           gdk_monitor_get_geometry (GDK_MONITOR (monitor), &geometry);
+           name = g_strndup (output_info->name, output_info->nameLen);
+ 
+-          newgeo.x = crtc->x / x11_screen->surface_scale;
+-          newgeo.y = crtc->y / x11_screen->surface_scale;
+-          newgeo.width = crtc->width / x11_screen->surface_scale;
+-          newgeo.height = crtc->height / x11_screen->surface_scale;
++          newgeo.x = gdk_x11_scale_pos_down (crtc->x, x11_screen->surface_scale);
++          newgeo.y = gdk_x11_scale_pos_down (crtc->y, x11_screen->surface_scale);
++          newgeo.width = gdk_x11_scale_pos_down (crtc->width, x11_screen->surface_scale);
++          newgeo.height = gdk_x11_scale_pos_down (crtc->height, x11_screen->surface_scale);
+ 
+           gdk_monitor_set_geometry (GDK_MONITOR (monitor), &newgeo);
+           gdk_monitor_set_physical_size (GDK_MONITOR (monitor),
+@@ -765,7 +765,7 @@ init_randr13 (GdkX11Screen *x11_screen)
+           gdk_monitor_set_subpixel_layout (GDK_MONITOR (monitor),
+                                            translate_subpixel_order (output_info->subpixel_order));
+           gdk_monitor_set_refresh_rate (GDK_MONITOR (monitor), refresh_rate);
+-          gdk_monitor_set_scale_factor (GDK_MONITOR (monitor), x11_screen->surface_scale);
++          gdk_monitor_set_scale (GDK_MONITOR (monitor), x11_screen->surface_scale);
+           gdk_monitor_set_model (GDK_MONITOR (monitor), name);
+ 
+           g_free (name);
+@@ -868,7 +868,7 @@ init_no_multihead (GdkX11Screen *x11_screen)
+ 
+   gdk_monitor_set_geometry (GDK_MONITOR (monitor), &(GdkRectangle) { 0, 0, width, height });
+   gdk_monitor_set_physical_size (GDK_MONITOR (monitor), width_mm, height_mm);
+-  gdk_monitor_set_scale_factor (GDK_MONITOR (monitor), x11_screen->surface_scale);
++  gdk_monitor_set_scale (GDK_MONITOR (monitor), x11_screen->surface_scale);
+ 
+   x11_display->primary_monitor = 0;
+ 
+@@ -932,7 +932,7 @@ _gdk_x11_screen_new (GdkDisplay *display,
+ 
+ void
+ _gdk_x11_screen_set_surface_scale (GdkX11Screen *x11_screen,
+-				  int           scale)
++				  double        scale)
+ {
+   GdkX11Display *x11_display = GDK_X11_DISPLAY (x11_screen->display);
+   GList *toplevels, *l;
+@@ -956,7 +956,7 @@ _gdk_x11_screen_set_surface_scale (GdkX11Screen *x11_screen,
+     {
+       GdkMonitor *monitor = g_list_model_get_item (G_LIST_MODEL (x11_display->monitors), i);
+ 
+-      gdk_monitor_set_scale_factor (monitor, scale);
++      gdk_monitor_set_scale (monitor, scale);
+ 
+       g_object_unref (monitor);
+     }
+diff --git a/gdk/x11/gdkscreen-x11.h b/gdk/x11/gdkscreen-x11.h
+index bfd0149..09c5b40 100644
+--- a/gdk/x11/gdkscreen-x11.h
++++ b/gdk/x11/gdkscreen-x11.h
+@@ -24,6 +24,7 @@
+ #include "gdkx11screen.h"
+ #include <X11/X.h>
+ #include <X11/Xlib.h>
++#include <math.h>
+ 
+ G_BEGIN_DECLS
+ 
+@@ -37,7 +38,7 @@ struct _GdkX11Screen
+   Window xroot_window;
+   int screen_num;
+ 
+-  int surface_scale;
++  double surface_scale;  /* Stained Glass OS: may be fractional (1.75) */
+   gboolean fixed_surface_scale;
+ 
+   /* Xft resources for the display, used for default values for
+@@ -92,7 +93,7 @@ void _gdk_x11_screen_get_edge_monitors      (GdkX11Screen *screen,
+                                              int          *left,
+                                              int          *right);
+ void _gdk_x11_screen_set_surface_scale      (GdkX11Screen *x11_screen,
+-                                             int           scale);
++                                              double        scale);
+ gboolean _gdk_x11_screen_get_monitor_work_area (GdkX11Screen *screen,
+                                                 GdkMonitor   *monitor,
+                                                 GdkRectangle *area);
+diff --git a/gdk/x11/gdksettings.c b/gdk/x11/gdksettings.c
+index 5a80ca1..09553b3 100644
+--- a/gdk/x11/gdksettings.c
++++ b/gdk/x11/gdksettings.c
+@@ -72,7 +72,9 @@ static const struct {
+   /* These are here in order to be recognized, but are not sent to
+      gtk as they are handled internally by gdk: */
+   {"Gdk/WindowScalingFactor", "gdk-window-scaling-factor"},
+-  {"Gdk/UnscaledDPI",         "gdk-unscaled-dpi"}
++  {"Gdk/UnscaledDPI",         "gdk-unscaled-dpi"},
++  /* Stained Glass OS: the display scale in 1024ths (1792 at 175%) */
++  {"Gdk/SgFractionalScale",   "gdk-sg-fractional-scale"}
+ };
+ 
+ static const char *
+diff --git a/gdk/x11/gdksurface-x11.c b/gdk/x11/gdksurface-x11.c
+index 90ffc48..1a95075 100644
+--- a/gdk/x11/gdksurface-x11.c
++++ b/gdk/x11/gdksurface-x11.c
+@@ -182,7 +182,7 @@ static gboolean
+ gdk_x11_surface_update_size (GdkX11Surface *self,
+                              int            width,
+                              int            height,
+-                             int            scale)
++                             double         scale)
+ {
+   GdkSurface *surface = GDK_SURFACE (self);
+ 
+@@ -231,10 +231,10 @@ update_shadow_size (GdkSurface *surface,
+   impl->shadow_top = shadow_top;
+   impl->shadow_bottom = shadow_bottom;
+ 
+-  data[0] = shadow_left * impl->surface_scale;
+-  data[1] = shadow_right * impl->surface_scale;
+-  data[2] = shadow_top * impl->surface_scale;
+-  data[3] = shadow_bottom * impl->surface_scale;
++  data[0] = gdk_x11_scale_size_up (shadow_left, impl->surface_scale);
++  data[1] = gdk_x11_scale_size_up (shadow_right, impl->surface_scale);
++  data[2] = gdk_x11_scale_size_up (shadow_top, impl->surface_scale);
++  data[3] = gdk_x11_scale_size_up (shadow_bottom, impl->surface_scale);
+ 
+   frame_extents = gdk_x11_get_xatom_by_name_for_display (gdk_surface_get_display (surface),
+                                                          "_GTK_FRAME_EXTENTS");
+@@ -922,8 +922,8 @@ setup_toplevel_window (GdkSurface *surface)
+    * correct value???
+    */
+   size_hints.flags = PSize;
+-  size_hints.width = surface->width * impl->surface_scale;
+-  size_hints.height = surface->height * impl->surface_scale;
++  size_hints.width = gdk_x11_scale_size_up (surface->width, impl->surface_scale);
++  size_hints.height = gdk_x11_scale_size_up (surface->height, impl->surface_scale);
+   
+   XSetWMNormalHints (xdisplay, xid, &size_hints);
+   
+@@ -1582,7 +1582,7 @@ x11_surface_move (GdkSurface *surface,
+ 
+   XMoveWindow (GDK_SURFACE_XDISPLAY (surface),
+                GDK_SURFACE_XID (surface),
+-               x * impl->surface_scale, y * impl->surface_scale);
++               gdk_x11_scale_pos_up (x, impl->surface_scale), gdk_x11_scale_pos_up (y, impl->surface_scale));
+ 
+   if (impl->override_redirect)
+     {
+@@ -1622,12 +1622,12 @@ x11_surface_resize (GdkSurface *surface,
+ 
+   XResizeWindow (GDK_SURFACE_XDISPLAY (surface),
+                  GDK_SURFACE_XID (surface),
+-                 width * impl->surface_scale, height * impl->surface_scale);
++                 gdk_x11_scale_size_up (width, impl->surface_scale), gdk_x11_scale_size_up (height, impl->surface_scale));
+ 
+   if (impl->override_redirect)
+     {
+-      impl->unscaled_width = width * impl->surface_scale;
+-      impl->unscaled_height = height * impl->surface_scale;
++      impl->unscaled_width = gdk_x11_scale_size_up (width, impl->surface_scale);
++      impl->unscaled_height = gdk_x11_scale_size_up (height, impl->surface_scale);
+       impl->next_layout.configured_width = width;
+       impl->next_layout.configured_height = height;
+       impl->next_layout.surface_geometry_dirty = TRUE;
+@@ -1635,8 +1635,8 @@ x11_surface_resize (GdkSurface *surface,
+     }
+   else
+     {
+-      if (width * impl->surface_scale != impl->unscaled_width ||
+-          height * impl->surface_scale != impl->unscaled_height)
++      if (gdk_x11_scale_size_up (width, impl->surface_scale) != impl->unscaled_width ||
++          gdk_x11_scale_size_up (height, impl->surface_scale) != impl->unscaled_height)
+         {
+           surface->resize_count++;
+           if (surface->resize_count == 1)
+@@ -1664,16 +1664,16 @@ x11_surface_move_resize (GdkSurface *surface,
+ 
+   XMoveResizeWindow (GDK_SURFACE_XDISPLAY (surface),
+                      GDK_SURFACE_XID (surface),
+-                     x * impl->surface_scale, y * impl->surface_scale,
+-                     width * impl->surface_scale, height * impl->surface_scale);
++                     gdk_x11_scale_pos_up (x, impl->surface_scale), gdk_x11_scale_pos_up (y, impl->surface_scale),
++                     gdk_x11_scale_size_up (width, impl->surface_scale), gdk_x11_scale_size_up (height, impl->surface_scale));
+ 
+   if (impl->override_redirect)
+     {
+       impl->abs_x = x;
+       impl->abs_y = y;
+ 
+-      impl->unscaled_width = width * impl->surface_scale;
+-      impl->unscaled_height = height * impl->surface_scale;
++      impl->unscaled_width = gdk_x11_scale_size_up (width, impl->surface_scale);
++      impl->unscaled_height = gdk_x11_scale_size_up (height, impl->surface_scale);
+       impl->next_layout.configured_width = width;
+       impl->next_layout.configured_height = height;
+       impl->next_layout.surface_geometry_dirty = TRUE;
+@@ -1692,8 +1692,8 @@ x11_surface_move_resize (GdkSurface *surface,
+     }
+   else
+     {
+-      if (width * impl->surface_scale != impl->unscaled_width ||
+-          height * impl->surface_scale != impl->unscaled_height)
++      if (gdk_x11_scale_size_up (width, impl->surface_scale) != impl->unscaled_width ||
++          gdk_x11_scale_size_up (height, impl->surface_scale) != impl->unscaled_height)
+         {
+           surface->resize_count++;
+           if (surface->resize_count == 1)
+@@ -1942,7 +1942,7 @@ gdk_x11_surface_enter_leave_monitors (GdkSurface *surface)
+ 
+ void
+ _gdk_x11_surface_set_surface_scale (GdkSurface *surface,
+-				    int scale)
++				    double scale)
+ {
+   GdkX11Surface *impl;
+   GdkToplevelX11 *toplevel;
+@@ -1966,14 +1966,14 @@ _gdk_x11_surface_set_surface_scale (GdkSurface *surface,
+ 
+   if (impl->override_redirect)
+     {
+-      impl->unscaled_width = surface->width * impl->surface_scale;
+-      impl->unscaled_height = surface->height * impl->surface_scale;
++      impl->unscaled_width = gdk_x11_scale_size_up (surface->width, impl->surface_scale);
++      impl->unscaled_height = gdk_x11_scale_size_up (surface->height, impl->surface_scale);
+     }
+ 
+   XResizeWindow (GDK_SURFACE_XDISPLAY (surface),
+                  GDK_SURFACE_XID (surface),
+-                 surface->width * impl->surface_scale,
+-                 surface->height * impl->surface_scale);
++                 gdk_x11_scale_size_up (surface->width, impl->surface_scale),
++                 gdk_x11_scale_size_up (surface->height, impl->surface_scale));
+ 
+   gdk_surface_invalidate_rect (surface, NULL);
+ 
+@@ -2402,22 +2402,22 @@ gdk_x11_surface_set_geometry_hints (GdkSurface         *surface,
+   if (geom_mask & GDK_HINT_MIN_SIZE)
+     {
+       size_hints.flags |= PMinSize;
+-      size_hints.min_width = geometry->min_width * impl->surface_scale;
+-      size_hints.min_height = geometry->min_height * impl->surface_scale;
++      size_hints.min_width = gdk_x11_scale_size_up (geometry->min_width, impl->surface_scale);
++      size_hints.min_height = gdk_x11_scale_size_up (geometry->min_height, impl->surface_scale);
+     }
+   
+   if (geom_mask & GDK_HINT_MAX_SIZE)
+     {
+       size_hints.flags |= PMaxSize;
+-      size_hints.max_width = MAX (geometry->max_width, 1) * impl->surface_scale;
+-      size_hints.max_height = MAX (geometry->max_height, 1) * impl->surface_scale;
++      size_hints.max_width = gdk_x11_scale_size_up (MAX (geometry->max_width, 1), impl->surface_scale);
++      size_hints.max_height = gdk_x11_scale_size_up (MAX (geometry->max_height, 1), impl->surface_scale);
+     }
+   
+-  else if (impl->surface_scale > 1)
++  else if (impl->surface_scale > 1 && gdk_x11_scale_is_whole (impl->surface_scale))
+     {
+       size_hints.flags |= PResizeInc;
+-      size_hints.width_inc = impl->surface_scale;
+-      size_hints.height_inc = impl->surface_scale;
++      size_hints.width_inc = (int) impl->surface_scale;
++      size_hints.height_inc = (int) impl->surface_scale;
+     }
+ 
+   /* FIXME: Would it be better to delete this property if
+@@ -2461,15 +2461,15 @@ gdk_surface_get_geometry_hints (GdkSurface      *surface,
+   if (size_hints->flags & PMinSize)
+     {
+       *geom_mask |= GDK_HINT_MIN_SIZE;
+-      geometry->min_width = size_hints->min_width / impl->surface_scale;
+-      geometry->min_height = size_hints->min_height / impl->surface_scale;
++      geometry->min_width = gdk_x11_scale_pos_down (size_hints->min_width, impl->surface_scale);
++      geometry->min_height = gdk_x11_scale_pos_down (size_hints->min_height, impl->surface_scale);
+     }
+ 
+   if (size_hints->flags & PMaxSize)
+     {
+       *geom_mask |= GDK_HINT_MAX_SIZE;
+-      geometry->max_width = MAX (size_hints->max_width, 1) / impl->surface_scale;
+-      geometry->max_height = MAX (size_hints->max_height, 1) / impl->surface_scale;
++      geometry->max_width = gdk_x11_scale_pos_down (MAX (size_hints->max_width, 1), impl->surface_scale);
++      geometry->max_height = gdk_x11_scale_pos_down (MAX (size_hints->max_height, 1), impl->surface_scale);
+     }
+ 
+   XFree (size_hints);
+@@ -2699,13 +2699,13 @@ gdk_x11_surface_get_geometry (GdkSurface *surface,
+                              root, 0, 0, &tx, &ty, &child);
+ 
+       if (x)
+-	*x = tx / impl->surface_scale;
++	*x = gdk_x11_scale_pos_down (tx, impl->surface_scale);
+       if (y)
+-	*y = ty / impl->surface_scale;
++	*y = gdk_x11_scale_pos_down (ty, impl->surface_scale);
+       if (width)
+-	*width = twidth / impl->surface_scale;
++	*width = gdk_x11_scale_pos_down (twidth, impl->surface_scale);
+       if (height)
+-	*height = theight / impl->surface_scale;
++	*height = gdk_x11_scale_pos_down (theight, impl->surface_scale);
+     }
+ }
+ 
+@@ -2724,13 +2724,13 @@ gdk_x11_surface_get_root_coords (GdkSurface *surface,
+   XTranslateCoordinates (GDK_SURFACE_XDISPLAY (surface),
+                          GDK_SURFACE_XID (surface),
+                          GDK_SURFACE_XROOTWIN (surface),
+-                         x * impl->surface_scale, y * impl->surface_scale, &tx, &ty,
++                         gdk_x11_scale_pos_up (x, impl->surface_scale), gdk_x11_scale_pos_up (y, impl->surface_scale), &tx, &ty,
+                          &child);
+ 
+   if (root_x)
+-    *root_x = tx / impl->surface_scale;
++    *root_x = gdk_x11_scale_pos_down (tx, impl->surface_scale);
+   if (root_y)
+-    *root_y = ty / impl->surface_scale;
++    *root_y = gdk_x11_scale_pos_down (ty, impl->surface_scale);
+ }
+ 
+ static void
+@@ -2775,10 +2775,10 @@ gdk_x11_surface_get_frame_extents (GdkSurface    *surface,
+   if (GDK_SURFACE_DESTROYED (surface) || impl->override_redirect)
+     return;
+ 
+-  rect->x *= impl->surface_scale;
+-  rect->y *= impl->surface_scale;
+-  rect->width *= impl->surface_scale;
+-  rect->height *= impl->surface_scale;
++  rect->x = gdk_x11_scale_pos_up (rect->x, impl->surface_scale);
++  rect->y = gdk_x11_scale_pos_up (rect->y, impl->surface_scale);
++  rect->width = gdk_x11_scale_size_up (rect->width, impl->surface_scale);
++  rect->height = gdk_x11_scale_size_up (rect->height, impl->surface_scale);
+ 
+   nvroots = 0;
+   vroots = NULL;
+@@ -2899,10 +2899,26 @@ gdk_x11_surface_get_frame_extents (GdkSurface    *surface,
+      as well as round the size up when we divide by scale so that the returned
+      size is guaranteed to cover the real pixels, but it may overshoot a bit
+      in case the window is not positioned/sized according to the scale */
+-  rect->width = (rect->width + rect->x % impl->surface_scale + impl->surface_scale - 1) / impl->surface_scale;
+-  rect->height = (rect->height + rect->y % impl->surface_scale + impl->surface_scale - 1) / impl->surface_scale;
+-  rect->x = rect->x / impl->surface_scale;
+-  rect->y = rect->y / impl->surface_scale;
++  if (gdk_x11_scale_is_whole (impl->surface_scale))
++    {
++      int scale = (int) impl->surface_scale;
++      rect->width = (rect->width + rect->x % scale + scale - 1) / scale;
++      rect->height = (rect->height + rect->y % scale + scale - 1) / scale;
++      rect->x = rect->x / scale;
++      rect->y = rect->y / scale;
++    }
++  else
++    {
++      /* Stained Glass OS: a fractional scale -- the logical pixels that
++       * cover the real ones */
++      int x0 = (int) floor (rect->x / impl->surface_scale), y0 = (int) floor (rect->y / impl->surface_scale);
++      int x1 = (int) ceil ((rect->x + rect->width) / impl->surface_scale);
++      int y1 = (int) ceil ((rect->y + rect->height) / impl->surface_scale);
++      rect->x = x0;
++      rect->y = y0;
++      rect->width = x1 - x0;
++      rect->height = y1 - y0;
++    }
+   gdk_x11_display_error_trap_pop_ignored (display);
+ }
+ 
+@@ -3859,8 +3875,8 @@ wmspec_send_message (GdkDisplay *display,
+   xclient.message_type =
+     gdk_x11_get_xatom_by_name_for_display (display, "_NET_WM_MOVERESIZE");
+   xclient.format = 32;
+-  xclient.data.l[0] = root_x * impl->surface_scale;
+-  xclient.data.l[1] = root_y * impl->surface_scale;
++  xclient.data.l[0] = gdk_x11_scale_pos_up (root_x, impl->surface_scale);
++  xclient.data.l[1] = gdk_x11_scale_pos_up (root_y, impl->surface_scale);
+   xclient.data.l[2] = action;
+   xclient.data.l[3] = button;
+   xclient.data.l[4] = 1;  /* source indication */
+@@ -4714,10 +4730,10 @@ gdk_x11_surface_set_opaque_region (GdkSurface      *surface,
+         {
+           cairo_rectangle_int_t rect;
+           cairo_region_get_rectangle (region, i, &rect);
+-          data[i*4+0] = rect.x * impl->surface_scale;
+-          data[i*4+1] = rect.y * impl->surface_scale;
+-          data[i*4+2] = rect.width * impl->surface_scale;
+-          data[i*4+3] = rect.height * impl->surface_scale;
++          data[i*4+0] = gdk_x11_scale_pos_up (rect.x, impl->surface_scale);
++          data[i*4+1] = gdk_x11_scale_pos_up (rect.y, impl->surface_scale);
++          data[i*4+2] = gdk_x11_scale_size_up (rect.width, impl->surface_scale);
++          data[i*4+3] = gdk_x11_scale_size_up (rect.height, impl->surface_scale);
+         }
+     }
+   else
+@@ -4778,8 +4794,8 @@ gdk_x11_surface_show_window_menu (GdkSurface *surface,
+   xclient.window = GDK_SURFACE_XID (surface);
+   xclient.message_type = gdk_x11_get_xatom_by_name_for_display (display, "_GTK_SHOW_WINDOW_MENU");
+   xclient.data.l[0] = device_id;
+-  xclient.data.l[1] = x_root * impl->surface_scale;
+-  xclient.data.l[2] = y_root * impl->surface_scale;
++  xclient.data.l[1] = gdk_x11_scale_pos_up (x_root, impl->surface_scale);
++  xclient.data.l[2] = gdk_x11_scale_pos_up (y_root, impl->surface_scale);
+   xclient.format = 32;
+ 
+   XSendEvent (GDK_DISPLAY_XDISPLAY (display), GDK_SURFACE_XROOTWIN (surface), False,
+@@ -4789,6 +4805,26 @@ gdk_x11_surface_show_window_menu (GdkSurface *surface,
+   return TRUE;
+ }
+ 
++/* Stained Glass OS: at a fractional scale, the buffer is the X window's
++ * own size -- the logical size times the scale only rounds to it */
++static void
++gdk_x11_surface_get_buffer_size (GdkSurface     *surface,
++                                 GdkDrawContext *context,
++                                 guint          *out_width,
++                                 guint          *out_height)
++{
++  GdkX11Surface *impl = GDK_X11_SURFACE (surface);
++
++  if (!gdk_x11_scale_is_whole (impl->surface_scale) && impl->unscaled_width > 0 && impl->unscaled_height > 0)
++    {
++      *out_width = impl->unscaled_width;
++      *out_height = impl->unscaled_height;
++      return;
++    }
++  *out_width = ceil (impl->surface_scale * surface->width);
++  *out_height = ceil (impl->surface_scale * surface->height);
++}
++
+ static void
+ gdk_x11_surface_class_init (GdkX11SurfaceClass *klass)
+ {
+@@ -4809,6 +4845,7 @@ gdk_x11_surface_class_init (GdkX11SurfaceClass *klass)
+   impl_class->destroy_notify = gdk_x11_surface_destroy_notify;
+   impl_class->drag_begin = _gdk_x11_surface_drag_begin;
+   impl_class->get_scale = gdk_x11_surface_get_scale;
++  impl_class->get_buffer_size = gdk_x11_surface_get_buffer_size;
+   impl_class->set_opaque_region = gdk_x11_surface_set_opaque_region;
+   impl_class->request_layout = gdk_x11_surface_request_layout;
+   impl_class->compute_size = gdk_x11_surface_compute_size;
+diff --git a/gdk/x11/gdksurface-x11.h b/gdk/x11/gdksurface-x11.h
+index 150920d..65a168e 100644
+--- a/gdk/x11/gdksurface-x11.h
++++ b/gdk/x11/gdksurface-x11.h
+@@ -63,7 +63,7 @@ struct _GdkX11Surface
+   guint frame_sync_enabled : 1;
+   guint tracking_damage: 1;
+ 
+-  int surface_scale;
++  double surface_scale;  /* Stained Glass OS: may be fractional */
+ 
+   int shadow_left;
+   int shadow_right;
+@@ -206,7 +206,7 @@ GdkToplevelX11 *_gdk_x11_surface_get_toplevel        (GdkSurface *window);
+ GdkCursor      *_gdk_x11_surface_get_cursor          (GdkSurface *window);
+ 
+ void            _gdk_x11_surface_set_surface_scale   (GdkSurface *window,
+-                                                      int        scale);
++                                                      double      scale);
+ gboolean        _gdk_x11_surface_syncs_frames        (GdkSurface *surface);
+ 
+ void            gdk_x11_surface_pre_damage           (GdkSurface *surface);
+diff --git a/gdk/x11/xsettings-client.c b/gdk/x11/xsettings-client.c
+index 625f6b0..78e6f6f 100644
+--- a/gdk/x11/xsettings-client.c
++++ b/gdk/x11/xsettings-client.c
+@@ -400,6 +400,7 @@ static void
+ read_settings (GdkX11Screen *x11_screen,
+                gboolean      do_notify)
+ {
++  double fractional;
+   GdkDisplay *display = x11_screen->display;
+ 
+   Atom type;
+@@ -444,9 +445,37 @@ read_settings (GdkX11Screen *x11_screen,
+ 	}
+     }
+ 
++  /* Stained Glass OS: the display scale as it is, fractional (1.75 at
++   * 175%), when the session's XSETTINGS manager gives it
++   * (Gdk/SgFractionalScale, in 1024ths): windows are that many pixels per
++   * logical one, and the text's DPI is Xft/DPI over it. Without it, or with
++   * GDK_SG_FRACTIONAL=0, whole steps (Gdk/WindowScalingFactor) as before. */
++  fractional = 0;
++#ifndef SG_MUTANT_GTK_WHOLE_STEPS
++  if (x11_screen->xsettings && !x11_screen->fixed_surface_scale &&
++      g_strcmp0 (g_getenv ("GDK_SG_FRACTIONAL"), "0") != 0)
++    {
++      setting = g_hash_table_lookup (x11_screen->xsettings, "gdk-sg-fractional-scale");
++      if (setting && G_VALUE_HOLDS_INT (setting) && g_value_get_int (setting) >= 1024 &&
++          g_value_get_int (setting) <= 1024 * 8)
++        fractional = g_value_get_int (setting) / 1024.0;
++    }
++#endif
++  if (fractional > 0)
++    {
++      setting = g_hash_table_lookup (x11_screen->xsettings, "gtk-xft-dpi");
++      if (setting && G_VALUE_HOLDS_INT (setting) && g_value_get_int (setting) > 0)
++        {
++          copy = g_new0 (GValue, 1);
++          g_value_init (copy, G_TYPE_INT);
++          g_value_set_int (copy, (int) floor (g_value_get_int (setting) / fractional + 0.5));
++          g_hash_table_insert (x11_screen->xsettings,
++                               (gpointer) "gtk-xft-dpi", copy);
++        }
++    }
+   /* Since we support scaling we look at the specific Gdk/UnscaledDPI
+      setting if it exists and use that instead of Xft/DPI if it is set */
+-  if (x11_screen->xsettings && !x11_screen->fixed_surface_scale)
++  else if (x11_screen->xsettings && !x11_screen->fixed_surface_scale)
+     {
+       setting = g_hash_table_lookup (x11_screen->xsettings, "gdk-unscaled-dpi");
+       if (setting)
+@@ -461,7 +490,9 @@ read_settings (GdkX11Screen *x11_screen,
+ 
+   g_value_init (&value, G_TYPE_INT);
+ 
+-  if (!x11_screen->fixed_surface_scale &&
++  if (fractional > 0)
++    _gdk_x11_screen_set_surface_scale (x11_screen, fractional);
++  else if (!x11_screen->fixed_surface_scale &&
+       gdk_display_get_setting (display, "gdk-window-scaling-factor", &value))
+     _gdk_x11_screen_set_surface_scale (x11_screen, g_value_get_int (&value));
+ 
+@@ -475,7 +506,7 @@ read_settings (GdkX11Screen *x11_screen,
+ 
+       copy = g_new0 (GValue, 1);
+       g_value_init (copy, G_TYPE_INT);
+-      g_value_set_int (copy, cursor_theme_size / x11_screen->surface_scale);
++      g_value_set_int (copy, (int) floor (cursor_theme_size / x11_screen->surface_scale + 0.5));
+       g_hash_table_insert (x11_screen->xsettings,
+                            (gpointer) "gtk-cursor-theme-size", copy);
+     }
