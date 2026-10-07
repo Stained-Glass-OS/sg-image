@@ -443,6 +443,18 @@ if [[ "${SG_GUEST_CHECK:-session}" == session ]]; then
     fi
 fi
 
+# An administrator reads the system journal (sg-session 0.1.0-169: sg-admins
+# gets the journal's ACL, as adm and wheel do; before, an administrator's
+# journalctl showed only their own session -- David, 2026-10-07). sguser is
+# in sg-admins: systemd's own messages (PID 1) are system entries.
+n=$(ssh_guest "runuser -u sguser -- journalctl -b -q --no-pager -n 5 _PID=1 2>/dev/null | wc -l" 2>/dev/null | tr -d '\r')
+if [[ "${n:-0}" -ge 1 ]]; then
+    echo "PASS  an administrator (sg-admins) reads the system journal ($n of systemd's lines)"
+else
+    echo "FAIL  an administrator cannot read the system journal (${n:-?} lines of systemd's own)"
+    RC=1
+fi
+
 # The splash from the first second (David 2026-09-29: hide the Linux boot
 # text behind a loading screen): the boot entry loads sg-theme.initrd; Plymouth
 # and our theme are in the initrds; and the splash started in the initrd, before
