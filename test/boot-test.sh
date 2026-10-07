@@ -660,6 +660,77 @@ if [[ "${SG_GUEST_CHECK:-session}" == session && $RC -eq 0 && "${SG_TEST_KEYRING
     # the lab password back, for anything after this
     printf '%s\0%s\0%s\0' "$LOGIN_USER" "$NEW_PW" "$LAB_PW" | ssh_guest /usr/libexec/stained-glass/sg-password-change >/dev/null 2>&1 || true
 fi
+
+# --- an administrator's reset: saved passwords are locked (make keyring-reset-test)
+# What "Reset password" on another account and Setup run (chpasswd: no current
+# password, so the keyring stays on the old one). Sign out and in with the new
+# password: the sign-in must say "Saved passwords are locked" (sg-shell's
+# sg-control /keyring-signin, the Run key) -- the screen is kept -- and typing
+# the password used before and the current one opens the keyring, re-encrypted
+# with the current one: the secret is there, and the next sign-in opens it.
+if [[ "${SG_GUEST_CHECK:-session}" == session && $RC -eq 0 && "${SG_TEST_KEYRING_RESET:-0}" == 1 ]]; then
+    LAB_PW=$(cat "$LAB_PASSWORD_FILE")
+    NEW_PW="Rs-${RANDOM}x${RANDOM}"
+    qmp() { python3 "$HERE/test/qmp.py" "$QMP_SOCK" "$@" >/dev/null 2>&1; }
+    signed_in() { ssh_guest "test -S /run/user/\$(id -u $LOGIN_USER)/bus && pgrep -u $LOGIN_USER -f explorer.exe >/dev/null" 2>/dev/null; }
+    sign_in() { # PASSWORD: through the login screen, as at the first sign-in
+        local ready_before _try _w
+        ready_before=$(ssh_guest "journalctl -b -t sg-login --no-pager -o cat | grep -c 'greeter ready'" 2>/dev/null | tr -d '\r')
+        ssh_guest "loginctl terminate-user $LOGIN_USER" >/dev/null 2>&1 || true
+        deadline=$(( SECONDS + CHECK_TIMEOUT ))
+        until [[ "$(ssh_guest "journalctl -b -t sg-login --no-pager -o cat | grep -c 'greeter ready'" 2>/dev/null | tr -d '\r')" -gt "${ready_before:-0}" ]]; do
+            (( SECONDS > deadline )) && break; sleep 3
+        done
+        sleep 3
+        for _try in 1 2 3; do
+            qmp type "x"; sleep 2; qmp key ctrl+a; qmp key backspace; sleep 1
+            if [[ $_try != 2 ]]; then qmp type "$LOGIN_USER"; qmp key ret; sleep 4; fi
+            qmp type "$1"; qmp key ret
+            _w=0; until signed_in || (( _w >= 90 )); do sleep 3; _w=$((_w + 3)); done
+            signed_in && return 0
+        done
+        return 1
+    }
+    locked_window() { ssh_guest "pgrep -u $LOGIN_USER -f 'sg-control64.exe /keyring-signin' >/dev/null" 2>/dev/null; }
+    printf '%s\n' "$LOGIN_USER:$NEW_PW" | ssh_guest chpasswd 2>/dev/null \
+        && echo "PASS  an administrator resets the password (chpasswd)" || { echo "FAIL  chpasswd"; RC=1; }
+    if sign_in "$NEW_PW"; then
+        echo "PASS  signed in with the reset password"
+        _w=0; until locked_window || (( _w >= 120 )); do sleep 3; _w=$((_w + 3)); done
+        sleep 12
+        qmp screendump "$ARTIFACTS/screenshot-keyring-reset.ppm"
+        if locked_window && [[ "$(kr_locked)" == true ]]; then
+            echo "PASS  the sign-in says the saved passwords are locked (screenshot-keyring-reset.ppm)"
+        else
+            echo "FAIL  no question at sign-in after the reset (keyring locked: $(kr_locked))"; RC=1
+        fi
+        qmp type "$LAB_PW"; qmp key tab; qmp key tab; qmp type "$NEW_PW"; qmp key ret
+        sleep 8
+        qmp screendump "$ARTIFACTS/screenshot-keyring-unlocked.ppm"
+        qmp key ret
+        sleep 3
+        got=$(kr_session "secret-tool lookup app sg-boot-test" 2>/dev/null | tr -d '\r')
+        if [[ "$got" == "$KR_SECRET" && "$(kr_locked)" == false ]]; then
+            echo "PASS  the password used before and the current one unlock them: the secret is there"
+        else
+            echo "FAIL  after answering: lookup '$got', locked '$(kr_locked)'"; RC=1
+        fi
+        if sign_in "$NEW_PW"; then
+            sleep 10
+            got=$(kr_session "secret-tool lookup app sg-boot-test" 2>/dev/null | tr -d '\r')
+            if [[ "$got" == "$KR_SECRET" && "$(kr_locked)" == false ]] && ! locked_window; then
+                echo "PASS  ... and the next sign-in opens them with the current password, no question"
+            else
+                echo "FAIL  next sign-in: lookup '$got', locked '$(kr_locked)'"; RC=1
+            fi
+        else echo "FAIL  could not sign in again"; RC=1; fi
+    else
+        echo "FAIL  could not sign in with the reset password"
+        qmp screendump "$ARTIFACTS/screenshot-reset-signin-failed.ppm"
+        RC=1
+    fi
+    printf '%s\0%s\0%s\0' "$LOGIN_USER" "$NEW_PW" "$LAB_PW" | ssh_guest /usr/libexec/stained-glass/sg-password-change >/dev/null 2>&1 || true
+fi
 set -e
 
 # --- elevated programs' displays (ADR 0012, bug B56) -----------------------

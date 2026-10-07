@@ -13,6 +13,8 @@
 #   - Win+L typed into the client locks the remote session and its lock
 #     screen comes up; the password typed into the client unlocks it
 #   - disconnecting keeps the session; logging in again reconnects to it
+#   - the remote session's keyring is open (the password sent opens it, as
+#     at the console): secret-tool stores and finds a secret, no prompt
 #
 # Needs what boot-test.sh needs, plus xfreerdp3, Xvfb, xdotool and ImageMagick.
 set -euo pipefail
@@ -152,6 +154,29 @@ done
 if ssh_guest "pgrep -u $LAB_USER -f 'explorer.exe /desktop=shell,${W}x${H}' >/dev/null" 2>/dev/null; then
     pass "the Windows desktop runs in it at the client's size (${W}x${H})"
 else fail "no desktop: $(ssh_guest "pgrep -a -u $LAB_USER" 2>&1 | head)"; fi
+# The session's keyring opens with the password the client sent, as a
+# sign-in at the console opens it (sg-session 0.1.0-154: the monitor's second
+# PAM check, once the session exists, through pam_gnome_keyring). The lab
+# user's first sign-in is this one: the keyring is made too. A program in the
+# remote session stores and finds a secret with no prompt.
+kr_remote() {   # CMD... as the lab user, on the remote session's bus
+    ssh_guest "runuser -u $LAB_USER -- env XDG_RUNTIME_DIR=/run/user/$UID_LAB DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$UID_LAB/bus timeout 30 $*"
+}
+kr_remote_locked() {
+    kr_remote "gdbus call --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets/collection/login --method org.freedesktop.DBus.Properties.Get org.freedesktop.Secret.Collection Locked" 2>&1 \
+        | sed -n 's/.*<\(true\|false\)>.*/\1/p'
+}
+KR_SECRET="sg-rdp-test-$RANDOM$RANDOM"
+printf '%s' "$KR_SECRET" | kr_remote "secret-tool store --label='SG RDP test' app sg-rdp-test" 2>"$ARTIFACTS/keyring-store.err" || true
+got=$(kr_remote "secret-tool lookup app sg-rdp-test" 2>/dev/null | tr -d '\r' || true)
+if [[ "$got" == "$KR_SECRET" && "$(kr_remote_locked)" == false ]]; then
+    pass "the remote session's keyring is open with the password sent: secret-tool stores and finds a secret, no prompt"
+else
+    fail "remote keyring: lookup '$got', locked '$(kr_remote_locked)'; $(head -c 300 "$ARTIFACTS/keyring-store.err")"
+    ssh_guest "journalctl -b --no-pager -o cat | grep -i 'gkr-pam\|gnome-keyring\|keyring not opened' | tail -20" 2>/dev/null | sed 's/^/    /'
+fi
+if rdplog | grep -q 'keyring not opened' || false; then fail "sg-rdp-authd: $(rdplog | grep 'keyring not opened' | tail -1)"; fi
+
 sleep 15
 shot session
 # The taskbar: the bottom 40 rows are its colour across the width, and differ

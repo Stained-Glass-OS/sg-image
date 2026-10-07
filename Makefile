@@ -19,7 +19,7 @@ SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 SG_MAIL     ?= ../sg-mail
 
-.PHONY: keyring-test netlock-test gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test clean distclean
+.PHONY: keyring-test keyring-reset-test netlock-test gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test clean distclean
 
 all: image
 
@@ -699,6 +699,11 @@ boot-test:
 # and in with the new one, and the keyring must open with it.
 keyring-test:
 	SG_TEST_KEYRING_PWCHANGE=1 test/boot-test.sh
+
+# An administrator's reset: the next sign-in says "Saved passwords are
+# locked"; the password used before and the current one unlock them.
+keyring-reset-test:
+	SG_TEST_KEYRING_RESET=1 test/boot-test.sh
 
 # The live ISO's boot, timed and watched: the splash on the screen, no text
 # console, and firmware-to-Setup within SG_BOOT_BUDGET seconds (QA B2, B4).
