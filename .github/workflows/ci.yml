@@ -166,7 +166,7 @@ jobs:
               apt-get install -y --no-install-recommends \
                 build-essential devscripts debhelper equivs make git ca-certificates curl \
                 xz-utils patch file procps openssh-client openssl shellcheck python3
-              for r in wine-sg sg-compositor sg-shell sg-session; do
+              for r in wine-sg sg-compositor sg-shell sg-session sg-mail; do
                 (cd "$r" && apt-get build-dep -y --no-install-recommends ./)
               done
               git config --global --add safe.directory "*"
