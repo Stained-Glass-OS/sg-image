@@ -583,7 +583,12 @@ REPO_ONLY       := $(BUILD)/repo-only
 
 gtk-scale-debs: staged-debs
 	rm -rf $(GTK_SCALE_OUT) && mkdir -p $(GTK_SCALE_OUT) $(REPO_ONLY)
-	gtk-scale/build-debs.sh gtk3 $(GTK_SCALE_CACHE) $(GTK_SCALE_OUT)
+	@# SG_GTK_FROM_REPO=1 (CI: no deb-src, and the build takes 1.5 h): the
+	@# image's two GTK packages as our repository publishes them, each
+	@# checked against the SHA-256 its index gives; releases build them
+	@if [ "$(SG_GTK_FROM_REPO)" = 1 ]; then \
+		exec gtk-scale/from-repo.sh $(GTK_SCALE_OUT); fi; \
+	gtk-scale/build-debs.sh gtk3 $(GTK_SCALE_CACHE) $(GTK_SCALE_OUT) && \
 	gtk-scale/build-debs.sh gtk4 $(GTK_SCALE_CACHE) $(GTK_SCALE_OUT)
 	@rm -f $(REPO_ONLY)/*.deb
 	@for d in $(GTK_SCALE_OUT)/*.deb; do \

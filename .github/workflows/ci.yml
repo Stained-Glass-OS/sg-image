@@ -188,7 +188,7 @@ jobs:
       # (Direct3D, the bundled apps, Wine Mono/Gecko) and the image itself.
       - name: Build image
         working-directory: sg-image
-        run: make -o staged-debs image
+        run: make -o staged-debs image SG_GTK_FROM_REPO=1
 
       - name: Boot gate
         working-directory: sg-image
