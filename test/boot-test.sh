@@ -430,19 +430,15 @@ if [[ "${SG_GUEST_CHECK:-session}" == session ]]; then
     fi
 fi
 
-# SG Office comes installed: sg-office (from sg-shell) -- its three programs
-# and its file types in the system prefix -- and the editors it starts,
-# sg-office-editors (ONLYOFFICE-based, /usr/bin/sg-office). No LibreOffice:
-# the LibreOffice-based interim suite, its Get SG Office and payload are gone.
-# (SG_NO_OFFICE=1: an image made without it -- CI's)
-if [[ "${SG_NO_OFFICE:-0}" == 1 ]]; then
-    echo "SKIP  SG Office: this image was made without it (SG_NO_OFFICE=1)"
-elif [[ "${SG_GUEST_CHECK:-session}" == session ]]; then
-    st=$(ssh_guest "dpkg-query -W -f '\${Status}' sg-office; echo; for f in sg-documents64 sg-spreadsheets64 sg-presentations64; do test -f /usr/libexec/stained-glass/shell/\$f.exe && echo \$f; done | wc -l; dpkg-query -W -f '\${Status}' sg-office-editors 2>/dev/null | grep -q 'install ok installed' && test -x /usr/bin/sg-office && echo editors; test -f /var/lib/stained-glass/state/defaults/89-sg-office-types.reg.sha256 && echo types; test -e /usr/libexec/stained-glass/shell/sg-office-setup64.exe && echo OLD-SETUP; test -e '/var/lib/stained-glass/prefix/drive_c/Program Files/LibreOffice' && echo BUNDLED-LIBREOFFICE; true" 2>/dev/null | tr '\n' ' ')
-    if [[ "$st" == "install ok installed 3 editors types " ]]; then
-        echo "PASS  SG Office is installed: its three programs, its editors (sg-office-editors), its file types (no LibreOffice)"
+# SG Office is not installed by default (David, 2026-10-07: Microsoft Office
+# installs now; SG Office is one choice in the Store): neither sg-office nor
+# its editors, and no LibreOffice -- but the Store offers it.
+if [[ "${SG_GUEST_CHECK:-session}" == session ]]; then
+    st=$(ssh_guest "dpkg-query -W -f '\${Status}' sg-office 2>/dev/null | grep -q 'install ok installed' && echo OFFICE; dpkg-query -W -f '\${Status}' sg-office-editors 2>/dev/null | grep -q 'install ok installed' && echo EDITORS; test -e '/var/lib/stained-glass/prefix/drive_c/Program Files/LibreOffice' && echo BUNDLED-LIBREOFFICE; grep -rqs 'ours:apt:sg-office' /usr/share/stained-glass/defaults.d 2>/dev/null && echo STORE; true" 2>/dev/null | tr '\n' ' ')
+    if [[ "$st" == "STORE " ]]; then
+        echo "PASS  SG Office is not installed by default, and the Store offers it"
     else
-        echo "FAIL  SG Office is not installed as expected: $st"
+        echo "FAIL  SG Office by default: $st (want only STORE)"
         RC=1
     fi
 fi

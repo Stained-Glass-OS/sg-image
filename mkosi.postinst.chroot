@@ -21,6 +21,14 @@ if [ -d /opt/sg-packages ]; then
         echo "[sg-image] ERROR: more than one version staged of: $dups" >&2
         exit 1
     fi
+    # In the repository for SG Store, not installed by default (David,
+    # 2026-10-07: Microsoft Office installs now; SG Office is one choice
+    # among others in the Store, not a suite every machine carries)
+    for p in sg-office sg-office-editors; do
+        for d in /opt/sg-packages/"$p"_*.deb; do
+            if [ -e "$d" ]; then echo "[sg-image] $p: in the Store, not installed"; rm -f "$d"; fi
+        done
+    done
     dpkg -i /opt/sg-packages/*.deb
     rm -rf /opt/sg-packages
 else
