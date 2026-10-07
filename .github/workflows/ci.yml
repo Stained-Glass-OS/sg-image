@@ -53,6 +53,14 @@ jobs:
           repository: Stained-Glass-OS/sg-shell
           path: sg-shell
 
+      # SG Mail (sg-mail-deb): the image has carried it since 2026-10-05, and
+      # without the checkout staged-debs stopped at mail-deb
+      - name: Check out sg-mail
+        uses: actions/checkout@v4
+        with:
+          repository: Stained-Glass-OS/sg-mail
+          path: sg-mail
+
       # Same cache as wine-sg's own CI, and the same reasoning: 'make image'
       # builds Wine from source, and that dominates the job. Keyed on the
       # upstream version and the patch series so a change anywhere else in
