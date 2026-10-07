@@ -834,6 +834,7 @@ ISO_DIR  ?= /srv/www/iso
 .PHONY: upload-iso
 upload-iso:
 	@test -f $(ISO) || { echo "no $(ISO) -- run 'make iso'"; exit 2; }
+	@release/iso-size-check.sh $(ISO)
 	@set -e; name=sg-live-$$(date -u +%Y%m%d-%H%M)-$$(git rev-parse --short HEAD).iso; \
 	ssh="ssh -i $$HOME/.ssh/sg -o BatchMode=yes"; \
 	sum=$$(sha256sum < $(ISO) | cut -d' ' -f1); \
