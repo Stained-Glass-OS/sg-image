@@ -14,6 +14,10 @@
 #   - an inline control (InlineUIContainer) sits in its line;
 #   - centred text is centred (a paragraph and FormattedText);
 #   - 500 paragraphs lay out in under 3 s (SG_WPF_LONG_MS);
+#   - a keystroke at the start or the end of them is laid out in under
+#     250 ms (SG_WPF_TYPE_MS; it was 2-3 s) -- a word at a time, so the
+#     paragraph wraps and the rest moves -- and draws what a fresh layout
+#     of the same text does;
 #   - right-to-left text starts at the right (a TextBlock, a paragraph's
 #     caret);
 #   - Hebrew and a symbol come from the machine's fonts, not as boxes
@@ -30,7 +34,8 @@
 # PresentationFramework/PresentationCore built with -define:SG_MUTANT_PTS_NO_BREAK,
 # SG_MUTANT_PTS_NO_TABLE, SG_MUTANT_NO_MARKER, SG_MUTANT_NO_EMBED_CACHE,
 # SG_MUTANT_NO_ALIGN, SG_MUTANT_TF_RESHAPE, SG_MUTANT_TF_NO_RTL,
-# SG_MUTANT_PTS_NO_ATTACHED or SG_MUTANT_PTS_NO_SUBPAGE_BBOX each fail
+# SG_MUTANT_PTS_NO_ATTACHED, SG_MUTANT_PTS_NO_SUBPAGE_BBOX, SG_MUTANT_PTS_FULL_UPDATE
+# or SG_MUTANT_PTS_NO_SHIFT each fail
 # their check (SG_MONO_DIR= a Mono tree with the mutant assemblies in its GAC).
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
@@ -49,7 +54,7 @@ mkdir -p "$HOME"
 n=170; while [ -e "/tmp/.X$n-lock" ]; do n=$((n + 1)); done
 Xvfb ":$n" -screen 0 1024x768x24 -nolisten tcp >/dev/null 2>&1 & XP=$!
 export DISPLAY=":$n"
-trap '"$WINESERVER" -k 2>/dev/null; kill $XP 2>/dev/null; rm -rf "$T"' EXIT INT TERM
+trap '"$WINESERVER" -k 2>/dev/null; kill $XP 2>/dev/null; [ -n "${KEEP:-}" ] && echo "kept $T" || rm -rf "$T"' EXIT INT TERM
 RC=0
 pass() { echo "PASS  $*"; }
 fail() { echo "FAIL  $*"; RC=1; }
@@ -115,5 +120,16 @@ f=$(sed -n 's/^FALLBACK //p' "$T/out" | tr -d '\r')
 # shaped once per run it takes about 1.3 s
 l=$(sed -n 's/^LONG ms \([0-9]*\).*/\1/p' "$T/out")
 [ -n "$l" ] && [ "$l" -lt "${SG_WPF_LONG_MS:-3000}" ] && pass "500 paragraphs laid out in $l ms" || fail "500 paragraphs took ${l:-?} ms (limit ${SG_WPF_LONG_MS:-3000})"
+# typing in it (wine-mono sg14): an update formats only from the changed
+# paragraph and moves the unchanged ones -- it formatted the whole document
+# again, 2-3 s a keystroke
+for where in start end; do
+    t=$(sed -n "s/^TYPE $where avg \([0-9]*\) ms.*/\1/p" "$T/out")
+    [ -n "$t" ] && [ "$t" -lt "${SG_WPF_TYPE_MS:-250}" ] && pass "a keystroke at the $where of 500 paragraphs: $t ms" \
+        || fail "a keystroke at the $where of 500 paragraphs: ${t:-?} ms (limit ${SG_WPF_TYPE_MS:-250})"
+done
+grep -q "^TYPED top differs 0 end differs 0[[:space:]]*$" "$T/out" \
+    && pass "and what typing left is what a fresh layout of the same text draws (top and end)" \
+    || fail "typed vs fresh: $(grep '^TYPED' "$T/out")"
 [ "$RC" = 0 ] && echo "RESULT: PASS" || { echo "RESULT: FAIL"; sed -n 1,30p "$T/out" | cut -c1-200; }
 exit "$RC"

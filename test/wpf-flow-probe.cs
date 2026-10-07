@@ -42,6 +42,34 @@ class Probe
         return e.ContentStart.GetCharacterRect(LogicalDirection.Forward).Top;
     }
 
+    static byte[] Pixels(Visual v, int w, int h)
+    {
+        var bmp = new RenderTargetBitmap(w, h, 96, 96, PixelFormats.Pbgra32);
+        bmp.Render(v);
+        var px = new byte[w * h * 4];
+        bmp.CopyPixels(px, w * 4, 0);
+        return px;
+    }
+
+    static int Differ(byte[] a, byte[] b)
+    {
+        int n = 0;
+        for (int i = 0; i < a.Length; i += 4)
+            if (a[i] != b[i] || a[i + 1] != b[i + 1] || a[i + 2] != b[i + 2]) n++;
+        return n;
+    }
+
+    // the edits the typing check makes: count characters at the end of the
+    // first and of the last paragraph's first run
+    static Run EditRun(FlowDocument doc, bool first)
+    {
+        var blocks = new System.Collections.Generic.List<Block>(doc.Blocks);
+        if (!first) blocks.Reverse();
+        foreach (Block b in blocks)
+            if (b is Paragraph) return (Run)((Paragraph)b).Inlines.FirstInline;
+        return null;
+    }
+
     static void Save(Visual v, int w, int h, string name)
     {
         var bmp = new RenderTargetBitmap(w, h, 96, 96, PixelFormats.Pbgra32);
@@ -290,6 +318,46 @@ class Probe
                 rtb.Document = MakeDoc(500);
                 w.UpdateLayout();
                 Console.WriteLine("LONG ms " + sw.ElapsedMilliseconds + " extent " + rtb.ExtentHeight.ToString("F0"));
+
+                // typing: a word at a time (the paragraph wraps onto new lines, and
+                // everything after it moves), laid out after each -- at the
+                // start of the document (everything after it moves) and at its
+                // end (wine-mono sg14: an update formats only what changed)
+                foreach (bool atStart in new[] { true, false })
+                {
+                    Run run = EditRun(rtb.Document, atStart);
+                    long total = 0, worst = 0;
+                    for (int k = 0; k < 20; k++)
+                    {
+                        var s1 = System.Diagnostics.Stopwatch.StartNew();
+                        run.ContentEnd.InsertTextInRun("word ");
+                        w.UpdateLayout();
+                        long ms = s1.ElapsedMilliseconds;
+                        total += ms;
+                        if (ms > worst) worst = ms;
+                    }
+                    Console.WriteLine("TYPE " + (atStart ? "start" : "end") + " avg " + (total / 20) + " ms worst " + worst + " ms");
+                }
+                // what typing left is what a fresh layout of the same text gives:
+                // at the top (the edited paragraph and those moved below it) and
+                // at the end
+                int rw = (int)rtb.ActualWidth, rh = (int)rtb.ActualHeight;
+                rtb.ScrollToHome(); w.UpdateLayout();
+                Save(rtb, rw, rh, "typed-top.png");
+                byte[] typedTop = Pixels(rtb, rw, rh);
+                rtb.ScrollToEnd(); w.UpdateLayout();
+                byte[] typedEnd = Pixels(rtb, rw, rh);
+                var fresh = MakeDoc(500);
+                EditRun(fresh, true).Text += new System.Text.StringBuilder().Insert(0, "word ", 20).ToString();
+                EditRun(fresh, false).Text += new System.Text.StringBuilder().Insert(0, "word ", 20).ToString();
+                rtb.Document = fresh;
+                w.UpdateLayout();
+                rtb.ScrollToHome(); w.UpdateLayout();
+                Save(rtb, rw, rh, "fresh-top.png");
+                int dTop = Differ(typedTop, Pixels(rtb, rw, rh));
+                rtb.ScrollToEnd(); w.UpdateLayout();
+                int dEnd = Differ(typedEnd, Pixels(rtb, rw, rh));
+                Console.WriteLine("TYPED top differs " + dTop + " end differs " + dEnd);
             }
             catch (Exception ex)
             {

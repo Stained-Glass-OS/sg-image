@@ -672,10 +672,10 @@ index 9c65339..a30d925 100644
          /// </summary>
 diff --git a/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/PtsEngine.cs b/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/PtsEngine.cs
 new file mode 100644
-index 0000000..904df08
+index 0000000..14f28a9
 --- /dev/null
 +++ b/src/Microsoft.DotNet.Wpf/src/PresentationFramework/MS/Internal/PtsHost/PtsEngine.cs
-@@ -0,0 +1,2376 @@
+@@ -0,0 +1,2587 @@
 +// Stained Glass OS: the PTS formatting engine, in managed code.
 +//
 +// WPF's flow layout (FlowDocument, RichTextBox, FlowDocumentScrollViewer,
@@ -866,6 +866,8 @@ index 0000000..904df08
 +        private sealed class Para
 +        {
 +            internal IntPtr Nmp, Client, Pfspara;
++            internal IntPtr McsIn, McsOut;        // the margin states it was formatted with and left (ours)
++            internal bool Reused;                 // kept by an incremental update
 +            internal int Idobj, Vr, DvrUsed, DvrTop;
 +            internal FSBBOX BBox;
 +            internal FSKUPDATE Upd = FSKUPDATE.fskupdNew;
@@ -1165,6 +1167,9 @@ index 0000000..904df08
 +                DestroyParaContent(c, p);
 +                if (p.Client != IntPtr.Zero) Ck(c.Cb.cbkgen.pfnDestroyParaclient(c.Client, p.Client));
 +                p.Client = IntPtr.Zero;
++                if (p.McsIn != IntPtr.Zero) Ck(c.Cb.cbkobj.pfnDestroyMcsclient(c.Client, p.McsIn));
++                if (p.McsOut != IntPtr.Zero) Ck(c.Cb.cbkobj.pfnDestroyMcsclient(c.Client, p.McsOut));
++                p.McsIn = p.McsOut = IntPtr.Zero;
 +            }
 +            paras.Clear();
 +        }
@@ -1213,11 +1218,13 @@ index 0000000..904df08
 +        // Fills t (its Rect: where; dv the room when finite) with the segment's
 +        // paragraphs from 'from' (null: its first). 'from' stays the caller's.
 +        private static FillResult Fill(Ctx c, Track t, Resume from, bool finite, bool emptyOk, bool suppressTop,
-+            IntPtr mcsIn, bool fromPreviousPage)
++            IntPtr mcsIn, bool fromPreviousPage, Dictionary<long, Para> reuse = null)
 +        {
 +            FillResult o = new FillResult();
 +            IntPtr nmp;
-+            int vr = t.Rect.v, limit = finite ? t.Rect.v + t.Rect.dv : int.MaxValue;
++            // below what the track already holds (an incremental update keeps a start)
++            int vr = t.Paras.Count > 0 ? t.Paras[t.Paras.Count - 1].Vr + t.Paras[t.Paras.Count - 1].DvrUsed : t.Rect.v;
++            int limit = finite ? t.Rect.v + t.Rect.dv : int.MaxValue;
 +#if SG_MUTANT_PTS_NO_BREAK
 +            limit = int.MaxValue;
 +#endif
@@ -1237,6 +1244,27 @@ index 0000000..904df08
 +            for (int guard = 0; ; guard++)
 +            {
 +                if (guard > Restrictions.tscLineInParaRestriction) throw new PtsFail(tserrSystemRestrictionsExceeded);
++                Para kept;
++                if (reuse != null && reuse.TryGetValue(nmp.ToInt64(), out kept) && Reusable(c, kept, nmp, mcs))
++                {
++                    // unchanged, and formatted with the same margin state: moved, not formatted again
++                    if (t.Paras.Count == 0) o.TopSpace = kept.DvrTop;
++                    Shift(c, kept, vr - kept.Vr);
++                    reuse.Remove(nmp.ToInt64());
++                    kept.Reused = true;
++                    t.Paras.Add(kept);
++                    vr += kept.DvrUsed;
++                    Union(ref t.BBox, kept.BBox);
++                    if (ownMcs && mcs != IntPtr.Zero) Ck(c.Cb.cbkobj.pfnDestroyMcsclient(c.Client, mcs));
++                    mcs = DupMcs(c, kept.McsOut);
++                    ownMcs = true;
++                    int moreKept;
++                    IntPtr nmpKept;
++                    Ck(c.Cb.cbkgen.pfnGetNextPara(c.Client, t.Nms, nmp, out moreKept, out nmpKept));
++                    if (moreKept == False) { o.Done = true; break; }
++                    nmp = nmpKept;
++                    continue;
++                }
 +                FSPAP pap = new FSPAP();
 +                Ck(c.Cb.cbkgen.pfnGetParaProperties(c.Client, nmp, ref pap));
 +                bool first = t.Paras.Count == 0;
@@ -1287,6 +1315,8 @@ index 0000000..904df08
 +                if (p != null)
 +                {
 +                    if (first) o.TopSpace = p.DvrTop;
++                    p.McsIn = DupMcs(c, mcs);
++                    p.McsOut = DupMcs(c, mcsOut);
 +                    t.Paras.Add(p);
 +                    vr += p.DvrUsed;
 +                    Union(ref t.BBox, p.BBox);
@@ -2075,6 +2105,182 @@ index 0000000..904df08
 +            catch (Exception e) { return Fail(e); }
 +        }
 +
++        private static IntPtr DupMcs(Ctx c, IntPtr mcs)
++        {
++            IntPtr d = IntPtr.Zero;
++            if (mcs != IntPtr.Zero) Ck(c.Cb.cbkobj.pfnDuplicateMcsclient(c.Client, mcs, out d));
++            return d;
++        }
++
++        private static bool McsEqual(Ctx c, IntPtr a, IntPtr b)
++        {
++            if (a == IntPtr.Zero || b == IntPtr.Zero) return a == b;
++            int eq;
++            Ck(c.Cb.cbkobj.pfnFEqualMcsclient(c.Client, a, b, out eq));
++            return eq != False;
++        }
++
++        // a paragraph an update may move as it is: plain text with nothing
++        // anchored in it, or a container (a Section, a list item, a block of
++        // the document) holding only such paragraphs -- its content is our own
++        // subtrack, so moving it moves everything inside
++        private static bool Shiftable(Para p, int depth)
++        {
++            if (depth > 32 || p.Client == IntPtr.Zero || p.Pfspara == IntPtr.Zero) return false;
++            if (p.Idobj == fsidobjText)
++            {
++                TextPara tp = Get<TextPara>(p.Pfspara);
++                return tp != null && tp.Attached.Count == 0;
++            }
++            if (p.Idobj != PtsHost.ContainerParagraphId) return false;
++            Track st = Get<Track>(p.Pfspara);
++            if (st == null) return false;
++            foreach (Para q in st.Paras) if (!Shiftable(q, depth + 1)) return false;
++            return true;
++        }
++
++        // ... and the client says it has not changed, and the margin state it
++        // meets is the one it was formatted with
++        private static bool Reusable(Ctx c, Para p, IntPtr nmp, IntPtr mcs)
++        {
++            if (!Shiftable(p, 0)) return false;
++            FSKCHANGE ch;
++            int noFurther;
++            Ck(c.Cb.cbkgen.pfnUpdGetParaChange(c.Client, nmp, out ch, out noFurther));
++            return ch == FSKCHANGE.fskchNone && McsEqual(c, mcs, p.McsIn);
++        }
++
++        // moves a kept paragraph down (or up) by dv
++        private static void Shift(Ctx c, Para p, int dv)
++        {
++#if SG_MUTANT_PTS_NO_SHIFT
++            return;
++#endif
++            if (dv == 0) return;
++            p.Vr += dv;
++            if (p.BBox.fDefined != False) p.BBox.fsrc.v += dv;
++            if (p.Idobj == fsidobjText)
++            {
++                TextPara tp = Get<TextPara>(p.Pfspara);
++                if (tp != null) foreach (Line l in tp.Lines) l.Vr += dv;
++            }
++            else if (p.Idobj == PtsHost.ContainerParagraphId)
++            {
++                Track st = Get<Track>(p.Pfspara);
++                if (st == null) return;
++                st.Rect.v += dv;
++                if (st.BBox.fDefined != False) st.BBox.fsrc.v += dv;
++                foreach (Para q in st.Paras) Shift(c, q, dv);
++            }
++        }
++
++        /* Stained Glass OS (wine-mono sg14): an update of a bottomless page (a
++         * RichTextBox, a FlowDocumentScrollViewer) formats again only from the
++         * first paragraph the client says changed; the paragraphs before it
++         * stay, the unchanged ones after it are moved by the change in height.
++         * Every update formatted the whole document again: a keystroke in a
++         * 500-paragraph RichTextBox took 2-3 s. Falls back to the whole page
++         * when the page's width, direction or columns changed, when anything is
++         * anchored in the text (floaters, figures), or with no change found. */
++        private static bool UpdateIncremental(Ctx c, Page pg, IntPtr nms)
++        {
++#if SG_MUTANT_PTS_FULL_UPDATE
++            return false;
++#endif
++            Section old = pg.Sec;
++            if (old == null || old.Columns.Count != 1) return false;
++            Track ot = old.Columns[0];
++            uint fswdir, secdir;
++            int fHeaderFooter, durPage, dvrPage, fNewPage, fBalance, ccol, cSegAreas, cHeightAreas;
++            FSRECT margin = new FSRECT();
++            IntPtr segment;
++            Ck(c.Cb.cbkgen.pfnGetPageDimensions(c.Client, nms, out fswdir, out fHeaderFooter, out durPage, out dvrPage, ref margin));
++            Ck(c.Cb.cbkgen.pfnGetSectionProperties(c.Client, nms, out fNewPage, out secdir, out fBalance, out ccol, out cSegAreas, out cHeightAreas));
++            Ck(c.Cb.cbkgen.pfnGetMainTextSegment(c.Client, nms, out segment));
++            if (fswdir != pg.Fswdir || secdir != old.Fswdir || segment != ot.Nms || durPage != pg.Body.du ||
++                margin.u != pg.Margin.u || margin.du != pg.Margin.du || margin.v != pg.Margin.v)
++                return false;
++            foreach (Para p in ot.Paras)
++                if (p.Idobj == fsidobjText)
++                {
++                    TextPara tp = Get<TextPara>(p.Pfspara);
++                    if (tp == null || tp.Attached.Count > 0) return false;
++                }
++            // (other kinds are formatted again rather than moved: Reusable)
++            int found, changeFirst;
++            IntPtr before;
++            Ck(c.Cb.cbkgen.pfnUpdGetFirstChangeInSegment(c.Client, segment, out found, out changeFirst, out before));
++            if (found == False) return false;
++            int k = 0;
++            if (changeFirst == False)
++            {
++                k = ot.Paras.FindIndex(p => p.Nmp == before) + 1;
++                if (k == 0) return false;
++            }
++
++            c.PageLeft = margin.u;
++            c.PageRect = new FSRECT(0, 0, durPage, dvrPage);
++            c.MarginRect = margin;
++            Track nt = NewTrack(segment, secdir, margin);
++            for (int i = 0; i < k; i++)
++            {
++                ot.Paras[i].Reused = true;
++                nt.Paras.Add(ot.Paras[i]);
++                Union(ref nt.BBox, ot.Paras[i].BBox);
++            }
++            Dictionary<long, Para> reuse = new Dictionary<long, Para>();
++            for (int i = k; i < ot.Paras.Count; i++) reuse[ot.Paras[i].Nmp.ToInt64()] = ot.Paras[i];
++
++            int bottom = k > 0 ? ot.Paras[k - 1].Vr + ot.Paras[k - 1].DvrUsed : margin.v;
++            Resume from = null;
++            bool more = true;
++            if (k > 0)
++            {
++                int m;
++                IntPtr nx;
++                Ck(c.Cb.cbkgen.pfnGetNextPara(c.Client, segment, before, out m, out nx));
++                if (m == False) more = false;
++                else from = new Resume { Nmp = nx };
++            }
++            if (more)
++            {
++                IntPtr mcsStart = k > 0 ? DupMcs(c, ot.Paras[k - 1].McsOut) : IntPtr.Zero;
++                FillResult r = Fill(c, nt, from, false, false, false, mcsStart, true, reuse);
++                if (r.Mcs != IntPtr.Zero && r.Mcs != mcsStart) Ck(c.Cb.cbkobj.pfnDestroyMcsclient(c.Client, r.Mcs));
++                if (mcsStart != IntPtr.Zero) Ck(c.Cb.cbkobj.pfnDestroyMcsclient(c.Client, mcsStart));
++                if (r.Next != null) DestroyResume(c, r.Next);
++                bottom = r.Bottom;
++            }
++            nt.Rect.dv = bottom - nt.Rect.v;
++
++            Section sec = new Section();
++            sec.Nms = nms;
++            sec.Fswdir = secdir;
++            sec.Rect = margin;
++            sec.Columns.Add(nt);
++            Union(ref sec.BBox, nt.BBox);
++            int bottomMargin = Math.Max(0, dvrPage - margin.v - margin.dv);
++            if (dvrPage >= MaxPageSize || bottomMargin > MaxPageSize / 2) bottomMargin = 0;
++            sec.Rect.dv = bottom - margin.v;
++            pg.Body = new FSRECT(0, 0, durPage, bottom + bottomMargin);
++            pg.Fswdir = fswdir;
++            pg.Margin = margin;
++            pg.BBox = sec.BBox;
++            sec.Handle = NewHandle(sec);
++            pg.Sec = sec;
++
++            // the old paragraphs not kept give their visuals to the new ones, and go
++            List<Para> gone = new List<Para>(), made = new List<Para>();
++            foreach (Para p in ot.Paras) if (!p.Reused) gone.Add(p);
++            foreach (Para p in nt.Paras) { if (!p.Reused) made.Add(p); p.Reused = false; }
++            Replace(c, gone, made);
++            ot.Paras.Clear();
++            FreeHandle(ot.Handle);
++            FreeHandle(old.Handle);
++            Trace("incremental update: " + k + " kept before, " + (nt.Paras.Count - made.Count - k) + " moved, " + made.Count + " formatted");
++            return true;
++        }
++
 +        internal static int FsUpdateBottomlessPage(IntPtr pfscontext, IntPtr pfspage, IntPtr fsnmsect, out FSFMTRBL pfsfmtrbl)
 +        {
 +            pfsfmtrbl = FSFMTRBL.fmtrblGoalReached;
@@ -2083,6 +2289,11 @@ index 0000000..904df08
 +                Ctx c = Context(pfscontext);
 +                Page pg = Get<Page>(pfspage);
 +                if (pg == null) return tserrInvalidParameter;
++                if (UpdateIncremental(c, pg, fsnmsect))
++                {
++                    pg.Upd = FSKUPDATE.fskupdNew;
++                    return fserrNone;
++                }
 +                Section old = pg.Sec;
 +                pg.Sec = null;
 +                bool done;
