@@ -42,7 +42,7 @@ fail() { echo "FAIL  $*"; RC=1; }
 "$WINE" wineboot -i >/dev/null 2>&1; "$WINESERVER" -w
 w() { "$WINE" winepath -w "$1" | tr -d '\r'; }
 "$WINE" reg add 'HKCU\Software\Wine\Mono' /v RuntimePath /d "$(w "$MONO")" /f >/dev/null 2>&1
-"$WINE" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d 168 /f >/dev/null 2>&1
+"$WINE" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "${SG_WPF_DPI:-168}" /f >/dev/null 2>&1
 "$WINESERVER" -w
 C="$WINEPREFIX/drive_c"
 cat > "$C/probe.cs" <<'EOF'
@@ -54,6 +54,11 @@ class P { [STAThread] static void Main(string[] a) {
   var app = new Application();
   var w = new Window { Title = a[0], Width = 400, Height = 300, Left = 100, Top = 100, WindowStyle = WindowStyle.None,
                        Background = Brushes.Green };
+#if SG_LAYERED
+  // a window drawn with its own transparency (Sonos's, a setup dialog's):
+  // WPF draws it as a layered window, through UpdateLayeredWindow
+  w.AllowsTransparency = true; w.Left = 800;
+#endif
   app.Run(w);
 } }
 EOF
@@ -81,17 +86,50 @@ done
 mcs=$(w "$MONO/lib/mono/4.5/mcs.exe")
 # shellcheck disable=SC2086
 (cd "$C" && timeout 300 "$WINE" "$mcs" $refs -out:plain.exe probe.cs >"$T/mcs.out" 2>&1 \
-          && timeout 300 "$WINE" "$mcs" $refs -define:SG_DISABLED -out:disabled.exe probe.cs >>"$T/mcs.out" 2>&1)
+          && timeout 300 "$WINE" "$mcs" $refs -define:SG_DISABLED -out:disabled.exe probe.cs >>"$T/mcs.out" 2>&1 \
+          && timeout 300 "$WINE" "$mcs" $refs -define:SG_LAYERED -out:layered.exe probe.cs >>"$T/mcs.out" 2>&1)
 [ -f "$C/plain.exe" ] && [ -f "$C/disabled.exe" ] || { fail "the probes did not compile: $(cat "$T/mcs.out")"; exit 1; }
+# SG_WPF_SHELL=1: inside the shell's own desktop, as in a session
+if [ -n "${SG_WPF_SHELL:-}" ]; then
+    "$WINE" reg add 'HKCU\Software\Wine\Explorer' /v Desktop /d shell /f >/dev/null 2>&1
+    "$WINE" reg add 'HKCU\Software\Wine\Explorer\Desktops' /v shell /d 2736x1824 /f >/dev/null 2>&1
+    "$WINESERVER" -w
+    "$WINE" explorer /desktop=shell,2736x1824 >/dev/null 2>&1 &
+    sleep 8
+fi
 (cd "$C" && "$WINE" plain.exe sgwpfplain >/dev/null 2>&1 &)
 (cd "$C" && "$WINE" disabled.exe sgwpfdisabled >/dev/null 2>&1 &)
-i=0; while [ $i -lt 90 ] && { ! "$WINE" "$T/look.exe" sgwpfplain >/dev/null 2>&1 || ! "$WINE" "$T/look.exe" sgwpfdisabled >/dev/null 2>&1; }; do sleep 1; i=$((i + 1)); done
+(cd "$C" && "$WINE" layered.exe sgwpflayered >/dev/null 2>&1 &)
+i=0; while [ $i -lt 90 ] && { ! "$WINE" "$T/look.exe" sgwpfplain >/dev/null 2>&1 || ! "$WINE" "$T/look.exe" sgwpfdisabled >/dev/null 2>&1 || ! "$WINE" "$T/look.exe" sgwpflayered >/dev/null 2>&1; }; do sleep 1; i=$((i + 1)); done
 sleep 3
+# the windows are 400x300 DIPs at (100,100) and (800,100): in pixels at this DPI
+D=${SG_WPF_DPI:-168}; W=$((400 * D / 96)); H=$((300 * D / 96)); X=$((100 * D / 96)); LX=$((800 * D / 96))
 p=$("$WINE" "$T/look.exe" sgwpfplain 2>/dev/null | tr -d '\r')
 d=$("$WINE" "$T/look.exe" sgwpfdisabled 2>/dev/null | tr -d '\r')
-[ "$p" = "1 168 700x525" ] && pass "a WPF program is aware of the system DPI at 175%: drawn by WPF at 700x525 ($p)" \
-    || fail "a plain WPF program at 175%: '$p' (want '1 168 700x525': aware of the system DPI)"
-[ "$d" = "0 96 700x525" ] && pass "[DisableDpiAwareness] keeps it unaware, as it asks; Wine scales it ($d)" \
-    || fail "a WPF program with [DisableDpiAwareness]: '$d' (want '0 96 700x525')"
+[ "$p" = "1 $D ${W}x$H" ] && pass "a WPF program is aware of the system DPI ($D): drawn by WPF at ${W}x$H ($p)" \
+    || fail "a plain WPF program at DPI $D: '$p' (want '1 $D ${W}x$H': aware of the system DPI)"
+[ "$d" = "0 96 ${W}x$H" ] && pass "[DisableDpiAwareness] keeps it unaware, as it asks; Wine scales it ($d)" \
+    || fail "a WPF program with [DisableDpiAwareness]: '$d' (want '0 96 ${W}x$H')"
+# what is on the screen, not only what the window says (David, 2026-10-07:
+# Sonos on the Surface drew small, black to the right and below, clicks in
+# the right places): the plain program's window (700x525 at (175,175) at 175%) is
+# its green to the bottom-right corner
+px() { convert "$T/screen.png" -format "%[pixel:p{$1,$2}]" info: 2>/dev/null; }
+if command -v import >/dev/null && import -window root "$T/screen.png" 2>/dev/null; then
+    c=$(px $((X + W - 15)) $((X + H - 15))); m=$(px $((X + W / 2)) $((X + H / 2))); o=$(px $((X + 5)) $((X + 5)))
+    lc=$(px $((LX + W - 15)) $((X + H - 15))); lm=$(px $((LX + W / 2)) $((X + H / 2))); lo=$(px $((LX + 5)) $((X + 5)))
+    case "$c$m$o" in
+        *[Gg]reen*[Gg]reen*[Gg]reen*|*"(0,128,0)"*"(0,128,0)"*"(0,128,0)"*)
+            pass "and its picture fills the window: green at its top-left, middle and bottom-right" ;;
+        *) fail "the plain WPF window's picture does not fill it: top-left $o, middle $m, bottom-right $c (want green)" ;;
+    esac
+    case "$lc$lm$lo" in
+        *[Gg]reen*[Gg]reen*[Gg]reen*|*"(0,128,0)"*"(0,128,0)"*"(0,128,0)"*)
+            pass "and a window with its own transparency (layered) too" ;;
+        *) fail "the layered WPF window's picture does not fill it: top-left $lo, middle $lm, bottom-right $lc (want green)" ;;
+    esac
+else
+    echo "SKIP  the window's pixels (no ImageMagick import)"
+fi
 [ "$RC" = 0 ] && echo "RESULT: PASS" || echo "RESULT: FAIL"
 exit "$RC"
