@@ -279,6 +279,14 @@ case "${SG_GUEST_CHECK:-session}" in
         CHECK_CMD="/usr/bin/sg-netlock-check $LOGIN_USER"
         CHECK_NAME="sg-netlock-check (VPN Network Lock)"
         ;;
+    firewall)
+        # Stained Glass Firewall (sg-session's sg-firewall): on, its own
+        # table, SSH open on every network (this gate got in over it), an
+        # unallowed system service kept out, a port rule opening and closing,
+        # a VPN's table beside it left alone and ours put back. Root.
+        CHECK_CMD="/usr/bin/sg-firewall-check"
+        CHECK_NAME="sg-firewall-check (Stained Glass Firewall)"
+        ;;
     policy)
         # Machine Group Policy: an administrator's policy binds every user and a
         # user cannot override it (both Windows programs and the shell honour
