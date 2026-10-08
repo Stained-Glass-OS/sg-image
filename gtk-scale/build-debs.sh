@@ -13,8 +13,8 @@
 # version is Debian's with "+sg<date of Debian's changelog entry>.<REV>":
 # 3.24.49-3 becomes 3.24.49-3+sg20250510.1 -- above Debian's (s sorts after
 # d: also above 3.24.49-3+deb13u1), and a later Debian update gives a later
-# date, above our earlier build. Raise REV when the patch or this script
-# changes what is built.
+# date, above our earlier build. Raise REV (each toolkit's own) when the
+# patch or this script changes what is built.
 #
 # Built once per (Debian version, patch, script): the debs are kept in
 # CACHE_DIR under that key and copied to OUT_DIR again by later releases.
@@ -29,10 +29,10 @@ HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 WHICH=${1:?usage: build-debs.sh gtk3|gtk4 CACHE_DIR OUT_DIR}
 CACHE=${2:?usage}
 OUT=${3:?usage}
-REV=1
 case "$WHICH" in
-    gtk3) SRC=gtk+3.0 PATCH="$HERE/gtk3-fractional-scale.patch" ;;
-    gtk4) SRC=gtk4 PATCH="$HERE/gtk4-fractional-scale.patch" ;;
+    # REV 2 (GTK 3): XInput2's events divided by the fractional scale too
+    gtk3) SRC=gtk+3.0 PATCH="$HERE/gtk3-fractional-scale.patch" REV=2 ;;
+    gtk4) SRC=gtk4 PATCH="$HERE/gtk4-fractional-scale.patch" REV=1 ;;
     *) echo "build-debs: gtk3 or gtk4" >&2; exit 2 ;;
 esac
 

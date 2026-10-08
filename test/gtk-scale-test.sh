@@ -10,18 +10,24 @@
 #      700x525 -- 1.75 times, not 2 -- the text's DPI 96 (168 over 1.75)
 #   3. 125% (1280): 500x375
 #   4. a program that scales itself (named firefox): scale 1, the whole DPI
-#      (168), its window its own size
+#      (168), its window its own size; one that keeps whole steps (named
+#      inkscape: its canvas was not repainted at 1.75): 800x600, scale 2
 #   5. Debian's GTK under the same settings: 800x600 at 175% (the check
 #      tells the two apart)
+#   6. a click at 175% lands where it is drawn: a button at (300,200)
+#      logical, clicked at its pixels (595,420) through the X server -- GTK
+#      3's XInput2 events were not divided by the fractional scale (an int
+#      1), so every click went 1.75 times too far from the window's corner
+#      (David 2026-10-07: Inkscape's buttons did nothing on a Surface)
 #
 #   sh test/gtk-scale-test.sh DIR-of-debs
-# Needs Xvfb, xsettingsd, xwininfo, python3-gi with GTK 3 and GTK 4.
+# Needs Xvfb, xsettingsd, xwininfo, xdotool, python3-gi with GTK 3 and GTK 4.
 set -u
 DEBS=${1:-build/gtk-scale-out}
 RC=0
 pass() { echo "PASS  $*"; }
 fail() { echo "FAIL  $*"; RC=1; }
-for t in Xvfb xsettingsd xwininfo dpkg-deb /usr/bin/python3; do command -v "$t" >/dev/null || { echo "SKIP: $t missing"; exit 77; }; done
+for t in Xvfb xsettingsd xwininfo xdotool dpkg-deb /usr/bin/python3; do command -v "$t" >/dev/null || { echo "SKIP: $t missing"; exit 77; }; done
 ls "$DEBS"/libgtk-3-0t64_*.deb "$DEBS"/libgtk-4-1_*.deb >/dev/null 2>&1 || { echo "SKIP: no built GTK in $DEBS (make gtk-scale-debs)"; exit 77; }
 { /usr/bin/python3 -c 'import gi; gi.require_version("Gtk", "3.0")' && /usr/bin/python3 -c 'import gi; gi.require_version("Gtk", "4.0")'; } 2>/dev/null || { echo "SKIP: python3-gi with GTK 3 and 4 missing"; exit 77; }
 T=$(mktemp -d /var/tmp/sg-gtk-scale.XXXXXX); XP=; XS=
@@ -90,8 +96,43 @@ done
 set -- $(run 3 "sg-gtk3-firefox" "$LIB" firefox)
 [ "$4" = scale=1 ] && [ "$5" = dpi=168 ] && pass "GTK 3, a program that scales itself (firefox): scale 1, the whole DPI (168)" \
     || fail "GTK 3 as firefox at 175%: $4 $5 (want scale=1 dpi=168)"
+set -- $(run 3 "sg-gtk3-inkscape" "$LIB" inkscape)
+[ "$2" = 800x600 ] && [ "$4" = scale=2 ] && pass "GTK 3, a program that keeps whole steps (inkscape): 800x600 at 175%, scale 2, as Debian's" \
+    || fail "GTK 3 as inkscape at 175%: $2 $4 (want 800x600 scale=2: whole steps)"
 set -- $(run 3 "debian-gtk3" "")
 [ "$2" = 800x600 ] && pass "Debian's GTK 3 under the same settings: $2 at 175% (whole steps) -- the check tells them apart" \
     || fail "Debian's GTK 3 at 175%: $2 (want 800x600; is the system's GTK ours?)"
+cat > "$T/click.py" <<'EOS'
+import sys, gi
+ver, title = sys.argv[1], sys.argv[2]
+gi.require_version('Gtk', ver + '.0')
+from gi.repository import Gtk, GLib
+def clicked(b): print("clicked", flush=True)
+def button():
+    f = Gtk.Fixed(); b = Gtk.Button(label="B"); b.set_size_request(80, 80); f.put(b, 300, 200)
+    b.connect('clicked', clicked); return f
+if ver == '3':
+    w = Gtk.Window(title=title); w.set_default_size(400, 300); w.add(button()); w.show_all()
+    GLib.timeout_add(12000, Gtk.main_quit); Gtk.main()
+else:
+    app = Gtk.Application()
+    def act(a):
+        w = Gtk.ApplicationWindow(application=a, title=title); w.set_default_size(400, 300)
+        w.set_child(button()); w.present(); GLib.timeout_add(12000, a.quit)
+    app.connect('activate', act); app.run([])
+EOS
+for v in 3 4; do
+    conf 175
+    env -i DISPLAY="$D" HOME="$T" XDG_RUNTIME_DIR="$T" GDK_BACKEND=x11 GSK_RENDERER=cairo LD_LIBRARY_PATH="$LIB" \
+        /usr/bin/python3 "$T/click.py" "$v" "sg-click$v" > "$T/click$v.log" 2>/dev/null & CP=$!
+    sleep 4
+    wid=$(DISPLAY=$D xdotool search --name "^sg-click$v\$" 2>/dev/null | head -1)
+    # beside the button first (nothing), then on it
+    [ -n "$wid" ] && DISPLAY=$D xdotool mousemove --window "$wid" 200 150 click 1 sleep 0.5 mousemove --window "$wid" 595 420 click 1
+    wait "$CP"
+    n=$(grep -c clicked "$T/click$v.log")
+    [ "$n" = 1 ] && pass "our GTK $v at 175%: a click on the button's pixels clicks it, one beside it does not" \
+        || fail "our GTK $v at 175%: the button was clicked $n times (want 1: the click at its pixels)"
+done
 [ "$RC" = 0 ] && echo "gtk-scale-test: PASS" || echo "gtk-scale-test: FAIL"
 exit "$RC"

@@ -53,6 +53,14 @@ widgets, padding and icons 14% too large.
   the whole DPI (they scale themselves by it: Firefox and Thunderbird take
   1.75 from 168 DPI). `GDK_SG_FRACTIONAL=0` puts any program in that group,
   `=1` none.
+- Programs that paint their own canvas from a store made at the whole-number
+  factor keep whole steps, as Debian's GTK does (200% at 175%): Inkscape,
+  whose canvas was not repainted when it scrolled at 1.75 -- black, or the
+  wheel seemed to do nothing (David, 2026-10-07). `GDK_SG_FRACTIONAL=whole`
+  puts any program in that group.
+- Pointer events are divided by the scale on both of GDK's X11 input paths,
+  core and XInput2 (GTK 3 uses XInput2; its scale was an `int`, so at 1.75
+  every click went 1.75 times too far from the window's corner until REV 2).
 - A change while programs run (Settings > Display > Scale) is followed at
   once, as for Debian's GTK's whole steps.
 

@@ -5,11 +5,18 @@ Description: X11: the window scale may be fractional (Stained Glass OS)
  1024ths, 1792 at 175%) a window is that many pixels per logical one: its X
  window is the logical size times the scale, cairo draws into it at the
  scale (crisp text and shapes; images made at the next whole step and drawn
- smaller), events are divided by it, and the text's DPI is Xft/DPI over the
- scale. gdk_window_get_scale_factor() gives the next whole step. Programs
+ smaller), events are divided by it -- core and XInput2 events alike (XI2's,
+ truncated to 1, put every click 1.75 times too far from the window's corner:
+ Inkscape's buttons did nothing on a Surface, 2026-10-07) -- and the text's
+ DPI is Xft/DPI over the scale. gdk_window_get_scale_factor() gives the
+ next whole step. Programs
  that draw into their X windows themselves by GDK's whole-number factor
  (Firefox, Thunderbird, Emacs, LibreOffice; GDK_SG_FRACTIONAL=0 for any
- other) are told scale 1 and the whole DPI, and scale themselves. OpenGL
+ other) are told scale 1 and the whole DPI, and scale themselves. Programs
+ that paint their own canvas from a store at the whole-number factor
+ (Inkscape, whose canvas was not repainted when it scrolled;
+ GDK_SG_FRACTIONAL=whole for any other) keep whole steps, as Debian's GTK
+ does: 200% at 175%. OpenGL
  painting is read back through cairo at a fractional scale. Without
  Gdk/SgFractionalScale, or with GDK_SCALE set, GTK behaves as before; at a
  whole-number scale every size is computed as before.
@@ -1095,10 +1102,9 @@ index 2b5749c..4c95c9e 100644
  G_END_DECLS
  
 diff --git a/gdk/x11/xsettings-client.c b/gdk/x11/xsettings-client.c
-index 3c55ef1..11fec2e 100644
 --- a/gdk/x11/xsettings-client.c
 +++ b/gdk/x11/xsettings-client.c
-@@ -398,11 +398,46 @@ parse_settings (unsigned char *data,
+@@ -398,11 +398,74 @@
    return NULL;
  }
  
@@ -1106,7 +1112,8 @@ index 3c55ef1..11fec2e 100644
 + * scale by GDK's whole-number factor (Mozilla's, Emacs, LibreOffice): at a
 + * fractional display scale they are told scale 1 and the whole DPI, and
 + * scale themselves by it (Firefox and Thunderbird take 1.75 from 168 DPI).
-+ * GDK_SG_FRACTIONAL=0 makes any program one of them, =1 none. */
++ * GDK_SG_FRACTIONAL=0 makes any program one of them, =1 none (=whole: see
++ * sg_fractional_whole). */
 +static gboolean
 +sg_fractional_compat (void)
 +{
@@ -1135,6 +1142,33 @@ index 3c55ef1..11fec2e 100644
 +  return FALSE;
 +}
 +
++/* Stained Glass OS: programs that keep whole steps at a fractional display
++ * scale (200% at 175%, as Debian's GTK draws): they paint their own canvas
++ * from a store made at GDK's whole-number factor, which at 1.75 was not
++ * repainted when it scrolled -- Inkscape's canvas stayed black (David
++ * 2026-10-07, a Surface). GDK_SG_FRACTIONAL=whole makes any program one. */
++static gboolean
++sg_fractional_whole (void)
++{
++  static const char * const names[] = { "inkscape", "org.inkscape.Inkscape" };
++  const char *env = g_getenv ("GDK_SG_FRACTIONAL");
++  const char *name = g_get_prgname ();
++  char comm[64] = "";
++  FILE *f;
++  gsize i;
++
++  if (env) return strcmp (env, "whole") == 0;
++  if ((f = fopen ("/proc/self/comm", "r")))
++    {
++      if (fgets (comm, sizeof (comm), f)) comm[strcspn (comm, "\n")] = 0;
++      fclose (f);
++    }
++  for (i = 0; i < G_N_ELEMENTS (names); i++)
++    if ((name && g_ascii_strcasecmp (name, names[i]) == 0) || g_ascii_strcasecmp (comm, names[i]) == 0)
++      return TRUE;
++  return FALSE;
++}
++
  static void
  read_settings (GdkX11Screen *x11_screen,
                 gboolean      do_notify)
@@ -1145,7 +1179,7 @@ index 3c55ef1..11fec2e 100644
  
    Atom type;
    int format;
-@@ -447,9 +482,37 @@ read_settings (GdkX11Screen *x11_screen,
+@@ -447,9 +510,41 @@
  	}
      }
  
@@ -1159,7 +1193,11 @@ index 3c55ef1..11fec2e 100644
 +  if (x11_screen->xsettings && !x11_screen->fixed_window_scale)
 +    {
 +      GValue *fs = g_hash_table_lookup (x11_screen->xsettings, "gdk-sg-fractional-scale");
-+      if (fs && G_VALUE_HOLDS_INT (fs) && g_value_get_int (fs) >= 1024 && g_value_get_int (fs) <= 1024 * 8)
++      if (fs && G_VALUE_HOLDS_INT (fs) && g_value_get_int (fs) >= 1024 && g_value_get_int (fs) <= 1024 * 8
++#ifndef SG_MUTANT_GTK_NO_WHOLE_LIST
++          && !sg_fractional_whole ()
++#endif
++          )
 +        {
 +          fractional = g_value_get_int (fs) / 1024.0;
 +          compat = sg_fractional_compat ();
@@ -1184,7 +1222,7 @@ index 3c55ef1..11fec2e 100644
      {
        setting = g_hash_table_lookup (x11_screen->xsettings, "gdk-unscaled-dpi");
        if (setting)
-@@ -503,6 +566,9 @@ read_settings (GdkX11Screen *x11_screen,
+@@ -503,6 +598,9 @@
        _gdk_screen_set_resolution (screen, dpi);
      }
  
@@ -1194,3 +1232,15 @@ index 3c55ef1..11fec2e 100644
    if (!x11_screen->fixed_window_scale &&
        gdk_screen_get_setting (GDK_SCREEN (x11_screen),
  			      "gdk-window-scaling-factor", &value))
+diff --git a/gdk/x11/gdkdevicemanager-xi2.c b/gdk/x11/gdkdevicemanager-xi2.c
+--- a/gdk/x11/gdkdevicemanager-xi2.c
++++ b/gdk/x11/gdkdevicemanager-xi2.c
+@@ -1507,7 +1507,7 @@
+   gboolean return_val = TRUE;
+   GdkWindow *window;
+   GdkWindowImplX11 *impl;
+-  int scale;
++  gdouble scale;  /* Stained Glass OS: the window scale may be fractional (1.75) */
+   XIEvent *ev;
+ 
+   device_manager = (GdkX11DeviceManagerXI2 *) translator;
