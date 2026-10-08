@@ -453,7 +453,7 @@ fi
 
 # Firefox comes installed and is the browser Linux opens links in
 # (sg-session 0.1.0-171; the first-run setup asks for none)
-st=$(ssh_guest "dpkg-query -W -f '\${Status}' firefox-esr 2>/dev/null; echo; runuser -u sguser -- env XDG_CONFIG_HOME=/tmp/ffcheck xdg-mime query default x-scheme-handler/https 2>/dev/null" 2>/dev/null | tr '\n' ' ')
+st=$(ssh_guest "dpkg-query -W -f '\${Status}' firefox-esr 2>/dev/null; echo; runuser -u $LOGIN_USER -- env XDG_CONFIG_HOME=/tmp/ffcheck xdg-mime query default x-scheme-handler/https 2>/dev/null" 2>/dev/null | tr '\n' ' ')
 case "$st" in
     "install ok installed "*firefox*) echo "PASS  Firefox comes installed and opens links ($st)" ;;
     *) echo "FAIL  Firefox by default: $st"; RC=1 ;;
@@ -461,9 +461,9 @@ esac
 
 # An administrator reads the system journal (sg-session 0.1.0-169: sg-admins
 # gets the journal's ACL, as adm and wheel do; before, an administrator's
-# journalctl showed only their own session -- David, 2026-10-07). sguser is
+# journalctl showed only their own session -- David, 2026-10-07). the signed-in account (sguser, or the owner Setup made) is
 # in sg-admins: systemd's own messages (PID 1) are system entries.
-n=$(ssh_guest "runuser -u sguser -- journalctl -b -q --no-pager -n 5 _PID=1 2>/dev/null | wc -l" 2>/dev/null | tr -d '\r')
+n=$(ssh_guest "runuser -u $LOGIN_USER -- journalctl -b -q --no-pager -n 5 _PID=1 2>/dev/null | wc -l" 2>/dev/null | tr -d '\r')
 if [[ "${n:-0}" -ge 1 ]]; then
     echo "PASS  an administrator (sg-admins) reads the system journal ($n of systemd's lines)"
 else
