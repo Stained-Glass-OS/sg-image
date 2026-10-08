@@ -5,8 +5,9 @@
 #
 #   region United Kingdom -> keyboard US -> a second layout, German -> the
 #   network (the VM's wired one; "Skip for now" when offline) -> no account
-#   page (Setup made the owner) -> privacy: Location on -> no browser -> "All
-#   set" -> the login screen.
+#   page (Setup made the owner) -> privacy: Location on -> (no browser page:
+#   Firefox comes installed, sg-session 0.1.0-171) -> "All set" -> the login
+#   screen.
 #
 # Then, over ssh: the marker gone, the choices recorded, the keyboard file,
 # the login screen's compositor started with both layouts, HKLM's privacy
@@ -146,12 +147,10 @@ echo "      the VM is online: $ONLINE"
 wait_for 'page privacy$' && shot privacy
 qmp key spc                                   # Location on
 sleep 1; shot privacy-location
-qmp key ret                                   # Accept
-wait_for 'page browser$'
-if [[ "$ONLINE" == yes ]]; then choose end "Don't install a browser now"; fi
-shot browser
-qmp key ret
+qmp key ret                                   # Accept: Firefox comes installed, no browser page
 wait_for 'page done$' 1 180 && shot "done"
+if [[ "$(seen 'page browser$')" -eq 0 ]]; then pass "no browser page: Firefox comes installed"
+else fail "the browser page appeared although Firefox comes installed"; fi
 if [[ "$(seen 'page account$')" -eq 0 ]]; then pass "no account page: Setup made the owner"
 else fail "the account page appeared although Setup made the owner"; fi
 
