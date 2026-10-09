@@ -375,5 +375,10 @@ with `SG_RP_EXT4_DISK` (a disk installed before 0.1.0-180) and
 Undo the last update puts it back at the restart; the conversion to btrfs
 runs in its own initrd and the system comes back on `@` with its subvolumes
 and files; a restore point is taken; undoing the conversion makes it the
-ext4 it was. Port 2394 (`SG_SSH_PORT`). The install gate checks every new
+ext4 it was. **bootmenu** (`SG_RP_SCENARIOS=bootmenu`, `SG_SESSION_DEB` 0.1.0-183
+or later): with the menu hidden (`timeout 0`) a start that finishes shows no menu and
+leaves no `LoaderConfigTimeoutOneShot`; with sg-boot-ok held back the request
+(10 s) is left, the next start shows the menu on the console with the restore
+points, and a finished start ends it. Mutant `SG_MUTANT_RP_NO_BEGIN=1` (the
+early service masked) must fail it. Port 2394 (`SG_SSH_PORT`). The install gate checks every new
 install is btrfs `@` with the subvolumes (since sg-session 0.1.0-180).

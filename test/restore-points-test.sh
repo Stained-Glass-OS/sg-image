@@ -112,6 +112,43 @@ for s in ${SG_RP_SCENARIOS:-btrfs ext4}; do
             || fail "btrfs: no 'before going back' restore point"
         g 'for i in $(seq 1 40); do pgrep -x sg-compositor >/dev/null && exit 0; sleep 3; done; exit 1' && pass "btrfs: the login screen's compositor runs" || fail "btrfs: no compositor"
         stop ;;
+    bootmenu)
+        # a start that did not finish: the loader shows its menu, with the restore points, at the next one,
+        # until a start succeeds (sg-boot-health, sg-session 0.1.0-183). Needs SG_SESSION_DEB of that version.
+        D=${SG_RP_DISK:-$BUILD/install-target.raw}
+        [ -f "$D" ] || { echo "SKIP bootmenu: no $D (make install-test)"; continue; }
+        fresh "$D"; boot bootmenu-1 || { fail "bootmenu: no ssh"; continue; }
+        install_deb bootmenu || continue
+        g 'test -x /usr/bin/sg-boot-health' || { echo "SKIP bootmenu: sg-session has no sg-boot-health (SG_SESSION_DEB 0.1.0-183 or later)"; continue; }
+        g 'timeout 600 apt-get -q update >/dev/null 2>&1; DEBIAN_FRONTEND=noninteractive timeout 900 apt-get -y -q install hello' > "$ART/hello-bootmenu.log" 2>&1
+        g 'grep -q "^SNAPSHOT .*auto" /run/stained-glass-snapshot/status' || { fail "bootmenu: no restore point to list"; continue; }
+        # the menu is hidden on a computer with only Stained Glass OS (Setup writes timeout 0; this disk shares the PC with another OS, so timeout 5)
+        g 'sed -i "s/^timeout .*/timeout 0/" /efi/loader/loader.conf; grep -qx "timeout 0" /efi/loader/loader.conf' || { fail "bootmenu: loader.conf not writable"; continue; }
+        g 'systemctl is-enabled sg-boot-health.service sg-boot-ok.service >/dev/null' && pass "bootmenu: sg-boot-health and sg-boot-ok are enabled by the package" || fail "bootmenu: units not enabled"
+        BHV=/sys/firmware/efi/efivars/LoaderConfigTimeoutOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
+        waitok='for i in $(seq 1 60); do [ "$(systemctl show -p ExecMainExitTimestampMonotonic --value sg-boot-ok.service)" != 0 ] && exit 0; sleep 2; done; exit 1'
+        # 1. a start that finishes takes the request back
+        g 'SG_BOOTHEALTH_GRACE=0 sg-boot-health ok'   # (installing the package ran begin in this start)
+        off=$(stat -c %s "$ART/serial-bootmenu-1.log")
+        restart && g "$waitok" && g "[ ! -e $BHV ]" && ! tail -c +$((off + 1)) "$ART/serial-bootmenu-1.log" | grep -aq 'Boot in' \
+            && pass "bootmenu: a start that finished left no menu request (the variable is gone) and showed no menu" || fail "bootmenu: request left after a good start: $(g "ls $BHV; systemctl status sg-boot-ok.service" 2>&1 | tail -5)"
+        # 2. a start that never finishes (sg-boot-ok held back) leaves the request: 10 seconds
+        g 'mkdir -p /etc/systemd/system/sg-boot-ok.service.d; printf "[Service]\nExecStart=\nExecStart=/bin/sleep infinity\n" > /etc/systemd/system/sg-boot-ok.service.d/hold.conf'
+        # (mutant: the early service is gone, as if the package did not ship it -- the gate must notice)
+        [ -z "${SG_MUTANT_RP_NO_BEGIN:-}" ] || g 'systemctl mask sg-boot-health.service'
+        # (sg-boot-ok has started, plus longer than its grace: a start that finishes has taken the request back by now)
+        restart && g 'for i in $(seq 1 90); do [ "$(systemctl show -p ActiveEnterTimestampMonotonic --value sg-boot-ok.service)" != 0 ] && exit 0; sleep 3; done; exit 1'; sleep 30
+        v=$(g "cat $BHV 2>/dev/null | tail -c +5 | tr -d '\\0'")
+        [ "$v" = 10 ] && pass "bootmenu: a start that did not finish asked for the menu at the next one (10 seconds)" || fail "bootmenu: no request after an unfinished start (value '$v')"
+        # 3. the power goes: the next start shows the menu, with the restore points
+        stop; boot bootmenu-2 || { fail "bootmenu: no ssh after the unfinished start"; continue; }
+        sleep 5
+        grep -aq 'Boot in 10 s' "$ART/serial-bootmenu-2.log" && grep -aq 'before the update of' "$ART/serial-bootmenu-2.log" \
+            && pass "bootmenu: the start after it showed the boot menu, with the restore point" || fail "bootmenu: no boot menu on the console after an unfinished start"
+        # 4. a start that finishes ends it: no menu at the one after
+        g 'rm -rf /etc/systemd/system/sg-boot-ok.service.d'
+        restart && g "$waitok" && g "[ ! -e $BHV ]" && pass "bootmenu: once a start finished, the request is gone again" || fail "bootmenu: request left after the good start"
+        stop ;;
     ext4)
         D=${SG_RP_EXT4_DISK:-}
         [ -n "$D" ] && [ -f "$D" ] || { echo "SKIP ext4: SG_RP_EXT4_DISK (a disk installed before 0.1.0-180) not given"; continue; }
