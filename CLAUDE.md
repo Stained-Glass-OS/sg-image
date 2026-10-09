@@ -380,5 +380,7 @@ or later): with the menu hidden (`timeout 0`) a start that finishes shows no men
 leaves no `LoaderConfigTimeoutOneShot`; with sg-boot-ok held back the request
 (10 s) is left, the next start shows the menu on the console with the restore
 points, and a finished start ends it. Mutant `SG_MUTANT_RP_NO_BEGIN=1` (the
-early service masked) must fail it. Port 2394 (`SG_SSH_PORT`). The install gate checks every new
+early service masked) must fail it. An old ext4 disk for `SG_RP_EXT4_DISK`: build/dbg-target.raw (an install with
+sg-session 0.1.0-28) with the gate key added to /root/.ssh/authorized_keys
+(loop-mount its root; the old image lacks the ssh credential unit). Port 2394 (`SG_SSH_PORT`). The install gate checks every new
 install is btrfs `@` with the subvolumes (since sg-session 0.1.0-180).

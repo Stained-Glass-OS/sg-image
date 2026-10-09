@@ -79,8 +79,10 @@ for s in ${SG_RP_SCENARIOS:-btrfs ext4}; do
         install_deb btrfs || continue
         g '[ "$(findmnt -n -o FSTYPE,FSROOT / | tr -s " ")" = "btrfs /@" ] && grep -qx "LAYOUT yes" /run/stained-glass-snapshot/status' \
             && pass "btrfs: the system is @, with restore points" || { fail "btrfs: not our layout: $(g 'findmnt /; cat /run/stained-glass-snapshot/status')"; continue; }
+        # (the package under test's own update just took a restore point; apt runs within 5 minutes of one are the same run)
+        [ -z "${SG_SESSION_DEB:-}" ] || sleep 310
         g 'timeout 600 apt-get -q update >/dev/null 2>&1; DEBIAN_FRONTEND=noninteractive timeout 900 apt-get -y -q install hello' > "$ART/hello.log" 2>&1
-        id=$(st | sed -n 's/^SNAPSHOT \([0-9-]*\)\t.*\tauto\tyes\tUpdates: hello .* installed$/\1/p' | head -1)
+        id=$(st | sed -n 's/^SNAPSHOT \([0-9-]*\)\t.*\tauto\tyes\tUpdates: hello .* installed\(\t[a-z]*\)\?$/\1/p' | head -1)
         [ -n "$id" ] && grep -q "sg-snapshot: restore point $id" "$ART/hello.log" \
             && pass "btrfs: apt's run took a restore point ($id), labelled with what it changed" || { fail "btrfs: no restore point: $(st)"; continue; }
         e=$(g "ls /efi /xbootldr 2>/dev/null; r=\$(sed -n 's/^BOOT_ROOT=//p' /etc/kernel/install.conf | tail -1); cat \$r/loader/entries/Sg-restore-$id.conf")
