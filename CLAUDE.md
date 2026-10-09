@@ -151,7 +151,10 @@ prefix built at boot (~650 MB) filled it.
 
 The installer copies the live root's files into a partition or unallocated
 space of the target (see sg-session's CLAUDE.md), so the image carries
-`fdisk` (sfdisk), `dosfstools`, `e2fsprogs` and `efibootmgr`.
+`fdisk` (sfdisk), `dosfstools`, `e2fsprogs`, `btrfs-progs` (the installed
+root is btrfs with subvolumes since sg-session 0.1.0-179: restore points) and
+`efibootmgr`; `dpkg-repack` and `initramfs-tools` are sg-session's Depends
+for restore points on ext4 machines and for converting their system drive.
 
 **Third-party drivers.** The apt sources (`mkosi.extra/etc/apt`) and the
 build's `Repositories=` include Debian **non-free** as well as
@@ -181,7 +184,9 @@ shortcuts, then drive Setup through QEMU's keyboard:
 "Restart now" ends the VM; then the installed disk boots **alone** and the
 whole boot gate runs as the new owner, plus checks of what the installer did
 (host name, machine id, root size, root pinned by PARTUUID and that being the
-mounted root, `/etc/kernel/cmdline`, no live entry, no lab or live account, no
+mounted root, the root btrfs `@` by rootflags=subvol=@ with homes, logs,
+caches, temporary files and the Windows programs' prefix in subvolumes of
+their own on the same file system, `/etc/kernel/cmdline`, no live entry, no lab or live account, no
 installer socket, owner an administrator, host keys, the Debian and Stained
 Glass OS package sources with the key, the packages; dualboot: `/boot` is
 our XBOOTLDR and the Windows boot manager is still in the ESP), and the
@@ -353,3 +358,22 @@ name and version, what failed on FAT -- and its new entry, on trial, boots,
 is blessed, the desktop up; on an old disk (`SG_OLD_DISK`, updated to
 `SG_SESSION_DEB`) the layout moves over at the next boot, every entry kept,
 holds at the boot after, and the same reinstall boots.
+
+## The restore points gate
+
+`make restore-points-test` (`test/restore-points-test.sh`, network and KVM;
+not in `make test`) proves sg-session's restore points (sg-snapshot,
+0.1.0-179) in QEMU. **btrfs**, on a disk Setup installed
+(`build/install-target.raw`, `SG_RP_DISK`; `SG_SESSION_DEB` installs a package
+under test first): an apt run takes a labelled restore point with its boot
+entry; that entry, started once, runs the restore point (the package it came
+before is not there, the home's and the Windows prefix's later files are);
+going back to it (what Settings asks sg-admind for) takes effect at the
+restart, keeps homes and the prefix, deletes the replaced system. **ext4**,
+with `SG_RP_EXT4_DISK` (a disk installed before 0.1.0-179) and
+`SG_SESSION_DEB`: an update of sg-session keeps the version it replaced;
+Undo the last update puts it back at the restart; the conversion to btrfs
+runs in its own initrd and the system comes back on `@` with its subvolumes
+and files; a restore point is taken; undoing the conversion makes it the
+ext4 it was. Port 2394 (`SG_SSH_PORT`). The install gate checks every new
+install is btrfs `@` with the subvolumes (since sg-session 0.1.0-179).
