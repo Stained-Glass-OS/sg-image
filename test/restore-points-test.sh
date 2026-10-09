@@ -1,6 +1,6 @@
 #!/bin/bash
 # shellcheck disable=SC2015,SC2016  # pass/fail chains; commands run in the guest
-# Restore points and going back, in QEMU (sg-session's sg-snapshot, 0.1.0-179):
+# Restore points and going back, in QEMU (sg-session's sg-snapshot, 0.1.0-180):
 #
 #   btrfs  a disk Setup installed (SG_RP_DISK, default build/install-target.raw
 #          from `make install-test`; SG_SESSION_DEB installs a package under
@@ -12,7 +12,7 @@
 #          going back to it (what Settings asks sg-admind for): at the restart
 #          hello is gone, the home and prefix files stay, the version is kept
 #          from apt, the old system deleted, the desktop comes up.
-#   ext4   a disk installed before 0.1.0-179 (SG_RP_EXT4_DISK; skipped without):
+#   ext4   a disk installed before 0.1.0-180 (SG_RP_EXT4_DISK; skipped without):
 #          updated to SG_SESSION_DEB; a later build of it (+t1, made here)
 #          installed: the replaced version is kept; "Undo the last update",
 #          at the restart, puts it back before anyone signs in and pins +t1.
@@ -114,7 +114,7 @@ for s in ${SG_RP_SCENARIOS:-btrfs ext4}; do
         stop ;;
     ext4)
         D=${SG_RP_EXT4_DISK:-}
-        [ -n "$D" ] && [ -f "$D" ] || { echo "SKIP ext4: SG_RP_EXT4_DISK (a disk installed before 0.1.0-179) not given"; continue; }
+        [ -n "$D" ] && [ -f "$D" ] || { echo "SKIP ext4: SG_RP_EXT4_DISK (a disk installed before 0.1.0-180) not given"; continue; }
         [ -n "${SG_SESSION_DEB:-}" ] || { echo "SKIP ext4: SG_SESSION_DEB not given"; continue; }
         fresh "$D"; boot ext4-1 || { fail "ext4: no ssh"; continue; }
         install_deb ext4 || continue
