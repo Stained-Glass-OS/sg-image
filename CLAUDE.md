@@ -384,7 +384,7 @@ early service masked) must fail it; `SG_MUTANT_RP_ENV=SG_MUTANT_BOOTHEALTH_NO_WI
 (the package's `timeout 0` to 3 step skipped) too. The scenario also checks the
 menu is reachable: a start shows "Boot in 3 s", Space (QMP `send-key`) holds
 it and Enter starts the system (not Esc: systemd-boot asks to reboot into the
-firmware). **goback** (`SG_RP_SCENARIOS=goback`, `SG_SESSION_DEB` 0.1.0-187
+firmware). **goback** (`SG_RP_SCENARIOS=goback`, `SG_SESSION_DEB` 0.1.0-188
 or later): an update of two apt runs (a local archive: sg-session +t1, then
 sg-rp-dummy 2.0) is one restore point recording both; Settings' Go back
 through sg-admind's spool (as SYSTEM), the restart; both versions are

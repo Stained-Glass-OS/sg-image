@@ -122,7 +122,7 @@ for s in ${SG_RP_SCENARIOS:-btrfs ext4}; do
         D=${SG_RP_DISK:-$BUILD/install-target.raw}
         [ -f "$D" ] || { echo "SKIP bootmenu: no $D (make install-test)"; continue; }
         fresh "$D"; boot bootmenu-1 || { fail "bootmenu: no ssh"; continue; }
-        # a machine installed with a hidden menu (Setup wrote timeout 0 before sg-session 0.1.0-187; this disk shares the PC
+        # a machine installed with a hidden menu (Setup wrote timeout 0 before sg-session 0.1.0-188; this disk shares the PC
         # with another system, so it has timeout 5): the package brings the 3 seconds
         g 'sed -i "s/^timeout .*/timeout 0/" /efi/loader/loader.conf; grep -qx "timeout 0" /efi/loader/loader.conf' || { fail "bootmenu: loader.conf not writable"; continue; }
         install_deb bootmenu || continue
