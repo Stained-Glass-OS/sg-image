@@ -53,10 +53,12 @@ boot() {
         -drive if=virtio,format=raw,file="$W/disk.raw" \
         -smbios "type=11,value=io.systemd.credential.binary:ssh.authorized_keys.root=$(base64 -w0 < "$KEY.pub")" \
         -netdev user,id=n0,hostfwd=tcp:127.0.0.1:"$PORT"-:22 -device virtio-net-pci,netdev=n0 \
-        -display none -serial file:"$ART/serial-$1.log" -monitor none >"$ART/qemu-$1.log" 2>&1 &
+        -display none -serial file:"$ART/serial-$1.log" -monitor none -qmp unix:"$W/qmp.sock",server=on,wait=off >"$ART/qemu-$1.log" 2>&1 &
     QPID=$!
     wait_ssh
 }
+# a key at the boot menu, as a person would press it (QEMU's monitor)
+qmp_key() { printf '{"execute":"qmp_capabilities"}\n{"execute":"send-key","arguments":{"keys":[{"type":"qcode","data":"%s"}]}}\n' "$1" | socat -t1 - UNIX-CONNECT:"$W/qmp.sock" >/dev/null 2>&1; }
 # a restart, and the system up again (the conversion restarts twice: a longer wait)
 restart() { g systemctl reboot >/dev/null 2>&1; sleep 20; wait_ssh "${1:-100}"; }
 fresh() { rm -f "$W/disk.raw"; cp --sparse=always "$1" "$W/disk.raw"; cp "${OVMF_CODE/CODE/VARS}" "$W/vars.fd"; }
@@ -64,7 +66,7 @@ st() { g cat /run/stained-glass-snapshot/status 2>/dev/null; }
 install_deb() {   # the package under test, with what it needs from the archive
     [ -n "${SG_SESSION_DEB:-}" ] || return 0
     put "$SG_SESSION_DEB" /root/sg-session-test.deb
-    g 'timeout 600 apt-get -q update >/dev/null 2>&1; DEBIAN_FRONTEND=noninteractive timeout 1800 apt-get -y -q install /root/sg-session-test.deb' \
+    g "timeout 600 apt-get -q update >/dev/null 2>&1; ${SG_MUTANT_RP_ENV:-} DEBIAN_FRONTEND=noninteractive timeout 1800 apt-get -y -q install /root/sg-session-test.deb" \
         > "$ART/install-$1.log" 2>&1 && pass "$1: the package under test installs ($(dpkg-deb -f "$SG_SESSION_DEB" Version))" \
         || { fail "$1: the package under test did not install (install-$1.log)"; return 1; }
     g 'sg-snapshot status >/dev/null 2>&1'
@@ -120,20 +122,22 @@ for s in ${SG_RP_SCENARIOS:-btrfs ext4}; do
         D=${SG_RP_DISK:-$BUILD/install-target.raw}
         [ -f "$D" ] || { echo "SKIP bootmenu: no $D (make install-test)"; continue; }
         fresh "$D"; boot bootmenu-1 || { fail "bootmenu: no ssh"; continue; }
+        # a machine installed with a hidden menu (Setup wrote timeout 0 before sg-session 0.1.0-187; this disk shares the PC
+        # with another system, so it has timeout 5): the package brings the 3 seconds
+        g 'sed -i "s/^timeout .*/timeout 0/" /efi/loader/loader.conf; grep -qx "timeout 0" /efi/loader/loader.conf' || { fail "bootmenu: loader.conf not writable"; continue; }
         install_deb bootmenu || continue
+        g 'grep -qx "timeout 3" /efi/loader/loader.conf' && pass "bootmenu: the package changed the hidden menu (timeout 0) to 3 seconds" || fail "bootmenu: loader.conf: $(g 'cat /efi/loader/loader.conf')"
         g 'test -x /usr/bin/sg-boot-health' || { echo "SKIP bootmenu: sg-session has no sg-boot-health (SG_SESSION_DEB 0.1.0-183 or later)"; continue; }
         g 'timeout 600 apt-get -q update >/dev/null 2>&1; DEBIAN_FRONTEND=noninteractive timeout 900 apt-get -y -q install hello' > "$ART/hello-bootmenu.log" 2>&1
         g 'grep -q "^SNAPSHOT .*auto" /run/stained-glass-snapshot/status' || { fail "bootmenu: no restore point to list"; continue; }
-        # the menu is hidden on a computer with only Stained Glass OS (Setup writes timeout 0; this disk shares the PC with another OS, so timeout 5)
-        g 'sed -i "s/^timeout .*/timeout 0/" /efi/loader/loader.conf; grep -qx "timeout 0" /efi/loader/loader.conf' || { fail "bootmenu: loader.conf not writable"; continue; }
         g 'systemctl is-enabled sg-boot-health.service sg-boot-ok.service >/dev/null' && pass "bootmenu: sg-boot-health and sg-boot-ok are enabled by the package" || fail "bootmenu: units not enabled"
         BHV=/sys/firmware/efi/efivars/LoaderConfigTimeoutOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
         waitok='for i in $(seq 1 60); do [ "$(systemctl show -p ExecMainExitTimestampMonotonic --value sg-boot-ok.service)" != 0 ] && exit 0; sleep 2; done; exit 1'
         # 1. a start that finishes takes the request back
         g 'SG_BOOTHEALTH_GRACE=0 sg-boot-health ok'   # (installing the package ran begin in this start)
         off=$(stat -c %s "$ART/serial-bootmenu-1.log")
-        restart && g "$waitok" && g "[ ! -e $BHV ]" && ! tail -c +$((off + 1)) "$ART/serial-bootmenu-1.log" | grep -aq 'Boot in' \
-            && pass "bootmenu: a start that finished left no menu request (the variable is gone) and showed no menu" || fail "bootmenu: request left after a good start: $(g "ls $BHV; systemctl status sg-boot-ok.service" 2>&1 | tail -5)"
+        restart && g "$waitok" && g "[ ! -e $BHV ]" && tail -c +$((off + 1)) "$ART/serial-bootmenu-1.log" | grep -aq 'Boot in 3 s' && ! tail -c +$((off + 1)) "$ART/serial-bootmenu-1.log" | grep -aq 'Boot in 10 s' \
+            && pass "bootmenu: a start that finished showed the menu for 3 seconds (not the failed-start 10) and left no request (the variable is gone)" || fail "bootmenu: request left after a good start: $(g "ls $BHV; systemctl status sg-boot-ok.service" 2>&1 | tail -5)"
         # 2. a start that never finishes (sg-boot-ok held back) leaves the request: 10 seconds
         g 'mkdir -p /etc/systemd/system/sg-boot-ok.service.d; printf "[Service]\nExecStart=\nExecStart=/bin/sleep infinity\n" > /etc/systemd/system/sg-boot-ok.service.d/hold.conf'
         # (mutant: the early service is gone, as if the package did not ship it -- the gate must notice)
@@ -150,6 +154,97 @@ for s in ${SG_RP_SCENARIOS:-btrfs ext4}; do
         # 4. a start that finishes ends it: no menu at the one after
         g 'rm -rf /etc/systemd/system/sg-boot-ok.service.d'
         restart && g "$waitok" && g "[ ! -e $BHV ]" && pass "bootmenu: once a start finished, the request is gone again" || fail "bootmenu: request left after the good start"
+        # 5. a person at the keyboard: Space during the countdown holds the menu (then Enter starts the default).
+        #    (Not Esc: systemd-boot answers it with "Press Enter to reboot into firmware interface".)
+        off=$(stat -c %s "$ART/serial-bootmenu-2.log")
+        g systemctl reboot >/dev/null 2>&1
+        for _ in $(seq 1 240); do tail -c +$((off + 1)) "$ART/serial-bootmenu-2.log" | grep -aq 'Boot in' && break; sleep 0.5; done
+        qmp_key spc
+        sleep 12
+        if g true 2>/dev/null; then fail "bootmenu: Space did not hold the menu (the system started by itself)"
+        else pass "bootmenu: Space during the 3 seconds held the menu (nothing started after 12 s)"; fi
+        qmp_key ret
+        wait_ssh && pass "bootmenu: Enter then started the system" || fail "bootmenu: no start after Enter"
+        stop ;;
+    goback)
+        # Settings > Recovery > Go back, as the UI does it (sg-admind's restore-point verb, asked as SYSTEM), then
+        # "check for updates": the versions the restore point was taken before must not come back -- every package
+        # of the update, however many apt runs it took -- while a NEWER version still installs.
+        D=${SG_RP_DISK:-$BUILD/install-target.raw}
+        [ -f "$D" ] || { echo "SKIP goback: no $D (make install-test)"; continue; }
+        [ -n "${SG_SESSION_DEB:-}" ] || { echo "SKIP goback: SG_SESSION_DEB not given"; continue; }
+        t=$(mktemp -d); v=$(dpkg-deb -f "$SG_SESSION_DEB" Version)
+        mkrepo() {   # $1: the phase; the archive of that phase in $t/repo$1: dummy $2, sg-session $v$3
+            mkdir -p "$t/repo$1"
+            for n in 1.0 2.0 3.0; do
+                rm -rf "$t/d$n"; mkdir -p "$t/d$n/DEBIAN"
+                printf 'Package: sg-rp-dummy\nVersion: %s\nArchitecture: all\nMaintainer: Stained Glass OS <test@stained-glass.invalid>\nDescription: gate\n' "$n" > "$t/d$n/DEBIAN/control"
+                fakeroot dpkg-deb -b "$t/d$n" "$t/repo$1/sg-rp-dummy_${n}_all.deb" >/dev/null
+            done
+            for sfx in "" +t1 +t2; do
+                rm -rf "$t/r$sfx"; dpkg-deb -R "$SG_SESSION_DEB" "$t/r$sfx"; sed -i "s/^Version: .*/Version: $v$sfx/" "$t/r$sfx/DEBIAN/control"
+                fakeroot dpkg-deb -b -Zzstd "$t/r$sfx" "$t/repo$1/sg-session_$v${sfx}_amd64.deb" >/dev/null
+            done
+            case $1 in
+                1) rm -f "$t"/repo1/sg-rp-dummy_[23]* "$t"/repo1/*+t* ;;
+                2) rm -f "$t"/repo2/sg-rp-dummy_3* "$t"/repo2/*+t2* ;;
+            esac
+            (cd "$t/repo$1" && dpkg-scanpackages -m . /dev/null > Packages 2>/dev/null)
+        }
+        usedeb() {   # the archive of phase $1 in the guest
+            g 'mkdir -p /srv/repo; rm -f /srv/repo/*' && scp -q "${SSHO[@]}" -P "$PORT" "$t"/repo"$1"/* root@127.0.0.1:/srv/repo/ \
+                && g 'echo "deb [trusted=yes] file:///srv/repo ./" > /etc/apt/sources.list.d/zz-rp-local.list; apt-get update -q >/dev/null 2>&1; true'
+        }
+        for n in 1 2 3; do mkrepo $n; done
+        fresh "$D"; boot goback-1 || { fail "goback: no ssh"; continue; }
+        g 'mkdir -p /root/off; for f in /etc/apt/sources.list.d/*; do grep -qs freesoft "$f" && mv "$f" /root/off/; done; true'
+        usedeb 1 && g 'DEBIAN_FRONTEND=noninteractive apt-get -y -q install sg-rp-dummy=1.0' > "$ART/goback-dummy1.log" 2>&1 || { fail "goback: no dummy 1.0"; continue; }
+        install_deb goback || continue
+        sleep 310       # (apt runs within 5 minutes of a restore point are the same run)
+        g 'cat > /root/admin-req.sh' <<'EOS'
+#!/bin/sh
+# one request to sg-admind as SYSTEM, the way Settings makes it; prints the reply
+id=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+req=$(printf '%s\n' "$@")
+runuser -u sgsystem -- sh -c "printf '%s\n' \"\$1\" > /run/stained-glass-admin/requests/.t$id && mv /run/stained-glass-admin/requests/.t$id /run/stained-glass-admin/requests/$id.req" sh "$req"
+for _ in $(seq 1 60); do [ -e /run/stained-glass-admin/replies/$id.rep ] && break; sleep 2; done
+cat /run/stained-glass-admin/replies/$id.rep
+EOS
+        # the update: two apt runs (an upgrade of our package, then another package), within minutes
+        usedeb 2
+        g 'DEBIAN_FRONTEND=noninteractive apt-get -y -q install sg-session' > "$ART/goback-up1.log" 2>&1
+        # (mutants: the code that runs from here on, now that the upgrade has installed its own copy)
+        [ -z "${SG_MUTANT_RP_GOBACK:-}" ] || g "sed -i 's/E(\"SG_MUTANT_SNAP_$SG_MUTANT_RP_GOBACK\")/True/' /usr/bin/sg-snapshot"
+        g 'DEBIAN_FRONTEND=noninteractive apt-get -y -q install sg-rp-dummy' > "$ART/goback-up2.log" 2>&1
+        id=$(st | sed -n 's/^SNAPSHOT \([0-9-]*\)\t.*\tauto\tyes\tUpdates: .*sg-rp-dummy 1.0 to 2.0.*/\1/p' | head -1)
+        g "[ \"\$(dpkg-query -W -f '\${Version}' sg-rp-dummy)\" = 2.0 ] && dpkg-query -W -f '\${Version}' sg-session | grep -qx '$v+t1'" \
+            && [ -n "$id" ] && pass "goback: the update (sg-session $v+t1, then sg-rp-dummy 2.0) is one restore point ($id) that records both" \
+            || { fail "goback: the update's restore point: $(st)"; continue; }
+        out=$(g "sh /root/admin-req.sh restore-point rollback $id" 2>&1)
+        printf '%s\n' "$out" | head -1 | grep -qx OK && st | grep -qx 'PENDING rollback' \
+            && pass "goback: Settings' Go back (sg-admind restore-point rollback) is set for the restart" || { fail "goback: sg-admind: $out"; continue; }
+        restart && sleep 30
+        g "[ \"\$(findmnt -n -o FSROOT /)\" = /@ ] && [ \"\$(dpkg-query -W -f '\${Version}' sg-rp-dummy)\" = 1.0 ] && dpkg-query -W -f '\${Version}' sg-session | grep -qx '$v'" \
+            && pass "goback: after the restart the system is the restore point's: sg-session $v, sg-rp-dummy 1.0" \
+            || fail "goback: after going back: $(g "findmnt / ; dpkg -l sg-session sg-rp-dummy | tail -2")"
+        g "grep -qx 'Pin: version $v+t1' /etc/apt/preferences.d/sg-went-back && grep -qx 'Pin: version 2.0' /etc/apt/preferences.d/sg-went-back" \
+            && pass "goback: the restored system keeps both versions of the update from apt (sg-went-back)" || fail "goback: pins: $(g 'cat /etc/apt/preferences.d/sg-went-back 2>&1')"
+        # check for updates: Settings' button (sg-admind update-check), PackageKit's list, and apt itself
+        usedeb 2
+        g 'sh /root/admin-req.sh update-check >/dev/null; sleep 5; for i in $(seq 1 60); do systemctl is-active -q sg-update-prepare.service || exit 0; sleep 3; done'
+        g 'pkcon get-updates 2>&1' > "$ART/goback-pkcon.txt"
+        g 'DEBIAN_FRONTEND=noninteractive apt-get -y -q upgrade' > "$ART/goback-upgrade.log" 2>&1
+        if ! grep -q 'sg-rp-dummy\|sg-session' "$ART/goback-pkcon.txt" \
+                && g "[ \"\$(dpkg-query -W -f '\${Version}' sg-rp-dummy)\" = 1.0 ] && dpkg-query -W -f '\${Version}' sg-session | grep -qx '$v'" \
+                && ! g 'grep -qs "sg-rp-dummy" /var/lib/PackageKit/prepared-update'; then
+            pass "goback: checking for updates (Settings, PackageKit, apt upgrade) does not bring the removed versions back"
+        else fail "goback: the updater brought them back: $(g "dpkg -l sg-session sg-rp-dummy | tail -2"; tail -5 "$ART/goback-pkcon.txt")"; fi
+        # a NEWER version still installs
+        usedeb 3
+        g 'DEBIAN_FRONTEND=noninteractive apt-get -y -q upgrade' > "$ART/goback-newer.log" 2>&1
+        g "[ \"\$(dpkg-query -W -f '\${Version}' sg-rp-dummy)\" = 3.0 ] && dpkg-query -W -f '\${Version}' sg-session | grep -qx '$v+t2'" \
+            && pass "goback: a newer version (sg-session $v+t2, sg-rp-dummy 3.0) still installs" || fail "goback: newer versions: $(g "dpkg -l sg-session sg-rp-dummy | tail -2"; tail -5 "$ART/goback-newer.log")"
+        rm -rf "$t"
         stop ;;
     ext4)
         D=${SG_RP_EXT4_DISK:-}

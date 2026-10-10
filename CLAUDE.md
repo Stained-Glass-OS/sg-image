@@ -380,7 +380,18 @@ or later): with the menu hidden (`timeout 0`) a start that finishes shows no men
 leaves no `LoaderConfigTimeoutOneShot`; with sg-boot-ok held back the request
 (10 s) is left, the next start shows the menu on the console with the restore
 points, and a finished start ends it. Mutant `SG_MUTANT_RP_NO_BEGIN=1` (the
-early service masked) must fail it. An old ext4 disk for `SG_RP_EXT4_DISK`: build/dbg-target.raw (an install with
+early service masked) must fail it; `SG_MUTANT_RP_ENV=SG_MUTANT_BOOTHEALTH_NO_WINDOW=1`
+(the package's `timeout 0` to 3 step skipped) too. The scenario also checks the
+menu is reachable: a start shows "Boot in 3 s", Space (QMP `send-key`) holds
+it and Enter starts the system (not Esc: systemd-boot asks to reboot into the
+firmware). **goback** (`SG_RP_SCENARIOS=goback`, `SG_SESSION_DEB` 0.1.0-187
+or later): an update of two apt runs (a local archive: sg-session +t1, then
+sg-rp-dummy 2.0) is one restore point recording both; Settings' Go back
+through sg-admind's spool (as SYSTEM), the restart; both versions are
+pinned in the restored system's `sg-went-back`; an update check (Settings'
+button, `pkcon get-updates`, `apt-get upgrade`) does not bring them back, a
+newer one (+t2, 3.0) installs. Mutants `SG_MUTANT_RP_GOBACK=NO_MERGE|NO_PIN`
+(sed on the guest's sg-snapshot after the upgrade) must fail it. An old ext4 disk for `SG_RP_EXT4_DISK`: build/dbg-target.raw (an install with
 sg-session 0.1.0-28) with the gate key added to /root/.ssh/authorized_keys
 (loop-mount its root; the old image lacks the ssh credential unit). Port 2394 (`SG_SSH_PORT`). The install gate checks every new
 install is btrfs `@` with the subvolumes (since sg-session 0.1.0-180).
