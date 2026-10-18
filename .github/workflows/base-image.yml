@@ -1,0 +1,47 @@
+name: Debian base image
+
+# The CI jobs of our repositories run in a Debian trixie container. Pulled
+# from Docker Hub or public.ecr.aws, the image failed every few runs: the
+# runners share addresses, and the anonymous pull limit ("toomanyrequests:
+# Data limit exceeded") was spent before our jobs began. Here the image is
+# made from Debian's own archive (mmdebstrap, no registry) and kept at
+# ghcr.io/stained-glass-os/debian:trixie, which the jobs use instead; once a
+# week it is made again, with Debian's updates.
+
+on:
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  trixie:
+    runs-on: ubuntu-latest
+    steps:
+      - name: mmdebstrap, and Debian's current archive keys
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mmdebstrap
+          # the runner's own keyring may predate trixie's key: Debian's, over https
+          kr=$(curl -fsSL https://deb.debian.org/debian/pool/main/d/debian-archive-keyring/ | grep -o 'debian-archive-keyring_[0-9.]*_all.deb' | sort -V | tail -1)
+          curl -fsSLo keyring.deb "https://deb.debian.org/debian/pool/main/d/debian-archive-keyring/$kr"
+          dpkg-deb -x keyring.deb kr
+      - name: the image, from Debian's archive
+        run: |
+          sudo mmdebstrap --variant=apt --include=ca-certificates \
+              --keyring="$PWD/kr/usr/share/keyrings/debian-archive-keyring.gpg" \
+              trixie rootfs.tar https://deb.debian.org/debian
+      - name: publish
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          sudo cat rootfs.tar | docker import \
+              --change 'CMD ["/bin/bash"]' \
+              --change 'ENV LANG=C.UTF-8' \
+              --change 'LABEL org.opencontainers.image.source=https://github.com/Stained-Glass-OS/sg-image' \
+              --change 'LABEL org.opencontainers.image.description=Debian trixie for Stained Glass OS CI' \
+              - ghcr.io/stained-glass-os/debian:trixie
+          docker run --rm ghcr.io/stained-glass-os/debian:trixie cat /etc/debian_version
+          docker push ghcr.io/stained-glass-os/debian:trixie
