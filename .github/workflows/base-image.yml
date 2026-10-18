@@ -29,17 +29,18 @@ jobs:
           kr=$(curl -fsSL https://deb.debian.org/debian/pool/main/d/debian-archive-keyring/ | grep -o 'debian-archive-keyring_[0-9.]*_all.deb' | sort -V | tail -1)
           curl -fsSLo keyring.deb "https://deb.debian.org/debian/pool/main/d/debian-archive-keyring/$kr"
           dpkg-deb -x keyring.deb kr
-          mkdir -p keys
-          for f in kr/etc/apt/trusted.gpg.d/*.asc; do gpg --dearmor < "$f" > "keys/$(basename "$f" .asc).gpg"; done
-          for f in keys/*.gpg; do gpg --show-keys --with-colons "$f" | awk -F: '$1 == "pub" {print $5}'; done
+          # where apt's own user (_apt) can read them: the work directory is not
+          sudo mkdir -p /opt/sg-keys
+          for f in kr/etc/apt/trusted.gpg.d/*.asc; do gpg --dearmor < "$f" | sudo tee "/opt/sg-keys/$(basename "$f" .asc).gpg" > /dev/null; done
+          sudo chmod 755 /opt/sg-keys; sudo chmod 644 /opt/sg-keys/*.gpg
       - name: the image, from Debian's archive
         run: |
           # signed-by on the source itself: mmdebstrap's own default points at the
           # runner's (Ubuntu's, older) Debian keyring, which has no trixie key
           sudo mmdebstrap --variant=apt --include=ca-certificates \
-              --keyring="$PWD/keys" \
+              --keyring=/opt/sg-keys \
               trixie rootfs.tar \
-              "deb [signed-by=$PWD/keys/debian-archive-trixie-stable.gpg] https://deb.debian.org/debian trixie main"
+              "deb [signed-by=/opt/sg-keys/debian-archive-trixie-stable.gpg] https://deb.debian.org/debian trixie main"
       - name: publish
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
