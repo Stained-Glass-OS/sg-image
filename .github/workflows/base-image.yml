@@ -48,7 +48,7 @@ jobs:
               --change 'CMD ["/bin/bash"]' \
               --change 'ENV LANG=C.UTF-8' \
               --change 'LABEL org.opencontainers.image.source=https://github.com/Stained-Glass-OS/sg-image' \
-              --change 'LABEL org.opencontainers.image.description=Debian trixie for Stained Glass OS CI' \
+              --change 'LABEL org.opencontainers.image.description="Debian trixie for Stained Glass OS CI"' \
               - ghcr.io/stained-glass-os/debian:trixie
           docker run --rm ghcr.io/stained-glass-os/debian:trixie cat /etc/debian_version
           docker push ghcr.io/stained-glass-os/debian:trixie
