@@ -29,11 +29,11 @@ jobs:
           kr=$(curl -fsSL https://deb.debian.org/debian/pool/main/d/debian-archive-keyring/ | grep -o 'debian-archive-keyring_[0-9.]*_all.deb' | sort -V | tail -1)
           curl -fsSLo keyring.deb "https://deb.debian.org/debian/pool/main/d/debian-archive-keyring/$kr"
           dpkg-deb -x keyring.deb kr
-          find kr -name '*.gpg' -o -name '*.pgp' -o -name '*.asc' | sort
+          cat kr/etc/apt/trusted.gpg.d/debian-archive-trixie-*.asc | gpg --dearmor > trixie.gpg
       - name: the image, from Debian's archive
         run: |
           sudo mmdebstrap --variant=apt --include=ca-certificates \
-              --keyring="$PWD/kr/etc/apt/trusted.gpg.d" \
+              --keyring="$PWD/trixie.gpg" \
               trixie rootfs.tar https://deb.debian.org/debian
       - name: publish
         run: |
