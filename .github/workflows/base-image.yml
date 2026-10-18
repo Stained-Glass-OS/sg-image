@@ -33,7 +33,7 @@ jobs:
       - name: the image, from Debian's archive
         run: |
           sudo mmdebstrap --variant=apt --include=ca-certificates \
-              --keyring="$PWD/kr/usr/share/keyrings" \
+              --keyring="$PWD/kr/etc/apt/trusted.gpg.d" \
               trixie rootfs.tar https://deb.debian.org/debian
       - name: publish
         run: |
