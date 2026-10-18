@@ -34,9 +34,12 @@ jobs:
           for f in keys/*.gpg; do gpg --show-keys --with-colons "$f" | awk -F: '$1 == "pub" {print $5}'; done
       - name: the image, from Debian's archive
         run: |
+          # signed-by on the source itself: mmdebstrap's own default points at the
+          # runner's (Ubuntu's, older) Debian keyring, which has no trixie key
           sudo mmdebstrap --variant=apt --include=ca-certificates \
               --keyring="$PWD/keys" \
-              trixie rootfs.tar https://deb.debian.org/debian
+              trixie rootfs.tar \
+              "deb [signed-by=$PWD/keys/debian-archive-trixie-stable.gpg] https://deb.debian.org/debian trixie main"
       - name: publish
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
