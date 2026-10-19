@@ -37,8 +37,14 @@ jobs:
         run: |
           # signed-by on the source itself: mmdebstrap's own default points at the
           # runner's (Ubuntu's, older) Debian keyring, which has no trixie key
-          sudo mmdebstrap --variant=apt --include=ca-certificates \
+          # inside the image apt then uses its own debian-archive-keyring, with
+          # Debian's updates and security archives too, like Debian's image
+          sudo mmdebstrap --variant=apt --include=ca-certificates,debian-archive-keyring \
               --keyring=/opt/sg-keys \
+              --customize-hook='rm -f "$1/etc/apt/sources.list"' \
+              --customize-hook='printf "Types: deb\nURIs: https://deb.debian.org/debian\nSuites: trixie trixie-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\nTypes: deb\nURIs: https://security.debian.org/debian-security\nSuites: trixie-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n" > "$1/etc/apt/sources.list.d/debian.sources"' \
+              --customize-hook='chroot "$1" apt-get update' \
+              --customize-hook='rm -rf "$1"/var/lib/apt/lists/*' \
               trixie rootfs.tar \
               "deb [signed-by=/opt/sg-keys/debian-archive-trixie-stable.gpg] https://deb.debian.org/debian trixie main"
       - name: publish
