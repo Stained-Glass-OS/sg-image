@@ -21,7 +21,7 @@ for t in Xvfb x86_64-w64-mingw32-g++; do command -v "$t" >/dev/null || { echo "S
 T=$(mktemp -d "${TMPDIR:-/var/tmp}/sg-dcomp.XXXXXX"); XP=
 # a scratch HOME: a prefix links its Desktop, Documents... into HOME
 export HOME="$T/home" WINEPREFIX="$T/prefix" WINEDEBUG=-all WINESERVER \
-       WINEDLLOVERRIDES="mscoree,mshtml=;winemenubuilder.exe=d;dxgi,d3d11,d3d10core=n"
+       WINEDLLOVERRIDES="mscoree,mshtml=;winemenubuilder.exe=d"
 mkdir -p "$HOME"
 trap '"$WINESERVER" -k 2>/dev/null; [ -n "$XP" ] && kill "$XP" 2>/dev/null; rm -rf "$T"' EXIT INT TERM
 x86_64-w64-mingw32-g++ -O2 -static -o "$T/dcomp-probe.exe" "$HERE/test/dcomp-probe.cpp" \
@@ -31,6 +31,8 @@ i=0; while [ ! -s "$T/display" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); d
 export DISPLAY=":$(cat "$T/display")"
 timeout -s KILL 300 "$WINE" wineboot -i >/dev/null 2>&1; "$WINESERVER" -w
 cp "$DXVK"/*.dll "$WINEPREFIX/drive_c/windows/system32/"
+# DXVK only for the probe: wineboot with it exported hung behind a crash dialog (wine-sg 725)
+export WINEDLLOVERRIDES="mscoree,mshtml=;winemenubuilder.exe=d;dxgi,d3d11,d3d10core=n"
 cp "$T/dcomp-probe.exe" "$WINEPREFIX/drive_c/"
 out=$(cd "$WINEPREFIX/drive_c" && DXVK_LOG_LEVEL=none timeout 120 "$WINE" 'C:\dcomp-probe.exe' 2>/dev/null | tr -d '\r')
 printf '      %s\n' "$out"
