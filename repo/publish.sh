@@ -45,6 +45,8 @@ if [[ -d "$LIVE/pool" ]]; then
     done < <(find "$LIVE/pool" -name '*.deb' -printf '%f\n' | cut -d_ -f1 | sort -u)
 fi
 
+# a version lower than the live one is a build apt never installs
+"$HERE/repo/check-upgrade.sh" "$LIVE" "$@"
 PUBLISHED_DIR="$LIVE" "$HERE/repo/build-repo.sh" "$OUT" "$@"
 "$HERE/repo/check-repo.sh" "$OUT"
 

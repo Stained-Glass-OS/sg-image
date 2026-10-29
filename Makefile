@@ -19,7 +19,7 @@ SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 SG_MAIL     ?= ../sg-mail
 
-.PHONY: keyring-test keyring-reset-test netlock-test firewall-test gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test surface-handle-test clean distclean
+.PHONY: keyring-test keyring-reset-test netlock-test firewall-test gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test surface-handle-test d3d-patchrev upgrade-order-test clean distclean
 
 all: image
 
@@ -227,6 +227,12 @@ ICU_URL       := https://deb.debian.org/debian/pool/main/i/icu/icu_$(ICU_VERSION
 # image and published on the apt site: installed machines get a fixed DXVK
 # with their updates, not only machines made from a new image.
 D3D_DIR   := $(BUILD)/d3d-payload
+# Our DXVK's revision in sg-d3d's version: when dxvk/patches last changed (UTC,
+# minutes), then their hash. The time puts each new build above the last --
+# the hash alone did not (sg9302f260 sorts below sg21616153: apt kept the old
+# DXVK, release 616).
+D3D_PATCHREV = printf '%s.%s' "$$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y%m%d%H%M -- dxvk/patches)" \
+	"$$(cat dxvk/patches/*.patch | sha256sum | cut -c1-8)"
 D3D_CACHE := $(BUILD)/d3d-cache
 
 d3d: $(D3D_DIR)/VERSION
@@ -263,8 +269,13 @@ $(D3D_DIR)/VERSION: Makefile dxvk/build-dxgi.sh $(wildcard dxvk/patches/*.patch)
 	mkdir -p $(D3D_DIR)/icu/x64; \
 	cp $$c/x86_64/*.dll $(D3D_DIR)/icu/x64/; \
 	cp licenses/icu.LICENSE $(D3D_DIR)/icu/LICENSE
-	@echo "vkd3d-proton $(VKD3D_VERSION), dxvk $(DXVK_VERSION)+sg$$(cat dxvk/patches/*.patch | sha256sum | cut -c1-8), icu $(ICU_VERSION)+sg$(ICU_SGREV)" > $@
+	@r=$$($(D3D_PATCHREV)); case $$r in .*) echo "d3d: no commit time for dxvk/patches (not a git checkout?)" >&2; exit 1;; esac; \
+	  echo "vkd3d-proton $(VKD3D_VERSION), dxvk $(DXVK_VERSION)+sg$$r, icu $(ICU_VERSION)+sg$(ICU_SGREV)" > $@
 	@echo "staged D3D: $$(cat $@)"
+
+# sg-d3d's DXVK part, as the payload's VERSION gets it (test/upgrade-order-test.sh)
+d3d-patchrev:
+	@$(D3D_PATCHREV); echo
 
 # The package, beside the other staged debs (staged-debs clears them first).
 d3d-deb: staged-debs d3d
@@ -291,6 +302,11 @@ ctxstate-test: d3d
 # (dxvk/patches/0004): Windows Terminal's pane was black. Host test, as dcomp-test.
 surface-handle-test: d3d
 	@test/surface-handle-test.sh
+
+# A new build sorts above the published one; publish refuses one that does not
+# (sg-d3d 616: a hash-only version apt took for a downgrade).
+upgrade-order-test:
+	@test/upgrade-order-test.sh
 
 # --- bundled Windows applications -------------------------------------------
 
