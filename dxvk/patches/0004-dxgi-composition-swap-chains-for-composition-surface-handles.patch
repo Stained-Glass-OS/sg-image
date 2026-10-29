@@ -1,0 +1,357 @@
+From: Stained Glass OS <ke7oxh@gmail.com>
+Subject: [PATCH] dxgi: composition swap chains for composition surface handles
+
+Windows Terminal's pane stayed black under DXVK. Its renderer (AtlasEngine)
+makes its swap chain with
+IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle for a handle
+from DCompositionCreateSurfaceHandle and gives the handle to a XAML
+SwapChainPanel; DXVK's factory had no IDXGIFactoryMedia, so the renderer
+failed. wine-sg's own dxgi has both halves (wine-sg 6178/6183).
+
+DxgiFactory now answers IDXGIFactoryMedia: the composition swap chain of
+0001, made for the surface handle (unscaled swap chains allowed, as for a
+surface handle on Windows), and IWineDXGISurfaceHandles: wine-sg's XAML
+SwapChainPanel asks the loaded dxgi's factory for the swap chain last made
+for a handle (or another handle to the same surface) and shows it through
+IWineDXGICompositionSwapChain. Same interfaces and IIDs as wine-sg's dxgi
+(include/wine/winedxgi.idl).
+
+Gate: test/surface-handle-test.sh (make surface-handle-test). Mutants
+SG_MUTANT_NO_FACTORY_MEDIA (no interfaces) and SG_MUTANT_SURFACE_NOT_RECORDED
+(the swap chain is not found by its handle), built with -Dcpp_args=-DSG_MUTANT_...
+---
+diff --git a/src/dxgi/dxgi_composition.cpp b/src/dxgi/dxgi_composition.cpp
+index 648527e..486b513 100644
+--- a/src/dxgi/dxgi_composition.cpp
++++ b/src/dxgi/dxgi_composition.cpp
+@@ -1,3 +1,4 @@
++#include <algorithm>
+ #include "dxgi_composition.h"
+ #include "dxgi_factory.h"
+ 
+@@ -6,6 +7,20 @@
+ 
+ namespace dxvk {
+ 
++  /* the swap chains made for composition surface handles, newest last */
++  static std::mutex                             g_surfaceMutex;
++  static std::vector<DxgiCompositionSwapChain*> g_surfaceSwapChains;
++
++  static BOOL SameObject(HANDLE a, HANDLE b) {
++    using PFN_CompareObjectHandles = BOOL (WINAPI *)(HANDLE, HANDLE);
++    static PFN_CompareObjectHandles compare = reinterpret_cast<PFN_CompareObjectHandles>(
++      GetProcAddress(GetModuleHandleW(L"kernelbase.dll"), "CompareObjectHandles"));
++    if (a == b)
++      return TRUE;
++    return compare && compare(a, b);
++  }
++
++
+   DxgiCompositionSwapChain::DxgiCompositionSwapChain(
+           DxgiFactory*                pFactory,
+           ID3D11Device*               pDevice,
+@@ -18,6 +33,13 @@ namespace dxvk {
+ 
+ 
+   DxgiCompositionSwapChain::~DxgiCompositionSwapChain() {
++    if (m_surface) {
++      std::lock_guard<std::mutex> lock(g_surfaceMutex);
++      auto entry = std::find(g_surfaceSwapChains.begin(), g_surfaceSwapChains.end(), this);
++      if (entry != g_surfaceSwapChains.end())
++        g_surfaceSwapChains.erase(entry);
++      CloseHandle(m_surface);
++    }
+     if (m_refresh) {
+       SetThreadpoolTimer(m_refresh, nullptr, 0, 0);
+       WaitForThreadpoolTimerCallbacks(m_refresh, TRUE);
+@@ -52,6 +74,34 @@ namespace dxvk {
+   }
+ 
+ 
++  HRESULT DxgiCompositionSwapChain::SetSurface(HANDLE hSurface) {
++    if (!DuplicateHandle(GetCurrentProcess(), hSurface, GetCurrentProcess(), &m_surface,
++        0, FALSE, DUPLICATE_SAME_ACCESS)) {
++      m_surface = nullptr;
++      return E_INVALIDARG;
++    }
++
++    std::lock_guard<std::mutex> lock(g_surfaceMutex);
++    g_surfaceSwapChains.push_back(this);
++    return S_OK;
++  }
++
++
++  HRESULT DxgiCompositionSwapChain::FindSurface(HANDLE hSurface, IWineDXGICompositionSwapChain** ppSwapChain) {
++    std::lock_guard<std::mutex> lock(g_surfaceMutex);
++
++    for (auto i = g_surfaceSwapChains.rbegin(); i != g_surfaceSwapChains.rend(); i++) {
++      if (!SameObject((*i)->m_surface, hSurface))
++        continue;
++      (*i)->AddRef();
++      *ppSwapChain = static_cast<IWineDXGICompositionSwapChain*>(*i);
++      return S_OK;
++    }
++
++    return DXGI_ERROR_NOT_FOUND;
++  }
++
++
+   HRESULT DxgiCompositionSwapChain::Init() {
+     m_refresh = CreateThreadpoolTimer(RefreshCallback, this, nullptr);
+     return CreateBuffers();
+diff --git a/src/dxgi/dxgi_composition.h b/src/dxgi/dxgi_composition.h
+index 9668249..a34ed09 100644
+--- a/src/dxgi/dxgi_composition.h
++++ b/src/dxgi/dxgi_composition.h
+@@ -23,6 +23,25 @@ IWineDXGICompositionSwapChain : public IUnknown {
+ __CRT_UUID_DECL(IWineDXGICompositionSwapChain, 0x7c3f5d2e,0x9a41,0x4b8e,0xb6,0xd3,0x2f,0x0e,0x8a,0x1c,0x5b,0x94);
+ #endif
+ 
++/**
++ * \brief Wine's composition surface handles (Stained Glass OS)
++ *
++ * The private interface a DXGI factory gives for the composition swap
++ * chain last made for a composition surface handle
++ * (IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle), so that
++ * the handle's consumer in this process -- wine-sg's XAML SwapChainPanel --
++ * can show it. The same interface and IID as Wine's own dxgi
++ * (include/wine/winedxgi.idl).
++ */
++MIDL_INTERFACE("b5d3ad91-81e3-409d-84da-01807c20ad13")
++IWineDXGISurfaceHandles : public IUnknown {
++  virtual HRESULT STDMETHODCALLTYPE swapchain_from_handle(HANDLE handle, IWineDXGICompositionSwapChain** swapchain) = 0;
++};
++
++#ifndef _MSC_VER
++__CRT_UUID_DECL(IWineDXGISurfaceHandles, 0xb5d3ad91,0x81e3,0x409d,0x84,0xda,0x01,0x80,0x7c,0x20,0xad,0x13);
++#endif
++
+ namespace dxvk {
+ 
+   class DxgiFactory;
+@@ -50,6 +69,19 @@ namespace dxvk {
+ 
+     HRESULT Init();
+ 
++    /**
++     * \brief Records the composition surface handle it was made for
++     *
++     * The swap chain can then be found by that handle, or another handle
++     * to the same surface, until it is released.
++     */
++    HRESULT SetSurface(HANDLE hSurface);
++
++    /**
++     * \brief The newest swap chain made for that surface, with a reference
++     */
++    static HRESULT FindSurface(HANDLE hSurface, IWineDXGICompositionSwapChain** ppSwapChain);
++
+     ULONG STDMETHODCALLTYPE AddRef() final { return DxgiObject<IDXGISwapChain4>::AddRef(); }
+     ULONG STDMETHODCALLTYPE Release() final { return DxgiObject<IDXGISwapChain4>::Release(); }
+ 
+@@ -138,6 +170,8 @@ namespace dxvk {
+     std::vector<uint32_t>       m_frame;      /* the last presented frame, BGRA top-down */
+     UINT                        m_frameWidth = 0, m_frameHeight = 0;
+ 
++    HANDLE                      m_surface = nullptr;   /* the surface handle it was made for, our duplicate */
++
+   };
+ 
+ }
+diff --git a/src/dxgi/dxgi_factory.cpp b/src/dxgi/dxgi_factory.cpp
+index 470f411..b425f35 100644
+--- a/src/dxgi/dxgi_factory.cpp
++++ b/src/dxgi/dxgi_factory.cpp
+@@ -80,9 +80,97 @@ namespace dxvk {
+   }
+ 
+ 
++  DxgiFactoryMedia::DxgiFactoryMedia(DxgiFactory* pFactory)
++  : m_factory(pFactory) {
++
++  }
++
++
++  ULONG STDMETHODCALLTYPE DxgiFactoryMedia::AddRef() {
++    return m_factory->AddRef();
++  }
++
++
++  ULONG STDMETHODCALLTYPE DxgiFactoryMedia::Release() {
++    return m_factory->Release();
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiFactoryMedia::QueryInterface(
++          REFIID                  riid,
++          void**                  ppvObject) {
++    return m_factory->QueryInterface(riid, ppvObject);
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiFactoryMedia::CreateSwapChainForCompositionSurfaceHandle(
++          IUnknown*               pDevice,
++          HANDLE                  hSurface,
++    const DXGI_SWAP_CHAIN_DESC1*  pDesc,
++          IDXGIOutput*            pRestrictToOutput,
++          IDXGISwapChain1**       ppSwapChain) {
++    if (!ppSwapChain)
++      return DXGI_ERROR_INVALID_CALL;
++
++    InitReturnPtr(ppSwapChain);
++
++    if (!hSurface)
++      return E_INVALIDARG;
++
++    if (!pDevice || !pDesc || pDesc->Stereo || !pDesc->Width || !pDesc->Height
++     || (pDesc->SwapEffect != DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL && pDesc->SwapEffect != DXGI_SWAP_EFFECT_FLIP_DISCARD))
++      return DXGI_ERROR_INVALID_CALL;
++
++    Com<ID3D11Device> d3d11;
++    if (FAILED(pDevice->QueryInterface(__uuidof(ID3D11Device), reinterpret_cast<void**>(&d3d11)))) {
++      Logger::err("DxgiFactoryMedia::CreateSwapChainForCompositionSurfaceHandle: Not implemented for this device");
++      return E_NOTIMPL;
++    }
++
++    /* drawn at its size: unscaled (DXGI_SCALING_NONE) is fine here */
++    Com<DxgiCompositionSwapChain> swapchain = new DxgiCompositionSwapChain(m_factory, d3d11.ptr(), pDesc);
++    HRESULT hr = swapchain->Init();
++    if (FAILED(hr))
++      return hr;
++
++#ifndef SG_MUTANT_SURFACE_NOT_RECORDED
++    hr = swapchain->SetSurface(hSurface);
++    if (FAILED(hr))
++      return hr;
++#endif
++
++    *ppSwapChain = swapchain.ref();
++    return S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiFactoryMedia::CreateDecodeSwapChainForCompositionSurfaceHandle(
++          IUnknown*               pDevice,
++          HANDLE                  hSurface,
++          DXGI_DECODE_SWAP_CHAIN_DESC* pDesc,
++          IDXGIResource*          pYuvDecodeBuffers,
++          IDXGIOutput*            pRestrictToOutput,
++          IDXGIDecodeSwapChain**  ppSwapChain) {
++    Logger::err("DxgiFactoryMedia::CreateDecodeSwapChainForCompositionSurfaceHandle: Not implemented");
++    return E_NOTIMPL;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiFactoryMedia::swapchain_from_handle(
++          HANDLE                  handle,
++          IWineDXGICompositionSwapChain** swapchain) {
++    if (!swapchain)
++      return E_POINTER;
++
++    *swapchain = nullptr;
++    return DxgiCompositionSwapChain::FindSurface(handle, swapchain);
++  }
++
++
+   DxgiFactory::DxgiFactory(UINT Flags)
+   : m_instance        (g_dxvkInstance.acquire(0)),
+     m_interop         (this),
++    m_media           (this),
+     m_options         (g_dxgiOptions.acquire(m_instance->config())),
+     m_monitorInfo     (this, *m_options),
+     m_flags           (Flags),
+@@ -172,6 +260,18 @@ namespace dxvk {
+       return S_OK;
+     }
+ 
++#ifndef SG_MUTANT_NO_FACTORY_MEDIA
++    if (riid == __uuidof(IDXGIFactoryMedia)) {
++      *ppvObject = ref(static_cast<IDXGIFactoryMedia*>(&m_media));
++      return S_OK;
++    }
++
++    if (riid == __uuidof(IWineDXGISurfaceHandles)) {
++      *ppvObject = ref(static_cast<IWineDXGISurfaceHandles*>(&m_media));
++      return S_OK;
++    }
++#endif
++
+     if (riid == __uuidof(ID3DDestructionNotifier)) {
+       *ppvObject = ref(&m_destructionNotifier);
+       return S_OK;
+diff --git a/src/dxgi/dxgi_factory.h b/src/dxgi/dxgi_factory.h
+index d6a6808..a317012 100644
+--- a/src/dxgi/dxgi_factory.h
++++ b/src/dxgi/dxgi_factory.h
+@@ -6,6 +6,7 @@
+ #include "dxgi_adapter.h"
+ #include "dxgi_monitor.h"
+ #include "dxgi_options.h"
++#include "dxgi_composition.h"
+ 
+ #include "../dxvk/dxvk_instance.h"
+ #include "../util/util_hotpatch.h"
+@@ -53,6 +54,55 @@ namespace dxvk {
+   };
+ 
+ 
++  /**
++   * \brief Composition swap chains for surface handles (Stained Glass OS)
++   *
++   * IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle, with
++   * the composition swap chain of patch 0001, and IWineDXGISurfaceHandles:
++   * wine-sg's XAML SwapChainPanel, given the surface handle, finds the
++   * swap chain through it and shows it. Windows Terminal draws its
++   * terminal so; without it the pane stayed black under DXVK.
++   */
++  class DxgiFactoryMedia : public IDXGIFactoryMedia, public IWineDXGISurfaceHandles {
++
++  public:
++
++    DxgiFactoryMedia(DxgiFactory* pFactory);
++
++    ULONG STDMETHODCALLTYPE AddRef();
++
++    ULONG STDMETHODCALLTYPE Release();
++
++    HRESULT STDMETHODCALLTYPE QueryInterface(
++            REFIID                    riid,
++            void**                    ppvObject);
++
++    HRESULT STDMETHODCALLTYPE CreateSwapChainForCompositionSurfaceHandle(
++            IUnknown*                 pDevice,
++            HANDLE                    hSurface,
++      const DXGI_SWAP_CHAIN_DESC1*    pDesc,
++            IDXGIOutput*              pRestrictToOutput,
++            IDXGISwapChain1**         ppSwapChain);
++
++    HRESULT STDMETHODCALLTYPE CreateDecodeSwapChainForCompositionSurfaceHandle(
++            IUnknown*                 pDevice,
++            HANDLE                    hSurface,
++            DXGI_DECODE_SWAP_CHAIN_DESC* pDesc,
++            IDXGIResource*            pYuvDecodeBuffers,
++            IDXGIOutput*              pRestrictToOutput,
++            IDXGIDecodeSwapChain**    ppSwapChain);
++
++    HRESULT STDMETHODCALLTYPE swapchain_from_handle(
++            HANDLE                    handle,
++            IWineDXGICompositionSwapChain** swapchain);
++
++  private:
++
++    DxgiFactory* m_factory;
++
++  };
++
++
+   class DxgiFactory : public DxgiObject<IDXGIFactory7> {
+     
+   public:
+@@ -200,6 +250,7 @@ namespace dxvk {
+     
+     Rc<DxvkInstance> m_instance;
+     DxgiVkFactory    m_interop;
++    DxgiFactoryMedia m_media;
+     Rc<DxgiOptions>  m_options;
+     DxgiMonitorInfo  m_monitorInfo;
+     UINT             m_flags;
