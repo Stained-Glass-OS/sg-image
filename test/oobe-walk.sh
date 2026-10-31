@@ -37,7 +37,10 @@ seen() { journal | grep -c "$1"; }
 wait_for() {
     local t=0
     until [[ "$(seen "$1")" -ge "${2:-1}" ]]; do
-        (( t < ${3:-120} )) || { fail "the first-run setup never logged '$1'"; shot "stuck"; return 1; }
+        (( t < ${3:-120} )) || { fail "the first-run setup never logged '$1'"; shot "stuck"
+            # what it did see last (pages, toggles, keys): a flake on the privacy page
+            # (Enter after Space not taken) twice in four releases left nothing to go on
+            journal | tail -15 | sed 's/^/    sg-oobe: /'; return 1; }
         sleep 2; t=$(( t + 2 ))
     done
     sleep 1
