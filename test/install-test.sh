@@ -269,7 +269,11 @@ else fail "live account: $(ssh_guest 'getent passwd live; id live' 2>&1)"; fi
 if ssh_guest "test -f '/var/lib/stained-glass/prefix/drive_c/users/Public/Desktop/Install Stained Glass OS.lnk' \
         && test -f '/var/lib/stained-glass/prefix/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Install Stained Glass OS.lnk'"; then
     pass "'Install Stained Glass OS' is on the desktop and in the Start menu"
-else fail "no Install shortcuts: $(ssh_guest 'journalctl -b -u sg-live --no-pager -o cat | tail -5' 2>&1)"; fi
+else fail "no Install shortcuts: $(ssh_guest 'journalctl -b -u sg-live --no-pager -o cat | tail -5' 2>&1)"
+    # sg-live skips the shortcuts when sg-wineserver is not active (632: it
+    # was not, and Setup then took no keys): say why it was not
+    ssh_guest "systemctl --no-pager --lines=0 status sg-prefix-init sg-wineserver; systemctl list-jobs --no-pager | grep -E 'JOB|running'; journalctl -b -u sg-prefix-init -u sg-wineserver --no-pager -o short-monotonic | tail -30; uptime" 2>&1 | cut -c1-200 | sed 's/^/    /'
+fi
 set +e
 page welcome && sleep 2 && shot setup-welcome
 qmp key shift; sleep 1
