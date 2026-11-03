@@ -373,16 +373,36 @@ if [[ "${SG_SKIP_LOGIN:-0}" != "1" ]]; then
     sleep 2   # the window exists; give the compositor a moment to focus it
     python3 "$HERE/test/qmp.py" "$QMP_SOCK" screendump "$ARTIFACTS/screenshot-login.ppm" >/dev/null || true
     log "login screen is up; signing in as $LOGIN_USER"
-    # Warm up the greeter's keymap; the first keys are otherwise lost.
-    python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "x" >/dev/null
-    python3 "$HERE/test/qmp.py" "$QMP_SOCK" key backspace >/dev/null
-    sleep 1
-    python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "$LOGIN_USER" >/dev/null
-    python3 "$HERE/test/qmp.py" "$QMP_SOCK" key ret >/dev/null
-    sleep 4
-    python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "$(cat "$LAB_PASSWORD_FILE")" >/dev/null
-    python3 "$HERE/test/qmp.py" "$QMP_SOCK" key ret >/dev/null
+    type_credentials() {
+        # Warm up the greeter's keymap; the first keys are otherwise lost.
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "x" >/dev/null
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" key backspace >/dev/null
+        sleep 1
+        # Ctrl+A first: on a second try the box may hold what got through
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" key ctrl+a >/dev/null
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "$LOGIN_USER" >/dev/null
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" key ret >/dev/null
+        sleep 4
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" key ctrl+a >/dev/null
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" type "$(cat "$LAB_PASSWORD_FILE")" >/dev/null
+        python3 "$HERE/test/qmp.py" "$QMP_SOCK" key ret >/dev/null
+    }
+    type_credentials
     log "credentials typed; waiting for the session"
+    # Releases 621-628: under host load the VM sometimes takes none of the
+    # keys (the lock screen's clock stays up, no sign-in is even tried). The
+    # keys are typed once more if no session has begun after 60s; that it
+    # was needed is logged, so a greeter that really drops keys still shows.
+    deadline=$(( SECONDS + 60 ))
+    until ssh_guest "test -e /var/lib/stained-glass/state/session-\$(id -u $LOGIN_USER).env" 2>/dev/null; do
+        if (( SECONDS > deadline )); then
+            python3 "$HERE/test/qmp.py" "$QMP_SOCK" screendump "$ARTIFACTS/screenshot-keys-lost.ppm" >/dev/null || true
+            log "no session 60s after the credentials (screenshot-keys-lost.ppm): typing them once more"
+            type_credentials
+            break
+        fi
+        sleep 3
+    done
 fi
 
 log "running $CHECK_NAME in the guest"
