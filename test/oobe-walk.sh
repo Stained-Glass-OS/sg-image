@@ -160,6 +160,25 @@ for _ in 1 2 3 4; do                          # Accept: Firefox comes installed,
     [[ "$(seen 'key enter down')" -gt "$ENTERS" ]] && break
     qmp key ret; sleep 4
 done
+if [[ "$(seen 'key enter down')" -le "$ENTERS" ]]; then
+    # Release 635: Space turned Location on, then four Enters never reached
+    # the page's thread. Which layer loses them: the kernel's input device
+    # (QEMU), or the compositor/Xwayland/Wine above it?
+    ssh_guest "python3 -c '
+import glob, os, select, struct, time
+fds = [os.open(p, os.O_RDONLY | os.O_NONBLOCK) for p in glob.glob(\"/dev/input/event*\")]
+end = time.time() + 8
+while time.time() < end:
+    for fd in select.select(fds, [], [], 0.5)[0]:
+        d = os.read(fd, 24 * 64)
+        for i in range(0, len(d) - 23, 24):
+            _, _, t, c, v = struct.unpack(\"qqHHi\", d[i:i + 24])
+            if t == 1: print(\"kernel key\", c, v)
+' > /tmp/oobe-keys.txt 2>&1 < /dev/null &" 2>/dev/null
+    sleep 2; qmp key ret; sleep 7
+    echo "      Enter not taken on the privacy page; the guest's input devices saw:"
+    ssh_guest "cat /tmp/oobe-keys.txt; journalctl -b -t sg-oobe --no-pager -o cat | tail -3; ps -eo stat,wchan:20,comm | grep -iE 'oobe|Xwayland|sg-compositor|touchkbd'" 2>&1 | sed 's/^/        /'
+fi
 wait_for 'page done$' 1 180 && shot "done"
 if [[ "$(seen 'page browser$')" -eq 0 ]]; then pass "no browser page: Firefox comes installed"
 else fail "the browser page appeared although Firefox comes installed"; fi
