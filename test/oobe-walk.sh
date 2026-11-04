@@ -148,9 +148,18 @@ else
 fi
 echo "      the VM is online: $ONLINE"
 wait_for 'page privacy$' && shot privacy
-qmp key spc                                   # Location on
-sleep 1; shot privacy-location
-qmp key ret                                   # Accept: Firefox comes installed, no browser page
+# Press each key until the page logs it: release 634's walk lost the Space
+# here (nothing logged after the page), earlier ones the Enter after it.
+for _ in 1 2 3 4 5 6; do                      # Location on
+    journal | grep 'sg-oobe: toggle location' | tail -1 | grep -q ' on$' && break
+    qmp key spc; sleep 3
+done
+shot privacy-location
+ENTERS=$(seen 'key enter down')
+for _ in 1 2 3 4; do                          # Accept: Firefox comes installed, no browser page
+    [[ "$(seen 'key enter down')" -gt "$ENTERS" ]] && break
+    qmp key ret; sleep 4
+done
 wait_for 'page done$' 1 180 && shot "done"
 if [[ "$(seen 'page browser$')" -eq 0 ]]; then pass "no browser page: Firefox comes installed"
 else fail "the browser page appeared although Firefox comes installed"; fi
