@@ -52,7 +52,13 @@ choose() {
         journal | grep 'sg-oobe: selected' | tail -1 | grep -q "selected $2\$" && return 0
         qmp key "$1"; sleep 1.5
     done
-    fail "could not select $2"; return 1
+    fail "could not select $2"
+    # Release 640: the dualboot walk's first page took no key at all and
+    # sg-oobe64.exe was a zombie leader (Zl) by the end. Is it alive, and
+    # did it log a fault?
+    [[ -n "${CHOSE_DUMPED:-}" ]] && return 1; CHOSE_DUMPED=1
+    ssh_guest "for p in \$(pgrep -x sg-oobe64.exe); do ps -L -o tid,stat,wchan:22,comm -p \$p; done; journalctl -b -t sg-oobe --no-pager -o cat | grep -E 'err:|Unhandled|exception|fault|wine:' | grep -v xkbcomp | tail -12; dmesg | grep -iE 'segfault|oom|killed process|traps' | tail -5" 2>&1 | cut -c1-200 | sed 's/^/    oobe: /'
+    return 1
 }
 
 t=0
@@ -112,6 +118,7 @@ PY
 is_art() { [[ -n "$(art_px "$1" 2>/dev/null)" ]]; }
 heading() {  # the card's upper part, relative to the screen's size
     local wh; wh=$(convert "$ART/oobe-$1.ppm" -format '%w %h' info: 2>/dev/null); set -- "$1" $wh
+    [[ $# -ge 3 ]] || return 0   # no screenshot to measure
     convert "$ART/oobe-$1.ppm" -crop "$(( $2 * 45 / 100 ))x$(( $3 * 28 / 100 ))+$(( $2 * 45 / 100 ))+$(( $3 * 12 / 100 ))" +repage -format '%#' info: 2>/dev/null
 }
 # input only once its first page is on the screen ("sg-oobe: ready", sg-session
