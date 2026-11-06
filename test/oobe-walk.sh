@@ -184,7 +184,7 @@ while time.time() < end:
 ' > /tmp/oobe-keys.txt 2>&1 < /dev/null &" 2>/dev/null
     sleep 2; qmp key ret; sleep 7
     echo "      Enter not taken on the privacy page; the guest's input devices saw:"
-    ssh_guest "cat /tmp/oobe-keys.txt; journalctl -b -t sg-oobe --no-pager -o cat | tail -3; ps -eo stat,wchan:20,comm | grep -iE 'oobe|Xwayland|sg-compositor|touchkbd'" 2>&1 | sed 's/^/        /'
+    ssh_guest "cat /tmp/oobe-keys.txt; journalctl -b -t sg-oobe --no-pager -o cat | tail -3; journalctl -b -t sg-oobe --no-pager -o cat | grep -E 'sg-oobe: (active|inactive|foreground)' | tail -6; ps -eo stat,wchan:20,comm | grep -iE 'oobe|Xwayland|sg-compositor|touchkbd'" 2>&1 | sed 's/^/        /'
 fi
 wait_for 'page done$' 1 180 && shot "done"
 if [[ "$(seen 'page browser$')" -eq 0 ]]; then pass "no browser page: Firefox comes installed"
