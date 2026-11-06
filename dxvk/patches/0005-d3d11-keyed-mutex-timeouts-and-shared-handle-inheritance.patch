@@ -1,0 +1,64 @@
+From: Stained Glass OS <ke7oxh@gmail.com>
+Subject: [PATCH] d3d11: keyed mutex timeouts and shared handle inheritance
+
+Two slips in DXVK's Direct3D 11 resource sharing, found with wine-sg 6261
+(VK_KHR_external_memory_win32 and external_semaphore_win32), which works
+around both in Wine as well:
+
+- DxvkKeyedMutex::AcquireSync computed its NT timeout as
+  "DWORD milliseconds * -10000" in 32 bits: a small positive number, an
+  absolute time in 1601, so every wait that was not already satisfied
+  timed out at once (and INFINITE became 10000). It is now computed in
+  64 bits, and INFINITE waits with no timeout.
+- IDXGIResource1::CreateSharedHandle passed its SECURITY_ATTRIBUTES as the
+  security descriptor of the object attributes. It now passes the
+  descriptor inside them, and bInheritHandle makes the handle inheritable
+  (OBJ_INHERIT): a child process given the handle by inheritance could
+  not open the texture.
+
+---
+--- a/src/d3d11/d3d11_resource.cpp
++++ b/src/d3d11/d3d11_resource.cpp
+@@ -303,7 +303,8 @@
+ 
+     OBJECT_ATTRIBUTES attr = { };
+     attr.Length = sizeof(attr);
+-    attr.SecurityDescriptor = const_cast<SECURITY_ATTRIBUTES*>(pAttributes);
++    /* the descriptor inside the SECURITY_ATTRIBUTES, and its inheritance */
++    attr.SecurityDescriptor = pAttributes ? pAttributes->lpSecurityDescriptor : nullptr;
+ 
+     WCHAR buffer[MAX_PATH];
+     UNICODE_STRING name_str;
+@@ -320,6 +321,8 @@
+         attr.ObjectName = &name_str;
+         attr.Attributes = OBJ_CASE_INSENSITIVE;
+     }
++    if (pAttributes && pAttributes->bInheritHandle)
++        attr.Attributes |= OBJ_INHERIT;
+ 
+     D3DKMT_HANDLE local = texture->GetImage()->storage()->kmtLocal();
+     auto keyedMutex = texture->GetImage()->getKeyedMutex();
+--- a/src/dxvk/dxvk_image.cpp
++++ b/src/dxvk/dxvk_image.cpp
+@@ -60,8 +60,9 @@
+     D3DKMT_ACQUIREKEYEDMUTEX acquire = { };
+     acquire.hKeyedMutex = m_kmtLocal;
+     acquire.Key = key;
+-    acquire.pTimeout = &timeout;
+-    timeout.QuadPart = milliseconds * -10000;
++    /* in 64 bits: DWORD * -10000 wraps to a small positive (absolute) time */
++    acquire.pTimeout = milliseconds == INFINITE ? nullptr : &timeout;
++    timeout.QuadPart = LONGLONG(milliseconds) * -10000;
+ 
+     NTSTATUS status = D3DKMTAcquireKeyedMutex(&acquire);
+     if (status == STATUS_TIMEOUT)
+--- a/src/util/util_gdi.h
++++ b/src/util/util_gdi.h
+@@ -306,6 +306,7 @@
+       void *SecurityQualityOfService;
+   } OBJECT_ATTRIBUTES;
+ 
++  #define OBJ_INHERIT          0x00000002
+   #define OBJ_CASE_INSENSITIVE 0x00000040
+ 
+   /* undocumented D3D runtime data descriptors */
