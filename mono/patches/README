@@ -197,3 +197,14 @@ wine-mono-0004-winmetadata-windows-assembly.patch (sg15)
       load file or assembly 'Windows, Version=255.255.255.255'".
     Gate: test/mono-fork-test.sh (sg15 section); the sg14 build fails its new
       checks.
+
+mono-0005-variant-missing-dbnull.patch (sg16)
+    corlib Variant.SetValue: Type.Missing becomes VT_ERROR
+      DISP_E_PARAMNOTFOUND and DBNull VT_NULL, as .NET Framework marshals
+      them. An omitted optional argument went to COM as a VT_DISPATCH of
+      the Missing object: Visual Studio's installer calls
+      ITaskService.Connect() with no arguments, and Wine's Task Scheduler
+      refused the "server" (ERROR_BAD_NETPATH): "Failed to create scheduled
+      task: BackgroundDownload" 0x80070035.
+    Gate: test/mono-fork-test.sh (sg16 section); the sg15 build fails its
+      three new checks.

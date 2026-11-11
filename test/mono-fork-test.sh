@@ -47,6 +47,11 @@
 #     Windows.Networking.Connectivity answers (VS asks the connection's cost);
 #     Marshal.ThrowExceptionForHR ignores a success code (the Windows SDK's
 #     setup passes a Win32 error, 2, after a call that succeeded).
+#   - (sg16) an omitted optional argument (Type.Missing) goes to COM as
+#     VT_ERROR DISP_E_PARAMNOTFOUND and DBNull as VT_NULL, as .NET Framework
+#     marshals them: Missing went out as a VT_DISPATCH, and Visual Studio's
+#     installer, calling ITaskService.Connect() with no arguments, failed
+#     "Failed to create scheduled task" 0x80070035.
 # Programs are compiled here with Mono's own mcs.exe, under Wine; the image's
 # addons tree is the Mono that runs them.
 #
@@ -502,4 +507,41 @@ PY
 out=$(cd "$C" && timeout 120 "$WINE" winrt.exe 2>&1 | tr -d '\r')
 case "$(v winrt)" in Unrestricted|noprofile) pass "a WindowsRuntime reference loads WinMetadata/Windows.winmd: the connection's cost is '$(v winrt)'" ;;
     *) fail "Windows Runtime reference: '$(v winrt)' $(printf '%s' "$out" | grep -m1 -i 'could not load\|exception')" ;; esac
+# (sg16) Type.Missing and DBNull as VARIANTs, and an early-bound COM call
+# with the optional arguments left out (Wine's Task Scheduler)
+cat > "$C/sg16.cs" <<'CS'
+using System;
+using System.Runtime.InteropServices;
+[ComImport, Guid("2FABA4C7-4DA9-4013-9697-20CC3FD40F85"), InterfaceType(ComInterfaceType.InterfaceIsDual)]
+interface ITaskService {
+    [DispId(1)] object GetFolder([MarshalAs(UnmanagedType.BStr)] string path);
+    [DispId(2)] object GetRunningTasks(int flags);
+    [DispId(3)] object NewTask(uint flags);
+    [DispId(4)] void Connect([Optional] object serverName, [Optional] object user, [Optional] object domain, [Optional] object password);
+    [DispId(5)] bool Connected { get; }
+}
+[ComImport, Guid("0F87369F-A4E5-4CFC-BD3E-73E6154572DD")]
+class TaskScheduler { }
+class P {
+    static void Main() {
+        IntPtr v = Marshal.AllocHGlobal(24);
+        Marshal.GetNativeVariantForObject(Type.Missing, v);
+        Console.WriteLine("missing=" + Marshal.ReadInt16(v) + "|" + Marshal.ReadInt32(v, 8).ToString("x8"));
+        Marshal.GetNativeVariantForObject(DBNull.Value, v);
+        Console.WriteLine("dbnull=" + Marshal.ReadInt16(v));
+        try {
+            var ts = (ITaskService)new TaskScheduler();
+            ts.Connect();
+            Console.WriteLine("connect=" + ts.Connected);
+        } catch (Exception e) { Console.WriteLine("connect=" + e.GetType().Name + ": " + e.Message); }
+    }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg16.exe sg16.cs >"$T/mcs16.out" 2>&1)
+[ -f "$C/sg16.exe" ] || { fail "the sg16 probe did not compile: $(cat "$T/mcs16.out")"; exit 1; }
+out=$(cd "$C" && timeout 180 "$WINE" sg16.exe 2>&1 | tr -d '\r')
+[ "$(v missing)" = "10|80020004" ] && pass "Type.Missing is VT_ERROR DISP_E_PARAMNOTFOUND" || fail "Missing as a VARIANT: '$(v missing)'"
+[ "$(v dbnull)" = 1 ] && pass "DBNull is VT_NULL" || fail "DBNull as a VARIANT: '$(v dbnull)'"
+[ "$(v connect)" = True ] && pass "ITaskService.Connect() with its optional arguments left out connects (Visual Studio's installer)" \
+    || fail "Connect with omitted arguments: '$(v connect)'"
 exit $RC

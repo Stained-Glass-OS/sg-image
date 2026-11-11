@@ -1,0 +1,25 @@
+diff --git a/mcs/class/corlib/System/Variant.cs b/mcs/class/corlib/System/Variant.cs
+index 0fe1b53c..6ffc1b8a 100644
+--- a/mcs/class/corlib/System/Variant.cs
++++ b/mcs/class/corlib/System/Variant.cs
+@@ -321,6 +321,20 @@ public void SetValue(object obj) {
+ 				pdispVal = Marshal.GetIDispatchForObject(((DispatchWrapper)obj).WrappedObject);
+ 			}
+ #endif
++			// .NET Framework: an omitted optional argument (Type.Missing) is
++			// VT_ERROR DISP_E_PARAMNOTFOUND, DBNull is VT_NULL. Without these
++			// Missing went out as a VT_DISPATCH of the Missing object, and
++			// ITaskService.Connect() called with no arguments failed
++			// ERROR_BAD_NETPATH (Visual Studio's installer).
++			else if (t == typeof (System.Reflection.Missing))
++			{
++				vt = (short)VarEnum.VT_ERROR;
++				lVal = unchecked((int)0x80020004);
++			}
++			else if (t == typeof (DBNull))
++			{
++				vt = (short)VarEnum.VT_NULL;
++			}
+ 			else if (t.UnderlyingSystemType.IsArray)
+ 			{
+ 				int tmp;
