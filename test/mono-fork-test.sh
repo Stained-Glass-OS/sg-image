@@ -52,6 +52,11 @@
 #     marshals them: Missing went out as a VT_DISPATCH, and Visual Studio's
 #     installer, calling ITaskService.Connect() with no arguments, failed
 #     "Failed to create scheduled task" 0x80070035.
+#   - (sg17) an array of structures (Guid[]) goes to COM as a
+#     SAFEARRAY(VT_RECORD) carrying an IRecordInfo, and comes back, as .NET
+#     marshals it (Visual Studio's IVsUIContextManagerPrivate); a CCW's
+#     GetIDsOfNames with a NULL name is DISP_E_UNKNOWNNAME, not a crash;
+#     AppDomainSetup.TargetFrameworkName can be set (VsAppDomainManager).
 # Programs are compiled here with Mono's own mcs.exe, under Wine; the image's
 # addons tree is the Mono that runs them.
 #
@@ -544,4 +549,59 @@ out=$(cd "$C" && timeout 180 "$WINE" sg16.exe 2>&1 | tr -d '\r')
 [ "$(v dbnull)" = 1 ] && pass "DBNull is VT_NULL" || fail "DBNull as a VARIANT: '$(v dbnull)'"
 [ "$(v connect)" = True ] && pass "ITaskService.Connect() with its optional arguments left out connects (Visual Studio's installer)" \
     || fail "Connect with omitted arguments: '$(v connect)'"
+# (sg17) Guid[] as SAFEARRAY(VT_RECORD) both ways, a CCW asked for a NULL
+# name, and a settable AppDomainSetup.TargetFrameworkName (Visual Studio's IDE)
+cat > "$C/sg17.cs" <<'CS'
+using System;
+using System.Runtime.InteropServices;
+[ComVisible(true), ClassInterface(ClassInterfaceType.AutoDispatch)]
+public class Disp { public void Hello() { } }
+public class P {
+    [DllImport("oleaut32.dll")] static extern int SafeArrayGetVartype(IntPtr psa, out ushort vt);
+    [DllImport("oleaut32.dll")] static extern int SafeArrayGetRecordInfo(IntPtr psa, out IntPtr info);
+    [DllImport("oleaut32.dll")] static extern int SafeArrayAccessData(IntPtr psa, out IntPtr data);
+    [DllImport("oleaut32.dll")] static extern int SafeArrayUnaccessData(IntPtr psa);
+    [DllImport("oleaut32.dll")] static extern int VariantClear(IntPtr v);
+    [DllImport("oleaut32.dll")]
+    static extern int SafeArrayCopy(IntPtr psa, [MarshalAs(UnmanagedType.SafeArray, SafeArraySubType = VarEnum.VT_RECORD)] out Guid[] copy);
+    delegate int GetIDsOfNamesFn(IntPtr self, ref Guid riid, IntPtr[] names, int count, int lcid, int[] ids);
+    public static void Main() {
+        var a = new Guid[] { new Guid("01234567-89ab-cdef-0123-456789abcdef"), Guid.Empty };
+        IntPtr v = Marshal.AllocHGlobal(32);
+        try {
+            Marshal.GetNativeVariantForObject(a, v);
+            IntPtr psa = Marshal.ReadIntPtr(v, 8), info, data;
+            ushort evt; SafeArrayGetVartype(psa, out evt);
+            bool hasinfo = SafeArrayGetRecordInfo(psa, out info) == 0 && info != IntPtr.Zero;
+            if (hasinfo) Marshal.Release(info);
+            SafeArrayAccessData(psa, out data);
+            bool same = (Guid)Marshal.PtrToStructure(data, typeof(Guid)) == a[0];
+            SafeArrayUnaccessData(psa);
+            Guid[] back; int hr = SafeArrayCopy(psa, out back);
+            bool round = hr == 0 && back != null && back.Length == 2 && back[0] == a[0];
+            Console.WriteLine("record=" + Marshal.ReadInt16(v).ToString("x") + "|" + evt + "|" + hasinfo + "|" + same + "|" + round);
+            VariantClear(v);
+        } catch (Exception e) { Console.WriteLine("record=" + e.GetType().Name + ": " + e.Message); }
+        try {
+            IntPtr disp = Marshal.GetIDispatchForObject(new Disp());
+            IntPtr fn = Marshal.ReadIntPtr(Marshal.ReadIntPtr(disp), 5 * IntPtr.Size);
+            var gin = (GetIDsOfNamesFn)Marshal.GetDelegateForFunctionPointer(fn, typeof(GetIDsOfNamesFn));
+            Guid none = Guid.Empty; int[] ids = new int[1];
+            Console.WriteLine("nullname=" + gin(disp, ref none, new IntPtr[] { IntPtr.Zero }, 1, 0, ids).ToString("x8"));
+        } catch (Exception e) { Console.WriteLine("nullname=" + e.GetType().Name); }
+        try {
+            var s = new AppDomainSetup();
+            typeof(AppDomainSetup).GetProperty("TargetFrameworkName").SetValue(s, ".NETFramework,Version=v4.7.2");
+            Console.WriteLine("tfm=" + s.TargetFrameworkName + "|" + (new AppDomainSetup().TargetFrameworkName == s.TargetFrameworkName));
+        } catch (Exception e) { Console.WriteLine("tfm=" + e.GetType().Name); }
+    }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg17.exe sg17.cs >"$T/mcs17.out" 2>&1)
+[ -f "$C/sg17.exe" ] || { fail "the sg17 probe did not compile: $(cat "$T/mcs17.out")"; exit 1; }
+out=$(cd "$C" && timeout 180 "$WINE" sg17.exe 2>&1 | tr -d '\r')
+[ "$(v record)" = "2024|36|True|True|True" ] && pass "Guid[] goes to COM as SAFEARRAY(VT_RECORD) with an IRecordInfo and comes back (Visual Studio's IDE)" \
+    || fail "Guid[] as a SAFEARRAY: '$(v record)'"
+[ "$(v nullname)" = 80020006 ] && pass "a CCW's GetIDsOfNames with a NULL name is DISP_E_UNKNOWNNAME" || fail "GetIDsOfNames(NULL): '$(v nullname)'"
+[ "$(v tfm)" = ".NETFramework,Version=v4.7.2|False" ] && pass "AppDomainSetup.TargetFrameworkName can be set (VsAppDomainManager)" || fail "TargetFrameworkName: '$(v tfm)'"
 exit $RC

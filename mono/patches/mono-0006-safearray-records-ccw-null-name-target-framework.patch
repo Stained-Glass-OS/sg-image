@@ -1,0 +1,453 @@
+diff --git a/mcs/class/corlib/System/AppDomainSetup.cs b/mcs/class/corlib/System/AppDomainSetup.cs
+index 77001f8c..92022548 100644
+--- a/mcs/class/corlib/System/AppDomainSetup.cs
++++ b/mcs/class/corlib/System/AppDomainSetup.cs
+@@ -347,8 +347,26 @@ public bool DisallowCodeDownload {
+ 			}
+ 		}
+ 
+-		public string TargetFrameworkName =>
+-			Assembly.GetEntryAssembly()?.GetCustomAttribute<TargetFrameworkAttribute>()?.FrameworkName;
++		// A host (an AppDomainManager's InitializeNewDomain) can set the framework the domain targets.
++		// Kept outside the instance so the layout the runtime shares with this class stays the same.
++		static readonly ConditionalWeakTable<AppDomainSetup, string> target_framework_names =
++			new ConditionalWeakTable<AppDomainSetup, string> ();
++
++		public string TargetFrameworkName {
++			get {
++				string name;
++				if (target_framework_names.TryGetValue (this, out name))
++					return name;
++				return Assembly.GetEntryAssembly()?.GetCustomAttribute<TargetFrameworkAttribute>()?.FrameworkName;
++			}
++			set {
++				lock (target_framework_names) {
++					target_framework_names.Remove (this);
++					if (value != null)
++						target_framework_names.Add (this, value);
++				}
++			}
++		}
+ 
+ 		public ActivationArguments ActivationArguments {
+ 			get {
+diff --git a/mono/metadata/cominterop.c b/mono/metadata/cominterop.c
+index d8782d5f..0355855d 100644
+--- a/mono/metadata/cominterop.c
++++ b/mono/metadata/cominterop.c
+@@ -2541,6 +2541,9 @@ static MonoMarshalVariant vt_from_class (MonoClass *klass)
+ 		else if (!strcmp (name, "DispatchWrapper"))
+ 			return MONO_VARIANT_DISPATCH;
+ 	}
++	else if (m_class_get_byval_arg (klass)->type == MONO_TYPE_VALUETYPE && !m_class_is_enumtype (klass))
++		/* a structure (System.Guid, a user struct): .NET passes arrays of them as SAFEARRAY(VT_RECORD) */
++		return MONO_VARIANT_RECORD;
+ 	else if (!mono_class_is_transparent_proxy (klass) && cominterop_can_support_dispatch (klass))
+ 		return MONO_VARIANT_DISPATCH;
+ 
+@@ -3569,7 +3572,13 @@ cominterop_ccw_get_ids_of_names_impl (MonoCCWInterface* ccwe, gpointer riid,
+ 	if (!mono_domain_get ())
+ 		mono_thread_attach_external_native_thread (mono_get_root_domain (), FALSE);
+ 
+-	req_name = mono_unicode_to_external (rgszNames [0]);
++	/* a NULL name (Visual Studio's msenv passes one) is an unknown name, as on Windows */
++	req_name = rgszNames [0] ? mono_unicode_to_external (rgszNames [0]) : NULL;
++	if (!req_name) {
++		for (i = 0; i < cNames; i++)
++			rgDispId [i] = MONO_E_DISPID_UNKNOWN;
++		return MONO_E_DISP_E_UNKNOWNNAME;
++	}
+ 
+ 	for (i = ccwe->methods_count; i--;) {
+ 		MonoMethod* method = NULL;
+@@ -3581,7 +3590,7 @@ cominterop_ccw_get_ids_of_names_impl (MonoCCWInterface* ccwe, gpointer riid,
+ 		else
+ 			name = ccwe->methods [i].prop->name;
+ 
+-		if (!g_strcasecmp (req_name, name)) {
++		if (name && !g_strcasecmp (req_name, name)) {
+ 			rgDispId [0] = ccwe->methods [i].dispid;
+ 			g_free (req_name);
+ 			if (cNames > 1) {
+@@ -3594,14 +3603,14 @@ cominterop_ccw_get_ids_of_names_impl (MonoCCWInterface* ccwe, gpointer riid,
+ 					mono_method_get_param_names (method, arg_names);
+ 				}
+ 				for (i = 1; i < cNames; i++) {
+-					req_name = mono_unicode_to_external (rgszNames [i]);
+-					for (j = 0; j < argc; j++) {
+-						if (!g_strcasecmp (req_name, arg_names [j])) {
++					req_name = rgszNames [i] ? mono_unicode_to_external (rgszNames [i]) : NULL;
++					for (j = 0; req_name && j < argc; j++) {
++						if (arg_names [j] && !g_strcasecmp (req_name, arg_names [j])) {
+ 							rgDispId [i] = j;
+ 							break;
+ 						}
+ 					}
+-					if (j >= argc) {
++					if (!req_name || j >= argc) {
+ 						rgDispId [i] = MONO_E_DISPID_UNKNOWN;
+ 						ret = MONO_E_DISP_E_UNKNOWNNAME;
+ 					}
+@@ -4788,6 +4797,253 @@ ves_icall_System_Variant_SafeArrayDestroyInternal (gpointer safearray, MonoError
+ 	mono_marshal_safearray_end (safearray, NULL);
+ }
+ 
++#if defined (HOST_WIN32) && HAVE_API_SUPPORT_WIN32_SAFE_ARRAY
++/* The IRecordInfo of a blittable structure, which a SAFEARRAY(VT_RECORD) of it carries: oleaut32 sizes,
++ * copies and clears the elements through it, and the receiver can ask the record's GUID and name. */
++typedef struct {
++	IRecordInfo iface;
++	LONG ref;
++	ULONG size;
++	GUID guid;
++	gunichar2 *name;
++} MonoRecordInfo;
++
++static const IID record_info_iid_unknown = {0x00000000, 0x0000, 0x0000, {0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
++static const IID record_info_iid = {0x0000002F, 0x0000, 0x0000, {0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
++
++static MonoRecordInfo *
++record_info_impl (IRecordInfo *iface)
++{
++	return (MonoRecordInfo *)iface;
++}
++
++static HRESULT STDMETHODCALLTYPE
++record_info_QueryInterface (IRecordInfo *iface, REFIID riid, void **obj)
++{
++	if (!memcmp (riid, &record_info_iid_unknown, sizeof (IID)) || !memcmp (riid, &record_info_iid, sizeof (IID))) {
++		*obj = iface;
++		iface->lpVtbl->AddRef (iface);
++		return S_OK;
++	}
++	*obj = NULL;
++	return E_NOINTERFACE;
++}
++
++static ULONG STDMETHODCALLTYPE
++record_info_AddRef (IRecordInfo *iface)
++{
++	return InterlockedIncrement (&record_info_impl (iface)->ref);
++}
++
++static ULONG STDMETHODCALLTYPE
++record_info_Release (IRecordInfo *iface)
++{
++	MonoRecordInfo *info = record_info_impl (iface);
++	ULONG ref = InterlockedDecrement (&info->ref);
++	if (!ref) {
++		g_free (info->name);
++		g_free (info);
++	}
++	return ref;
++}
++
++static HRESULT STDMETHODCALLTYPE
++record_info_RecordInit (IRecordInfo *iface, PVOID data)
++{
++	if (!data)
++		return E_INVALIDARG;
++	memset (data, 0, record_info_impl (iface)->size);
++	return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE
++record_info_RecordClear (IRecordInfo *iface, PVOID data)
++{
++	/* a blittable structure holds nothing to release */
++	return data ? S_OK : E_INVALIDARG;
++}
++
++static HRESULT STDMETHODCALLTYPE
++record_info_RecordCopy (IRecordInfo *iface, PVOID src, PVOID dst)
++{
++	if (!src || !dst)
++		return E_INVALIDARG;
++	memmove (dst, src, record_info_impl (iface)->size);
++	return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE
++record_info_GetGuid (IRecordInfo *iface, GUID *guid)
++{
++	if (!guid)
++		return E_INVALIDARG;
++	*guid = record_info_impl (iface)->guid;
++	return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE
++record_info_GetName (IRecordInfo *iface, BSTR *name)
++{
++	if (!name)
++		return E_INVALIDARG;
++	*name = SysAllocString ((OLECHAR *)record_info_impl (iface)->name);
++	return *name ? S_OK : E_OUTOFMEMORY;
++}
++
++static HRESULT STDMETHODCALLTYPE
++record_info_GetSize (IRecordInfo *iface, ULONG *size)
++{
++	if (!size)
++		return E_INVALIDARG;
++	*size = record_info_impl (iface)->size;
++	return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE
++record_info_GetTypeInfo (IRecordInfo *iface, ITypeInfo **info)
++{
++	if (info)
++		*info = NULL;
++	return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE
++record_info_GetField (IRecordInfo *iface, PVOID data, LPCOLESTR name, VARIANT *field)
++{
++	return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE
++record_info_GetFieldNoCopy (IRecordInfo *iface, PVOID data, LPCOLESTR name, VARIANT *field, PVOID *datacarray)
++{
++	return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE
++record_info_PutField (IRecordInfo *iface, ULONG flags, PVOID data, LPCOLESTR name, VARIANT *field)
++{
++	return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE
++record_info_PutFieldNoCopy (IRecordInfo *iface, ULONG flags, PVOID data, LPCOLESTR name, VARIANT *field)
++{
++	return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE
++record_info_GetFieldNames (IRecordInfo *iface, ULONG *count, BSTR *names)
++{
++	return E_NOTIMPL;
++}
++
++static BOOL STDMETHODCALLTYPE
++record_info_IsMatchingType (IRecordInfo *iface, IRecordInfo *other)
++{
++	GUID guid;
++	if (!other)
++		return FALSE;
++	if (other == iface)
++		return TRUE;
++	return SUCCEEDED (other->lpVtbl->GetGuid (other, &guid)) && !memcmp (&guid, &record_info_impl (iface)->guid, sizeof (GUID));
++}
++
++static PVOID STDMETHODCALLTYPE
++record_info_RecordCreate (IRecordInfo *iface)
++{
++	PVOID data = CoTaskMemAlloc (record_info_impl (iface)->size);
++	if (data)
++		record_info_RecordInit (iface, data);
++	return data;
++}
++
++static HRESULT STDMETHODCALLTYPE
++record_info_RecordCreateCopy (IRecordInfo *iface, PVOID src, PVOID *dst)
++{
++	if (!src || !dst)
++		return E_INVALIDARG;
++	if (!(*dst = record_info_RecordCreate (iface)))
++		return E_OUTOFMEMORY;
++	return record_info_RecordCopy (iface, src, *dst);
++}
++
++static HRESULT STDMETHODCALLTYPE
++record_info_RecordDestroy (IRecordInfo *iface, PVOID data)
++{
++	CoTaskMemFree (data);
++	return S_OK;
++}
++
++static IRecordInfoVtbl record_info_vtbl = {
++	record_info_QueryInterface,
++	record_info_AddRef,
++	record_info_Release,
++	record_info_RecordInit,
++	record_info_RecordClear,
++	record_info_RecordCopy,
++	record_info_GetGuid,
++	record_info_GetName,
++	record_info_GetSize,
++	record_info_GetTypeInfo,
++	record_info_GetField,
++	record_info_GetFieldNoCopy,
++	record_info_PutField,
++	record_info_PutFieldNoCopy,
++	record_info_GetFieldNames,
++	record_info_IsMatchingType,
++	record_info_RecordCreate,
++	record_info_RecordCreateCopy,
++	record_info_RecordDestroy
++};
++
++static IRecordInfo *
++record_info_new (MonoClass *klass)
++{
++	MonoRecordInfo *info = g_new0 (MonoRecordInfo, 1);
++	info->iface.lpVtbl = &record_info_vtbl;
++	info->ref = 1;
++	info->size = mono_class_value_size (klass, NULL);
++	cominterop_class_guid (klass, (guint8 *)&info->guid);
++	info->name = g_utf8_to_utf16 (m_class_get_name (klass), -1, NULL, NULL, NULL);
++	return &info->iface;
++}
++
++/* An array of blittable structures as a SAFEARRAY(VT_RECORD), elements copied as they are. */
++static gpointer
++safearray_from_record_array (MonoArray *array, guint32 dim, SAFEARRAYBOUND *bnd, MonoError *error)
++{
++	MonoClass *eklass = m_class_get_element_class (mono_object_class (array));
++	SAFEARRAY *safearray;
++	IRecordInfo *info;
++	guint8 *data;
++	gsize size, count;
++
++	if (!m_class_is_blittable (eklass)) {
++		mono_error_set_not_supported (error, "SAFEARRAY of the structure %s: only blittable structures are supported", m_class_get_name (eklass));
++		return NULL;
++	}
++	info = record_info_new (eklass);
++	safearray = SafeArrayCreateEx (VT_RECORD, dim, bnd, info);
++	info->lpVtbl->Release (info);
++	if (!safearray) {
++		mono_error_set_execution_engine (error, "Failed to create SafeArray");
++		return NULL;
++	}
++	size = mono_class_value_size (eklass, NULL);
++	count = mono_array_length_internal (array);
++	if (count && size == safearray->cbElements && SUCCEEDED (SafeArrayAccessData (safearray, (void **)&data))) {
++		/* a managed array and a SAFEARRAY both keep the elements with the last index changing fastest */
++		memcpy (data, mono_array_addr_with_size_internal (array, size, 0), size * count);
++		SafeArrayUnaccessData (safearray);
++	} else if (count) {
++		SafeArrayDestroy (safearray);
++		mono_error_set_execution_engine (error, "Failed to create SafeArray");
++		return NULL;
++	}
++	return safearray;
++}
++#endif
++
+ gpointer
+ mono_marshal_safearray_from_array_impl (MonoArrayHandle rarray, guint32 vt, MonoError *error)
+ {
+@@ -4815,6 +5071,14 @@ mono_marshal_safearray_from_array_impl (MonoArrayHandle rarray, guint32 vt, Mono
+ 		bnd [0].cElements = mono_array_length_internal (array);
+ 	}
+ 
++#if defined (HOST_WIN32) && HAVE_API_SUPPORT_WIN32_SAFE_ARRAY
++	if (vt == VT_RECORD) {
++		gpointer records = safearray_from_record_array (array, dim, bnd, error);
++		g_free (bnd);
++		return records;
++	}
++#endif
++
+ 	gpointer safearray = mono_marshal_safearray_create_internal (vt, dim, bnd);
+ 	if (!safearray) {
+ 		mono_error_set_execution_engine (error, "Failed to create SafeArray");
+@@ -4843,16 +5107,17 @@ mono_marshal_safearray_from_array_impl (MonoArrayHandle rarray, guint32 vt, Mono
+ 		if (mono_marshal_safearray_get_value_internal (safearray, idx, &val) >= 0) {
+ 			gpointer arg [1] = { &i };
+ 			MonoObject* obj = mono_runtime_invoke_checked (get_value, (MonoObject*)array, arg, error);
+-			if (mono_error_set_pending_exception (error)) {
+-				ves_icall_System_Variant_SafeArrayDestroyInternal (safearray, error);
++			/* the caller raises it: a pending exception set here as well cleans the error twice */
++			if (!is_ok (error)) {
++				mono_marshal_safearray_end (safearray, NULL);
+ 				safearray = NULL;
+ 				goto leave;
+ 			}
+ 
+ 			gpointer args [3] = { obj, &vt, &val };
+ 			mono_runtime_invoke_checked (set_value_at, NULL, args, error);
+-			if (mono_error_set_pending_exception (error)) {
+-				ves_icall_System_Variant_SafeArrayDestroyInternal (safearray, error);
++			if (!is_ok (error)) {
++				mono_marshal_safearray_end (safearray, NULL);
+ 				safearray = NULL;
+ 				goto leave;
+ 			}
+@@ -4888,7 +5153,10 @@ mono_marshal_safearray_destroy_impl (gpointer safearray, MonoError *error)
+ {
+ #ifdef HOST_WIN32
+ 	HRESULT hr = SafeArrayDestroy (safearray);
+-	if (FAILED(hr))
++	/* a callee that keeps the array locked past the call (Visual Studio's
++	 * IVsUIContextManagerPrivate.InvokeCallbackUnderLock) only keeps it alive: the CLR does not fail
++	 * the call for that */
++	if (FAILED(hr) && hr != DISP_E_ARRAYISLOCKED)
+ 		mono_error_set_execution_engine (error, "SafeArrayDestroy failed with hr 0x%x", hr);
+ #endif
+ }
+@@ -5020,13 +5288,41 @@ mono_marshal_safearray_to_array_impl (gpointer safearray, MonoClass *aclass, gin
+ 	else
+ 	{
+ 		array = mono_array_new_full_checked (mono_domain_get (), aclass, sizes, bounds, error);
+-		if (mono_error_set_pending_exception (error))
++		if (!is_ok (error))
+ 			goto leave;
+ 	}
+ 
+ 	if (!sizes [0])
+ 		goto leave;
+ 
++#if defined (HOST_WIN32) && HAVE_API_SUPPORT_WIN32_SAFE_ARRAY
++	if (vt == VT_RECORD) {
++		/* blittable structures: the elements are copied as they are */
++		MonoClass *eklass = m_class_get_element_class (aclass);
++		gsize size = mono_class_value_size (eklass, NULL), count = 1;
++		guint8 *data;
++
++		if (m_class_get_byval_arg (eklass)->type != MONO_TYPE_VALUETYPE || !m_class_is_blittable (eklass) ||
++		    size != ((SAFEARRAY *)safearray)->cbElements) {
++			mono_error_set_not_supported (error, "SAFEARRAY of records as %s: only blittable structures of the same size are supported", m_class_get_name (eklass));
++			goto leave;
++		}
++		for (d = 0; d < dim; d++)
++			count *= sizes [d];
++		if (dim > 1 && count != mono_array_length_internal (array)) {
++			mono_error_set_not_supported (error, "SAFEARRAY of records into a smaller multi-dimensional array");
++			goto leave;
++		}
++		if (FAILED (SafeArrayAccessData ((SAFEARRAY *)safearray, (void **)&data))) {
++			mono_error_set_execution_engine (error, "Failed to access SafeArray data");
++			goto leave;
++		}
++		memcpy (mono_array_addr_with_size_internal (array, size, 0), data, size * count);
++		SafeArrayUnaccessData ((SAFEARRAY *)safearray);
++		goto leave;
++	}
++#endif
++
+ 	MonoMethod* set_value = mono_get_Array_SetValueImpl ();
+ 
+ 	MONO_STATIC_POINTER_INIT (MonoMethod, get_value_at)
+@@ -5042,13 +5338,14 @@ mono_marshal_safearray_to_array_impl (gpointer safearray, MonoClass *aclass, gin
+ 		if (mono_marshal_safearray_get_value_internal (safearray, idx, &val) >= 0) {
+ 			gpointer args [2] = { &vt, &val };
+ 			obj = mono_runtime_invoke_checked (get_value_at, NULL, args, error);
+-			if (mono_error_set_pending_exception (error))
++			/* the caller raises it: a pending exception set here as well cleans the error twice */
++			if (!is_ok (error))
+ 				goto leave;
+ 		}
+ 
+ 		gpointer args [2] = { obj, &i };
+ 		obj = mono_runtime_invoke_checked (set_value, (MonoObject*)array, args, error);
+-		if (mono_error_set_pending_exception (error))
++		if (!is_ok (error))
+ 			goto leave;
+ 
+ 		/* advance to next element */

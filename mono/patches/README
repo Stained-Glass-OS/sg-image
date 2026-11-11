@@ -208,3 +208,19 @@ mono-0005-variant-missing-dbnull.patch (sg16)
       task: BackgroundDownload" 0x80070035.
     Gate: test/mono-fork-test.sh (sg16 section); the sg15 build fails its
       three new checks.
+
+mono-0006-safearray-records-ccw-null-name-target-framework.patch (sg17)
+    runtime cominterop.c: an array of structures (Guid[]) goes to COM as a
+      SAFEARRAY(VT_RECORD), with an IRecordInfo for a blittable structure,
+      and SAFEARRAY(VT_RECORD) comes back to T[], as .NET marshals them
+      (Visual Studio's IVsUIContextManagerPrivate.InvokeCallbackUnderLock:
+      "Failed to create SafeArray"). An element conversion that throws no
+      longer cleans its error twice (CLEANUP_CALLED_SENTINEL assert);
+      SafeArrayDestroy's DISP_E_ARRAYISLOCKED in marshal cleanup does not
+      fail the call; a CCW's GetIDsOfNames with a NULL name is
+      DISP_E_UNKNOWNNAME (was a giconv NULL assertion).
+    corlib AppDomainSetup.TargetFrameworkName gets a setter, kept outside
+      the instance so the layout the runtime shares stays the same
+      (VsAppDomainManager.InitializeNewDomain: MissingMethodException).
+    Gate: test/mono-fork-test.sh (sg17 section); the sg16 build fails its
+      three new checks.
