@@ -1,0 +1,162 @@
+diff --git a/GNUmakefile b/GNUmakefile
+index 9a0cf21..569bfba 100644
+--- a/GNUmakefile
++++ b/GNUmakefile
+@@ -160,6 +160,7 @@ include directoryservices-accountmanagement.make
+ include wpf.make
+ include monodx.make
+ include system-speech.make
++include sg-winmd.make
+ include support.make
+ 
+ include tools/tests/tests.make
+diff --git a/sg-winmd.make b/sg-winmd.make
+new file mode 100644
+index 0000000..c525bbb
+--- /dev/null
++++ b/sg-winmd.make
+@@ -0,0 +1,22 @@
++# Stained Glass OS: the "Windows" metadata assembly (sg-winmd/), our own
++# implementation of Windows Runtime types .NET Framework programs call. The
++# runtime looks for a reference marked WindowsRuntime in
++# lib/mono/4.5/WinMetadata/<name>.winmd (mono/metadata/assembly.c), as the
++# CLR in System32\WinMetadata.
++SG_WINMD_SRCS=$(wildcard $(SRCDIR)/sg-winmd/*.cs)
++
++$(SRCDIR)/sg-winmd/Windows.winmd: $(BUILDDIR)/mono-unix/.installed $(SG_WINMD_SRCS)
++	$(MONO_ENV) mcs -target:library -noconfig -r:mscorlib.dll -r:System.dll -r:System.Core.dll -out:$@ $(SG_WINMD_SRCS)
++
++IMAGEDIR_BUILD_TARGETS += $(SRCDIR)/sg-winmd/Windows.winmd
++
++Windows.winmd: $(SRCDIR)/sg-winmd/Windows.winmd
++	mkdir -p $(IMAGEDIR)/lib/mono/4.5/WinMetadata
++	cp $(SRCDIR)/sg-winmd/Windows.winmd $(IMAGEDIR)/lib/mono/4.5/WinMetadata/Windows.winmd
++.PHONY: Windows.winmd
++imagedir-targets: Windows.winmd
++
++clean-sg-winmd:
++	rm -f $(SRCDIR)/sg-winmd/Windows.winmd
++.PHONY: clean-sg-winmd
++clean: clean-sg-winmd
+diff --git a/sg-winmd/AssemblyInfo.cs b/sg-winmd/AssemblyInfo.cs
+new file mode 100644
+index 0000000..bed75a1
+--- /dev/null
++++ b/sg-winmd/AssemblyInfo.cs
+@@ -0,0 +1,4 @@
++using System.Reflection;
++// the version a Windows Runtime reference names ("Windows, Version=255.255.255.255")
++[assembly: AssemblyVersion ("255.255.255.255")]
++[assembly: AssemblyTitle ("Windows")]
+diff --git a/sg-winmd/Windows.Networking.Connectivity.cs b/sg-winmd/Windows.Networking.Connectivity.cs
+new file mode 100644
+index 0000000..629d939
+--- /dev/null
++++ b/sg-winmd/Windows.Networking.Connectivity.cs
+@@ -0,0 +1,106 @@
++// Stained Glass OS: Windows.Networking.Connectivity for .NET Framework
++// programs, in the "Windows" metadata assembly (WinMetadata/Windows.winmd).
++// On Windows the CLR projects these types from System32\WinMetadata and
++// activates the system's Windows Runtime classes. This assembly is our own
++// implementation of the members programs call, with the system's answers:
++// Visual Studio's installer asks for the internet connection's cost before
++// it downloads (OperatingSystem.ConnectionCostPrivate) and stopped when the
++// "Windows" assembly could not be loaded.
++//
++// Copyright (C) 2026 Stained Glass OS contributors. MIT license, as Wine Mono.
++
++using System.Linq;
++using System.Net.NetworkInformation;
++
++namespace Windows.Networking.Connectivity
++{
++	public enum NetworkCostType
++	{
++		Unknown = 0,
++		Unrestricted = 1,
++		Fixed = 2,
++		Variable = 3,
++	}
++
++	public enum NetworkConnectivityLevel
++	{
++		None = 0,
++		LocalAccess = 1,
++		ConstrainedInternetAccess = 2,
++		InternetAccess = 3,
++	}
++
++	public sealed class ConnectionCost
++	{
++		internal ConnectionCost ()
++		{
++		}
++
++		// what Wine's INetworkCostManager answers (netprofm): no metering known
++		public NetworkCostType NetworkCostType {
++			get { return NetworkCostType.Unrestricted; }
++		}
++
++		public bool Roaming {
++			get { return false; }
++		}
++
++		public bool OverDataLimit {
++			get { return false; }
++		}
++
++		public bool ApproachingDataLimit {
++			get { return false; }
++		}
++
++		public bool BackgroundDataUsageRestricted {
++			get { return false; }
++		}
++	}
++
++	public sealed class ConnectionProfile
++	{
++		readonly string name;
++
++		internal ConnectionProfile (string name)
++		{
++			this.name = name;
++		}
++
++		public string ProfileName {
++			get { return name; }
++		}
++
++		public ConnectionCost GetConnectionCost ()
++		{
++			return new ConnectionCost ();
++		}
++
++		public NetworkConnectivityLevel GetNetworkConnectivityLevel ()
++		{
++			return NetworkConnectivityLevel.InternetAccess;
++		}
++	}
++
++	public static class NetworkInformation
++	{
++		// the profile of the connection to the internet, or null with none:
++		// an interface that is up, not loopback or a tunnel, with a gateway
++		public static ConnectionProfile GetInternetConnectionProfile ()
++		{
++			try {
++				foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces ()) {
++					if (ni.OperationalStatus != OperationalStatus.Up)
++						continue;
++					if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback || ni.NetworkInterfaceType == NetworkInterfaceType.Tunnel)
++						continue;
++					if (ni.GetIPProperties ().GatewayAddresses.Count == 0)
++						continue;
++					return new ConnectionProfile (ni.Name);
++				}
++			} catch (NetworkInformationException) {
++			}
++			return null;
++		}
++	}
++}

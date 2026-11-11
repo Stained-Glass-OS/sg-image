@@ -1,0 +1,479 @@
+diff --git a/mcs/class/Mono.Security/Mono.Security.X509/X509Store.wincrypto.cs b/mcs/class/Mono.Security/Mono.Security.X509/X509Store.wincrypto.cs
+index 2503f2a..cb3aa4a 100644
+--- a/mcs/class/Mono.Security/Mono.Security.X509/X509Store.wincrypto.cs
++++ b/mcs/class/Mono.Security/Mono.Security.X509/X509Store.wincrypto.cs
+@@ -161,7 +161,10 @@ namespace Mono.Security.X509 {
+ 
+ 		public ArrayList Crls {
+ 			get {
+-				throw new NotImplementedException ("Mono.Security.X509.X509Store.get_Crls");
++				// none kept here: crypt32 keeps the system's CRLs (and X509Chain uses
++				// it, X509ChainImplCrypt32); Mono's managed chain asking for them
++				// threw NotImplementedException (Visual Studio's installer)
++				return new ArrayList ();
+ 			}
+ 		}
+ 
+diff --git a/mcs/class/System/System.Security.Cryptography.X509Certificates/X509ChainImplCrypt32.cs b/mcs/class/System/System.Security.Cryptography.X509Certificates/X509ChainImplCrypt32.cs
+new file mode 100644
+index 0000000..ccd1868
+--- /dev/null
++++ b/mcs/class/System/System.Security.Cryptography.X509Certificates/X509ChainImplCrypt32.cs
+@@ -0,0 +1,247 @@
++//
++// X509ChainImplCrypt32.cs: X509Chain built by crypt32, as .NET Framework's is
++//
++// Stained Glass OS. .NET Framework builds a chain with CertGetCertificateChain
++// and judges it with CertVerifyCertificateChainPolicy (the base policy, the
++// chain policy's VerificationFlags being CERT_CHAIN_POLICY_IGNORE_* flags), so
++// a program sees the system's own trust: its root stores, its revocation
++// checking (CRLs fetched by cryptnet) and its time. Mono's managed chain
++// threw NotImplementedException from the certificate store's CRL list the
++// moment revocation was asked for, and Visual Studio's installer, which checks
++// every manifest it downloads that way, stopped at "Certificate is invalid"
++// (0x80096004).
++//
++// SG_MONO_CHAIN=mono in the environment gives Mono's managed chain instead.
++//
++// Copyright (C) 2026 Stained Glass OS contributors
++// Licensed under the MIT license, as Mono's class libraries.
++//
++
++#if SECURITY_DEP
++
++using System.Runtime.InteropServices;
++
++namespace System.Security.Cryptography.X509Certificates
++{
++	internal class X509ChainImplCrypt32 : X509ChainImpl
++	{
++		const uint X509_ASN_ENCODING = 0x1, PKCS_7_ASN_ENCODING = 0x10000;
++		const uint CERT_STORE_PROV_MEMORY = 2, CERT_STORE_ADD_ALWAYS = 4;
++		const uint CERT_CHAIN_REVOCATION_CHECK_END_CERT = 0x10000000;
++		const uint CERT_CHAIN_REVOCATION_CHECK_CHAIN = 0x20000000;
++		const uint CERT_CHAIN_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT = 0x40000000;
++		const uint CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY = 0x80000000;
++		const uint USAGE_MATCH_TYPE_AND = 0;
++		static readonly IntPtr CERT_CHAIN_POLICY_BASE = (IntPtr) 1;
++
++		[StructLayout (LayoutKind.Sequential)]
++		struct CERT_USAGE_MATCH {
++			public uint dwType;
++			public uint cUsageIdentifier;
++			public IntPtr rgpszUsageIdentifier;
++		}
++
++		[StructLayout (LayoutKind.Sequential)]
++		struct CERT_CHAIN_PARA {
++			public uint cbSize;
++			public CERT_USAGE_MATCH RequestedUsage;
++			public CERT_USAGE_MATCH RequestedIssuancePolicy;
++			public uint dwUrlRetrievalTimeout;
++			public int fCheckRevocationFreshnessTime;
++			public uint dwRevocationFreshnessTime;
++			public IntPtr pftCacheResync;
++		}
++
++		[StructLayout (LayoutKind.Sequential)]
++		struct CERT_CHAIN_POLICY_PARA {
++			public uint cbSize;
++			public uint dwFlags;
++			public IntPtr pvExtraPolicyPara;
++		}
++
++		[StructLayout (LayoutKind.Sequential)]
++		struct CERT_CHAIN_POLICY_STATUS {
++			public uint cbSize;
++			public uint dwError;
++			public int lChainIndex;
++			public int lElementIndex;
++			public IntPtr pvExtraPolicyStatus;
++		}
++
++		[DllImport ("crypt32.dll", SetLastError = true)]
++		static extern IntPtr CertCreateCertificateContext (uint dwCertEncodingType, byte[] pbCertEncoded, uint cbCertEncoded);
++		[DllImport ("crypt32.dll")]
++		static extern bool CertFreeCertificateContext (IntPtr pCertContext);
++		[DllImport ("crypt32.dll", SetLastError = true)]
++		static extern IntPtr CertOpenStore (IntPtr lpszStoreProvider, uint dwEncodingType, IntPtr hCryptProv, uint dwFlags, IntPtr pvPara);
++		[DllImport ("crypt32.dll")]
++		static extern bool CertCloseStore (IntPtr hCertStore, uint dwFlags);
++		[DllImport ("crypt32.dll", SetLastError = true)]
++		static extern bool CertAddEncodedCertificateToStore (IntPtr hCertStore, uint dwCertEncodingType, byte[] pbCertEncoded, uint cbCertEncoded, uint dwAddDisposition, IntPtr ppCertContext);
++		[DllImport ("crypt32.dll", SetLastError = true)]
++		static extern bool CertGetCertificateChain (IntPtr hChainEngine, IntPtr pCertContext, ref long pTime, IntPtr hAdditionalStore, ref CERT_CHAIN_PARA pChainPara, uint dwFlags, IntPtr pvReserved, out IntPtr ppChainContext);
++		[DllImport ("crypt32.dll")]
++		static extern void CertFreeCertificateChain (IntPtr pChainContext);
++		[DllImport ("crypt32.dll", SetLastError = true)]
++		static extern bool CertVerifyCertificateChainPolicy (IntPtr pszPolicyOID, IntPtr pChainContext, ref CERT_CHAIN_POLICY_PARA pPolicyPara, ref CERT_CHAIN_POLICY_STATUS pPolicyStatus);
++
++		static X509ChainStatus[] Empty = new X509ChainStatus [0];
++
++		readonly bool machine;
++		X509ChainElementCollection elements = new X509ChainElementCollection ();
++		X509ChainPolicy policy = new X509ChainPolicy ();
++		X509ChainStatus[] status;
++		IntPtr context;
++
++		public X509ChainImplCrypt32 (bool useMachineContext)
++		{
++			machine = useMachineContext;
++		}
++
++		public override bool IsValid {
++			get { return true; }
++		}
++
++		public override IntPtr Handle {
++			get { return context; }
++		}
++
++		public override X509ChainElementCollection ChainElements {
++			get { return elements; }
++		}
++
++		public override X509ChainPolicy ChainPolicy {
++			get { return policy; }
++			set { policy = value; }
++		}
++
++		public override X509ChainStatus[] ChainStatus {
++			get { return status ?? Empty; }
++		}
++
++		public override void AddStatus (X509ChainStatusFlags errorCode)
++		{
++		}
++
++		static X509ChainStatus[] StatusOf (uint flags)
++		{
++			// X509ChainStatusFlags are CERT_TRUST_* error bits, value for value
++			var e = new X509ChainElement (null);
++			e.StatusFlags = (X509ChainStatusFlags) flags;
++			e.UncompressFlags ();
++			return e.ChainElementStatus;
++		}
++
++		public override bool Build (X509Certificate2 certificate)
++		{
++			if (certificate == null)
++				throw new ArgumentException ("certificate");
++			Reset ();
++
++			byte[] raw = certificate.RawData;
++			IntPtr cert = CertCreateCertificateContext (X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, raw, (uint) raw.Length);
++			if (cert == IntPtr.Zero)
++				throw new ArgumentException ("certificate", new CryptographicException (Marshal.GetLastWin32Error ()));
++			IntPtr extra = IntPtr.Zero;
++			var oids = new IntPtr [policy.ApplicationPolicy.Count];
++			GCHandle pin = default (GCHandle);
++			try {
++				if (policy.ExtraStore.Count > 0) {
++					extra = CertOpenStore ((IntPtr) CERT_STORE_PROV_MEMORY, 0, IntPtr.Zero, 0, IntPtr.Zero);
++					foreach (X509Certificate2 c in policy.ExtraStore) {
++						byte[] r = c.RawData;
++						CertAddEncodedCertificateToStore (extra, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, r, (uint) r.Length, CERT_STORE_ADD_ALWAYS, IntPtr.Zero);
++					}
++				}
++				for (int i = 0; i < oids.Length; i++)
++					oids [i] = Marshal.StringToHGlobalAnsi (policy.ApplicationPolicy [i].Value);
++				pin = GCHandle.Alloc (oids, GCHandleType.Pinned);
++
++				var para = new CERT_CHAIN_PARA ();
++				para.cbSize = (uint) Marshal.SizeOf (typeof (CERT_CHAIN_PARA));
++				para.RequestedUsage.dwType = USAGE_MATCH_TYPE_AND;
++				para.RequestedUsage.cUsageIdentifier = (uint) oids.Length;
++				para.RequestedUsage.rgpszUsageIdentifier = oids.Length > 0 ? pin.AddrOfPinnedObject () : IntPtr.Zero;
++				para.dwUrlRetrievalTimeout = (uint) policy.UrlRetrievalTimeout.TotalMilliseconds;
++
++				uint flags = 0;
++				if (policy.RevocationMode != X509RevocationMode.NoCheck) {
++					switch (policy.RevocationFlag) {
++					case X509RevocationFlag.EndCertificateOnly: flags |= CERT_CHAIN_REVOCATION_CHECK_END_CERT; break;
++					case X509RevocationFlag.EntireChain: flags |= CERT_CHAIN_REVOCATION_CHECK_CHAIN; break;
++					default: flags |= CERT_CHAIN_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT; break;
++					}
++					if (policy.RevocationMode == X509RevocationMode.Offline)
++						flags |= CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY;
++				}
++				long when = policy.VerificationTime.ToFileTime ();
++				// HCCE_CURRENT_USER is 0, HCCE_LOCAL_MACHINE 1
++				if (!CertGetCertificateChain (machine ? (IntPtr) 1 : IntPtr.Zero, cert, ref when, extra, ref para, flags, IntPtr.Zero, out context))
++					throw new CryptographicException (Marshal.GetLastWin32Error ());
++			} finally {
++				if (pin.IsAllocated)
++					pin.Free ();
++				foreach (IntPtr o in oids)
++					if (o != IntPtr.Zero)
++						Marshal.FreeHGlobal (o);
++				if (extra != IntPtr.Zero)
++					CertCloseStore (extra, 0);
++				CertFreeCertificateContext (cert);
++			}
++
++			// CERT_CHAIN_CONTEXT: cbSize, TrustStatus (two DWORDs), cChain, rgpChain
++			int p = IntPtr.Size;
++			uint total = (uint) Marshal.ReadInt32 (context, 4);
++			if (Marshal.ReadInt32 (context, 12) > 0) {
++				IntPtr simple = Marshal.ReadIntPtr (Marshal.ReadIntPtr (context, 16));
++				// CERT_SIMPLE_CHAIN: cbSize, TrustStatus, cElement, rgpElement
++				int n = Marshal.ReadInt32 (simple, 12);
++				IntPtr list = Marshal.ReadIntPtr (simple, 16);
++				for (int i = 0; i < n; i++) {
++					// CERT_CHAIN_ELEMENT: cbSize, pCertContext, TrustStatus
++					IntPtr element = Marshal.ReadIntPtr (list, i * p);
++					IntPtr cc = Marshal.ReadIntPtr (element, p);
++					// CERT_CONTEXT: dwCertEncodingType, pbCertEncoded, cbCertEncoded
++					var der = new byte [Marshal.ReadInt32 (cc, 2 * p)];
++					Marshal.Copy (Marshal.ReadIntPtr (cc, p), der, 0, der.Length);
++					elements.Add (new X509Certificate2 (der));
++					X509ChainElement ce = elements [elements.Count - 1];
++					ce.StatusFlags = (X509ChainStatusFlags) (uint) Marshal.ReadInt32 (element, 2 * p);
++					ce.UncompressFlags ();
++				}
++			}
++			status = StatusOf (total);
++
++			var ppara = new CERT_CHAIN_POLICY_PARA ();
++			ppara.cbSize = (uint) Marshal.SizeOf (typeof (CERT_CHAIN_POLICY_PARA));
++			ppara.dwFlags = (uint) policy.VerificationFlags;   // CERT_CHAIN_POLICY_IGNORE_* bit for bit
++			var pstatus = new CERT_CHAIN_POLICY_STATUS ();
++			pstatus.cbSize = (uint) Marshal.SizeOf (typeof (CERT_CHAIN_POLICY_STATUS));
++			if (!CertVerifyCertificateChainPolicy (CERT_CHAIN_POLICY_BASE, context, ref ppara, ref pstatus))
++				return false;
++			return pstatus.dwError == 0;
++		}
++
++		public override void Reset ()
++		{
++			status = null;
++			if (elements.Count > 0)
++				elements.Clear ();
++			if (context != IntPtr.Zero) {
++				CertFreeCertificateChain (context);
++				context = IntPtr.Zero;
++			}
++		}
++
++		protected override void Dispose (bool disposing)
++		{
++			if (context != IntPtr.Zero) {
++				CertFreeCertificateChain (context);
++				context = IntPtr.Zero;
++			}
++			base.Dispose (disposing);
++		}
++	}
++}
++
++#endif
+diff --git a/mcs/class/System/System.Security.Cryptography.X509Certificates/X509Helper2.cs b/mcs/class/System/System.Security.Cryptography.X509Certificates/X509Helper2.cs
+index ecd7f2b..b76b444 100644
+--- a/mcs/class/System/System.Security.Cryptography.X509Certificates/X509Helper2.cs
++++ b/mcs/class/System/System.Security.Cryptography.X509Certificates/X509Helper2.cs
+@@ -67,6 +67,9 @@ namespace System.Security.Cryptography.X509Certificates
+ 
+ 		internal static X509ChainImpl CreateChainImpl (bool useMachineContext)
+ 		{
++			// Stained Glass OS: crypt32 builds it, as .NET Framework's (X509ChainImplCrypt32.cs)
++			if (Environment.OSVersion.Platform == PlatformID.Win32NT && Environment.GetEnvironmentVariable ("SG_MONO_CHAIN") != "mono")
++				return new X509ChainImplCrypt32 (useMachineContext);
+ 			return new X509ChainImplMono (useMachineContext);
+ 		}
+ 
+diff --git a/mcs/class/System/common.sources b/mcs/class/System/common.sources
+index 4a59747..29134dd 100644
+--- a/mcs/class/System/common.sources
++++ b/mcs/class/System/common.sources
+@@ -165,6 +165,7 @@ System.Security.Cryptography.X509Certificates/X509ChainElementCollection.cs
+ System.Security.Cryptography.X509Certificates/X509ChainElementEnumerator.cs
+ System.Security.Cryptography.X509Certificates/X509ChainImpl.cs
+ System.Security.Cryptography.X509Certificates/X509ChainImplMono.cs
++System.Security.Cryptography.X509Certificates/X509ChainImplCrypt32.cs
+ System.Security.Cryptography.X509Certificates/X509ChainPolicy.cs
+ System.Security.Cryptography.X509Certificates/X509ChainStatus.cs
+ ../../../external/corefx/src/System.Security.Cryptography.X509Certificates/src/System/Security/Cryptography/X509Certificates/X509ChainStatusFlags.cs
+diff --git a/mcs/class/corlib/System.Runtime.InteropServices/Marshal.cs b/mcs/class/corlib/System.Runtime.InteropServices/Marshal.cs
+index eea3626..1507b26 100644
+--- a/mcs/class/corlib/System.Runtime.InteropServices/Marshal.cs
++++ b/mcs/class/corlib/System.Runtime.InteropServices/Marshal.cs
+@@ -1833,6 +1833,12 @@ namespace System.Runtime.InteropServices
+ 
+ 		public static Exception GetExceptionForHR (int errorCode, IntPtr errorInfo)
+ 		{
++			// Stained Glass OS: a success code is no exception, as on .NET
++			// Framework (so ThrowExceptionForHR ignores it): the Windows SDK's
++			// setup passes GetLastWin32Error() -- 2 -- after IsWow64Process2
++			// succeeds, and Mono threw "Unable to find the specified file"
++			if (errorCode >= 0)
++				return null;
+ #if FEATURE_COMINTEROP
+ 			IErrorInfo info = null;
+ 			if (errorInfo != (IntPtr)(-1)) {
+diff --git a/mcs/class/corlib/System.Security.Cryptography.X509Certificates/X509Certificate.cs b/mcs/class/corlib/System.Security.Cryptography.X509Certificates/X509Certificate.cs
+index 4f806a7..923cf70 100644
+--- a/mcs/class/corlib/System.Security.Cryptography.X509Certificates/X509Certificate.cs
++++ b/mcs/class/corlib/System.Security.Cryptography.X509Certificates/X509Certificate.cs
+@@ -130,9 +130,22 @@ namespace System.Security.Cryptography.X509Certificates
+ 				impl = X509Helper.Import (rawData, safePasswordHandle, keyStorageFlags);
+ 		}
+ 
++		// Stained Glass OS: a CryptoAPI certificate context (PCCERT_CONTEXT), as
++		// .NET Framework takes it: the certificate is read from its encoded
++		// bytes (Visual Studio's installer gets its signer this way after
++		// WinVerifyTrust; Mono said "not supported")
+ 		public X509Certificate (IntPtr handle)
+ 		{
+-			throw new PlatformNotSupportedException ("Initializing `X509Certificate` from native handle is not supported.");
++			if (handle == IntPtr.Zero)
++				throw new ArgumentException (SR.Arg_InvalidHandle, nameof (handle));
++			if (Environment.OSVersion.Platform != PlatformID.Win32NT)
++				throw new PlatformNotSupportedException ("Initializing `X509Certificate` from native handle is not supported.");
++			// CERT_CONTEXT: dwCertEncodingType, pbCertEncoded, cbCertEncoded, pCertInfo, hCertStore
++			int p = IntPtr.Size;
++			var raw = new byte [Marshal.ReadInt32 (handle, 2 * p)];
++			Marshal.Copy (Marshal.ReadIntPtr (handle, p), raw, 0, raw.Length);
++			using (var safePasswordHandle = new SafePasswordHandle ((string) null))
++				impl = X509Helper.Import (raw, safePasswordHandle, X509KeyStorageFlags.DefaultKeySet);
+ 		}
+ 
+ 		internal X509Certificate (X509CertificateImpl impl)
+@@ -540,38 +553,54 @@ namespace System.Security.Cryptography.X509Certificates
+ 			return sb.ToString ();
+ 		}
+ 
++		// Stained Glass OS: Import reinitializes the certificate, as .NET
++		// Framework's does (Mono threw "X509Certificate is immutable on this
++		// platform": Visual Studio's installer checks its catalogs' signatures
++		// with it)
+ 		[ComVisible (false)]
+ 		public virtual void Import (byte[] rawData)
+ 		{
+-			throw new PlatformNotSupportedException (SR.NotSupported_ImmutableX509Certificate);
++			Import (rawData, (string) null, X509KeyStorageFlags.DefaultKeySet);
+ 		}
+ 
+ 		[ComVisible (false)]
+ 		public virtual void Import (byte[] rawData, string password, X509KeyStorageFlags keyStorageFlags)
+ 		{
+-			throw new PlatformNotSupportedException (SR.NotSupported_ImmutableX509Certificate);
++			if (rawData == null || rawData.Length == 0)
++				throw new ArgumentException (SR.Arg_EmptyOrNullArray, nameof (rawData));
++			ValidateKeyStorageFlags (keyStorageFlags);
++			using (var safePasswordHandle = new SafePasswordHandle (password))
++				ImportHandle (X509Helper.Import (rawData, safePasswordHandle, keyStorageFlags));
+ 		}
+ 
+ 		public virtual void Import (byte[] rawData, SecureString password, X509KeyStorageFlags keyStorageFlags)
+ 		{
+-			throw new PlatformNotSupportedException (SR.NotSupported_ImmutableX509Certificate);
++			if (rawData == null || rawData.Length == 0)
++				throw new ArgumentException (SR.Arg_EmptyOrNullArray, nameof (rawData));
++			ValidateKeyStorageFlags (keyStorageFlags);
++			using (var safePasswordHandle = new SafePasswordHandle (password))
++				ImportHandle (X509Helper.Import (rawData, safePasswordHandle, keyStorageFlags));
+ 		}
+ 
+ 		[ComVisible (false)]
+ 		public virtual void Import (string fileName)
+ 		{
+-			throw new PlatformNotSupportedException (SR.NotSupported_ImmutableX509Certificate);
++			Import (fileName, (string) null, X509KeyStorageFlags.DefaultKeySet);
+ 		}
+ 
+ 		[ComVisible (false)]
+ 		public virtual void Import (string fileName, string password, X509KeyStorageFlags keyStorageFlags)
+ 		{
+-			throw new PlatformNotSupportedException (SR.NotSupported_ImmutableX509Certificate);
++			if (fileName == null)
++				throw new ArgumentNullException (nameof (fileName));
++			Import (File.ReadAllBytes (fileName), password, keyStorageFlags);
+ 		}
+ 
+ 		public virtual void Import (string fileName, SecureString password, X509KeyStorageFlags keyStorageFlags)
+ 		{
+-			throw new PlatformNotSupportedException (SR.NotSupported_ImmutableX509Certificate);
++			if (fileName == null)
++				throw new ArgumentNullException (nameof (fileName));
++			Import (File.ReadAllBytes (fileName), password, keyStorageFlags);
+ 		}
+ 
+ 		internal DateTime GetNotAfter ()
+diff --git a/mcs/class/corlib/System/MonoCustomAttrs.cs b/mcs/class/corlib/System/MonoCustomAttrs.cs
+index 7bb4716..0f0f058 100644
+--- a/mcs/class/corlib/System/MonoCustomAttrs.cs
++++ b/mcs/class/corlib/System/MonoCustomAttrs.cs
+@@ -556,7 +556,7 @@ namespace System
+ 			MethodInfo method = property.GetGetMethod (true);
+ 			if (method == null || !method.IsVirtual)
+ 				method = property.GetSetMethod (true);
+-			if (method == null || !method.IsVirtual)
++			if (method == null || !method.IsVirtual || NewSlot (method))
+ 				return null;
+ 
+ 			MethodInfo baseMethod = ((RuntimeMethodInfo)method).GetBaseMethod ();
+@@ -576,6 +576,18 @@ namespace System
+ 
+ 		}
+ 
++		// Stained Glass OS: a newslot method has no parent definition, as on .NET
++		// Framework (RuntimeMethodInfo.GetParentDefinition: its slot is new), so
++		// what its base type declares under the same name is not inherited from.
++		// Visual Studio's installer implements an interface's Quiet in one class
++		// (newslot final) over another class's Quiet: both carried the same
++		// AllowMultiple attribute, Mono found two, and GetCustomAttribute threw
++		// AmbiguousMatchException before it parsed its command line.
++		static bool NewSlot (MethodInfo method)
++		{
++			return (method.Attributes & MethodAttributes.VtableLayoutMask) == MethodAttributes.NewSlot;
++		}
++
+ 		static EventInfo GetBaseEventDefinition (RuntimeEventInfo evt)
+ 		{
+ 			MethodInfo method = evt.GetAddMethod (true);
+@@ -583,7 +595,7 @@ namespace System
+ 				method = evt.GetRaiseMethod (true);
+ 			if (method == null || !method.IsVirtual)
+ 				method = evt.GetRemoveMethod (true);
+-			if (method == null || !method.IsVirtual)
++			if (method == null || !method.IsVirtual || NewSlot (method))
+ 				return null;
+ 
+ 			MethodInfo baseMethod = ((RuntimeMethodInfo)method).GetBaseMethod ();
+@@ -630,7 +642,7 @@ namespace System
+ 			 * RuntimeEventInfo -> null
+ 			 * RuntimeFieldInfo -> null
+ 			 */
+-			if (method == null || !method.IsVirtual)
++			if (method == null || !method.IsVirtual || NewSlot (method))
+ 				return null;
+ 
+ 			MethodInfo baseMethod = ((RuntimeMethodInfo)method).GetBaseMethod ();
+diff --git a/mono/metadata/assembly.c b/mono/metadata/assembly.c
+index 94bda22..114a94e 100644
+--- a/mono/metadata/assembly.c
++++ b/mono/metadata/assembly.c
+@@ -4870,6 +4870,23 @@ mono_assembly_load_full_gac_base_default (MonoAssemblyName *aname,
+ 	req.request.predicate = predicate;
+ 	req.request.predicate_ud = predicate_ud;
+ 
++	/* Stained Glass OS: a reference to Windows Runtime metadata (its flags say
++	 * ContentType=WindowsRuntime: "Windows, Version=255.255.255.255") is
++	 * looked for in lib/mono/4.5/WinMetadata/<name>.winmd, as the CLR looks
++	 * in System32\WinMetadata. Visual Studio's installer stopped with "Could
++	 * not load file or assembly 'Windows, Version=255.255.255.255'". */
++	if (aname->flags & 0x200) {
++		char *winmd = g_strconcat (aname->name, ".winmd", (const char*)NULL);
++		fullpath = g_build_filename (mono_assembly_getrootdir (), "mono", "4.5", "WinMetadata", winmd, (const char*)NULL);
++		g_free (winmd);
++		result = mono_assembly_request_open (fullpath, &req, status);
++		g_free (fullpath);
++		if (result) {
++			result->in_gac = FALSE;
++			return result;
++		}
++	}
++
+ 	len = strlen (aname->name);
+ 	for (ext_index = 0; ext_index < 2; ext_index ++) {
+ 		ext = ext_index == 0 ? ".dll" : ".exe";

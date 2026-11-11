@@ -1,0 +1,83 @@
+diff --git a/src/Microsoft.DotNet.Wpf/src/WindowsBase/System/IO/Packaging/ZipWrappingStream.cs b/src/Microsoft.DotNet.Wpf/src/WindowsBase/System/IO/Packaging/ZipWrappingStream.cs
+index 2f8d851..01f4ed6 100644
+--- a/src/Microsoft.DotNet.Wpf/src/WindowsBase/System/IO/Packaging/ZipWrappingStream.cs
++++ b/src/Microsoft.DotNet.Wpf/src/WindowsBase/System/IO/Packaging/ZipWrappingStream.cs
+@@ -19,6 +19,13 @@ namespace System.IO.Packaging
+         private FileAccess _packageFileAccess;
+         private bool _canRead;
+         private bool _canWrite;
++        // Stained Glass OS: a part read from a package seeks, as .NET Framework's
++        // (its own zip reader's part streams do): Visual Studio's installer
++        // seeks every part it extracts, and a deflated entry's stream threw
++        // NotSupportedException ("Specified method is not supported"). Going
++        // back opens the entry again and reads up to the place.
++        private long _position;
++        private bool Emulated => _packageFileAccess == FileAccess.Read && !_baseStream.CanSeek && _zipArchiveEntry != null;
+ 
+         public ZipWrappingStream(ZipArchiveEntry zipArchiveEntry, Stream stream, FileMode packageFileMode, FileAccess packageFileAccess, bool canRead, bool canWrite)
+         {
+@@ -65,7 +72,9 @@ namespace System.IO.Packaging
+ 	        int count
+         )
+         {
+-            return _baseStream.Read(buffer, offset, count);
++            int n = _baseStream.Read(buffer, offset, count);
++            _position += n;
++            return n;
+         }
+ 
+         public override void SetLength(
+@@ -80,7 +89,26 @@ namespace System.IO.Packaging
+ 	        SeekOrigin origin
+         )
+         {
+-            return _baseStream.Seek(offset, origin);
++            if (!Emulated)
++                return _baseStream.Seek(offset, origin);
++            long target = origin == SeekOrigin.Begin ? offset : origin == SeekOrigin.Current ? _position + offset : Length + offset;
++            if (target < 0)
++                throw new IOException("An attempt was made to move the position before the beginning of the stream.");
++            if (target < _position)
++            {
++                _baseStream.Dispose();
++                _baseStream = _zipArchiveEntry.Open();
++                _position = 0;
++            }
++            byte[] skip = new byte[0x4000];
++            while (_position < target)
++            {
++                int n = _baseStream.Read(skip, 0, (int)Math.Min(skip.Length, target - _position));
++                if (n <= 0)
++                    break;
++                _position += n;
++            }
++            return _position;
+         }
+ 
+         public override void Flush()
+@@ -92,11 +120,14 @@ namespace System.IO.Packaging
+         {
+             get
+             {
+-                return _baseStream.Position;
++                return Emulated ? _position : _baseStream.Position;
+             }
+             set
+             {
+-                _baseStream.Position = value;
++                if (Emulated)
++                    Seek(value, SeekOrigin.Begin);
++                else
++                    _baseStream.Position = value;
+             }
+         }
+ 
+@@ -132,7 +163,7 @@ namespace System.IO.Packaging
+ 
+         public override bool CanSeek
+         {
+-            get { return _baseStream.CanSeek; }
++            get { return Emulated || _baseStream.CanSeek; }
+         }
+ 
+         protected override void Dispose(bool disposing)

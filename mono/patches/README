@@ -144,3 +144,56 @@ wpf-0006-wpf-programs-aware-of-the-system-dpi.patch (sg13)
       unaware: Wine drew it at 100% and scaled the picture, soft at 175%
       (DYMO Connect, Sonos on a Surface Pro 7). Gate test/wpf-dpi-test.sh;
       mutant -define:SG_MUTANT_WPF_DPI_UNAWARE.
+
+mono-0004-x509-crypt32-import-attributes-winmetadata.patch (sg15)
+    Visual Studio 2022's installer, in the order it stopped:
+    System: X509Chain is built by crypt32 (X509ChainImplCrypt32.cs:
+      CertGetCertificateChain, judged by CertVerifyCertificateChainPolicy's
+      base policy with the chain policy's VerificationFlags), as .NET
+      Framework's is: the system's roots, revocation (cryptnet) and time.
+      Mono's managed chain threw NotImplementedException from the store's
+      CRL list the moment revocation was asked for, and the bootstrapper said
+      "Certificate is invalid" (0x80096004) for every manifest.
+      SG_MONO_CHAIN=mono gives Mono's chain back. Mono.Security: the Windows
+      store's Crls is empty instead of throwing.
+    corlib: X509Certificate.Import reinitializes the certificate, as .NET
+      Framework's ("X509Certificate is immutable on this platform": its
+      catalog signatures); X509Certificate(IntPtr) takes a CryptoAPI
+      certificate context (its signer after WinVerifyTrust).
+    corlib: Marshal.GetExceptionForHR/ThrowExceptionForHR ignore a success
+      code (>= 0), as .NET Framework: the Windows SDK's setup passes
+      GetLastWin32Error() (2) after IsWow64Process2 succeeds, and Mono threw
+      "Unable to find the specified file" -- the SDK did not install.
+    corlib: a newslot method has no parent definition when attributes are
+      inherited (MonoCustomAttrs.GetBase), as RuntimeMethodInfo.
+      GetParentDefinition on .NET Framework: VS Installer's options implement
+      an interface's Quiet over a base class's Quiet, both with the same
+      AllowMultiple attribute, and GetCustomAttribute threw
+      AmbiguousMatchException before it read its command line.
+    runtime: a reference marked ContentType=WindowsRuntime ("Windows,
+      Version=255.255.255.255") loads lib/mono/4.5/WinMetadata/<name>.winmd,
+      as the CLR looks in System32\WinMetadata (wine-mono-0004).
+
+corefx-0002-cms-certificate-choices.patch (sg15)
+    System.Security.Cryptography.Pkcs: a CMS certificate set may hold the
+      other CertificateChoices ([0] to [3]); they are kept and not listed
+      in Certificates. Microsoft's time-stamp tokens carry an attribute
+      certificate there, decoding threw "ASN1 corrupted data", and VS
+      Installer took its channel manifest's signature for invalid.
+
+wpf-0007-package-part-streams-seek.patch (sg15)
+    WindowsBase: a part read from a package seeks (a deflated entry is opened
+      again and read up to the place going back), as .NET Framework's do; VS's
+      bootstrapper seeks every part it extracts from vs_installer.opc and got
+      NotSupportedException.
+
+wine-mono-0004-winmetadata-windows-assembly.patch (sg15)
+    The "Windows" metadata assembly, sg-winmd/ -> lib/mono/4.5/WinMetadata/
+      Windows.winmd: our own implementation of Windows Runtime types .NET
+      Framework programs call, starting with Windows.Networking.Connectivity
+      (NetworkInformation.GetInternetConnectionProfile, a profile's
+      ConnectionCost: Unrestricted, what Wine's INetworkCostManager says).
+      VS Installer asks the connection's cost and stopped with "Could not
+      load file or assembly 'Windows, Version=255.255.255.255'".
+    Gate: test/mono-fork-test.sh (sg15 section); the sg14 build fails its new
+      checks.

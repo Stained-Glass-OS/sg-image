@@ -27,6 +27,26 @@
 #   - (sg12) a queue's print ticket (the printer's DEVMODE) and capabilities;
 #     a font family's names (FamilyNames was always empty: DYMO Connect's
 #     label editor crashed at the first letter typed).
+#   - (sg15) X509Chain is built by crypt32, as .NET Framework's: its Handle is
+#     a crypt32 chain context, a chain asked to check revocation is built (it
+#     threw NotImplementedException from the store's CRLs: Visual Studio's
+#     installer said "Certificate is invalid"), a self-signed certificate's is
+#     UntrustedRoot, and a root of the system's store makes a valid chain.
+#     SG_MONO_CHAIN=mono (Mono's managed chain) is the mutant. X509Certificate
+#     .Import reinitializes a certificate (it threw "immutable on this
+#     platform"), and a deflated part read from a package seeks (it threw
+#     NotSupportedException) -- both in Visual Studio's installer -- and a
+#     property implemented anew (newslot) over a base class's of the same name
+#     does not inherit that one's attributes (VS Installer's GetCustomAttribute
+#     threw AmbiguousMatchException); a CMS message whose certificate set
+#     holds an attribute certificate ([1], as Microsoft's time-stamp tokens)
+#     decodes (it threw "ASN1 corrupted data": VS's channel manifest); a
+#     certificate is made from a CryptoAPI context (X509Certificate(IntPtr));
+#     a reference marked WindowsRuntime ("Windows, Version=255.255.255.255")
+#     loads our lib/mono/4.5/WinMetadata/Windows.winmd, and its
+#     Windows.Networking.Connectivity answers (VS asks the connection's cost);
+#     Marshal.ThrowExceptionForHR ignores a success code (the Windows SDK's
+#     setup passes a Win32 error, 2, after a call that succeeded).
 # Programs are compiled here with Mono's own mcs.exe, under Wine; the image's
 # addons tree is the Mono that runs them.
 #
@@ -314,4 +334,172 @@ out=$(cd "$C" && timeout 120 "$WINE" sg12.exe 2>&1 | tr -d '\r')
     || fail "default ticket '$(v defaultticket)', capabilities '$(v caps)' $(v printing)"
 case "$(v familynames)" in 1\|*) pass "a font family's names: $(v familynames)" ;;
     *) fail "font family names: '$(v familynames)' (DYMO Connect's editor stops at the first letter typed)" ;; esac
+# (sg15) X509Chain by crypt32
+cat > "$C/sg15.cs" <<'CS'
+using System;
+using System.Security.Cryptography.X509Certificates;
+using System.IO;
+using System.IO.Packaging;
+using System.Reflection;
+[AttributeUsage(AttributeTargets.Property, Inherited = true, AllowMultiple = true)]
+sealed class MX : Attribute { public MX(params string[] o) {} }
+interface I1 { bool Quiet { get; } }
+interface I2 { bool Quiet { get; } }
+class A2 : I1 { [MX("Passive")] public bool Quiet { get { return false; } } }
+abstract class B2 : A2, I2 { [MX("Passive")] public new bool Quiet { get { return true; } } }
+class C2 : B2 { }
+class P {
+    [System.Runtime.InteropServices.DllImport("crypt32.dll")]
+    static extern IntPtr CertCreateCertificateContext(int type, byte[] data, int len);
+    static void Main() {
+        try {
+            System.Runtime.InteropServices.Marshal.ThrowExceptionForHR(2);
+            Console.WriteLine("hrsuccess=" + (System.Runtime.InteropServices.Marshal.GetExceptionForHR(2) == null ? "none" : "exception"));
+        } catch (Exception e) { Console.WriteLine("hrsuccess=" + e.GetType().Name + ": " + e.Message); }
+        try {
+            var raw = File.ReadAllBytes("C:\\probe.der");
+            IntPtr ctx = CertCreateCertificateContext(0x10001, raw, raw.Length);
+            Console.WriteLine("handlecert=" + new X509Certificate2(ctx).Subject);
+        } catch (Exception e) { Console.WriteLine("handlecert=" + e.GetType().Name + ": " + e.Message); }
+        try {
+            var cms = new System.Security.Cryptography.Pkcs.SignedCms();
+            cms.Decode(File.ReadAllBytes("C:\\cms.der"));
+            Console.WriteLine("cms=" + cms.Certificates.Count + "|" + cms.SignerInfos.Count);
+        } catch (Exception e) { Console.WriteLine("cms=" + e.GetType().Name + ": " + e.Message); }
+        try {
+            typeof(C2).GetProperty("Quiet").GetCustomAttribute<MX>(true);
+            Console.WriteLine("newslotattr=one");
+        } catch (Exception e) { Console.WriteLine("newslotattr=" + e.GetType().Name); }
+        try {
+            var c2 = new X509Certificate2();
+            c2.Import(File.ReadAllBytes("C:\\probe.crt"));
+            Console.WriteLine("import=" + c2.Subject);
+        } catch (Exception e) { Console.WriteLine("import=" + e.GetType().Name + ": " + e.Message); }
+        try {
+            var data = new byte[200000];
+            for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 251);
+            using (var pkg = Package.Open("C:\\gate.opc", FileMode.Create)) {
+                var part = pkg.CreatePart(new Uri("/a.bin", UriKind.Relative), "application/octet-stream", CompressionOption.Maximum);
+                using (var w = part.GetStream()) w.Write(data, 0, data.Length);
+            }
+            using (var pkg = Package.Open("C:\\gate.opc", FileMode.Open, FileAccess.Read)) {
+                var st = pkg.GetPart(new Uri("/a.bin", UriKind.Relative)).GetStream();
+                var buf = new byte[1000];
+                st.Read(buf, 0, buf.Length);
+                st.Seek(0, SeekOrigin.Begin);
+                var all = new MemoryStream();
+                st.CopyTo(all);
+                var b = all.ToArray();
+                bool same = b.Length == data.Length;
+                for (int i = 0; same && i < b.Length; i++) same = b[i] == data[i];
+                st.Position = 150000;
+                int x = st.ReadByte();
+                Console.WriteLine("zipseek=" + st.CanSeek + "|" + same + "|" + (x == 150000 % 251));
+            }
+        } catch (Exception e) { Console.WriteLine("zipseek=" + e.GetType().Name + ": " + e.Message); }
+        try {
+            var c = new X509Certificate2("C:\\probe.crt");
+            var ch = new X509Chain();
+            ch.ChainPolicy.RevocationMode = X509RevocationMode.Online;
+            ch.ChainPolicy.RevocationFlag = X509RevocationFlag.ExcludeRoot;
+            bool ok = ch.Build(c);
+            X509ChainStatusFlags f = 0;
+            foreach (var st in ch.ChainStatus) f |= st.Status;
+            Console.WriteLine("handle=" + (ch.ChainContext != IntPtr.Zero ? "context" : "none"));
+            Console.WriteLine("selfsigned=" + ok + "|" + ((f & X509ChainStatusFlags.UntrustedRoot) != 0 ? "UntrustedRoot" : f.ToString()) + "|" + ch.ChainElements.Count);
+        } catch (Exception e) { Console.WriteLine("selfsigned=" + e.GetType().Name + ": " + e.Message); }
+        try {
+            var st = new X509Store(StoreName.Root, StoreLocation.LocalMachine);
+            st.Open(OpenFlags.ReadOnly);
+            X509Certificate2 root = null;
+            foreach (var r in st.Certificates)
+                if (r.Subject == r.Issuer && r.NotBefore < DateTime.Now && r.NotAfter > DateTime.Now.AddYears(1)) { root = r; break; }
+            if (root == null) { Console.WriteLine("root=none in the store"); return; }
+            var ch = new X509Chain();
+            ch.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+            Console.WriteLine("root=" + ch.Build(root) + "|" + ch.ChainElements.Count);
+        } catch (Exception e) { Console.WriteLine("root=" + e.GetType().Name + ": " + e.Message); }
+    }
+}
+CS
+# a SignedData whose certificate set is the probe's certificate and an
+# attribute certificate ([1] IMPLICIT: here an empty one), no signers
+openssl x509 -in "$C/probe.crt" -outform DER -out "$T/probe.der"
+cp "$T/probe.der" "$C/probe.der"
+python3 - "$T/probe.der" "$C/cms.der" <<'PY'
+import sys
+def tlv(tag, body):
+    n = len(body)
+    if n < 0x80: l = bytes([n])
+    else:
+        b = n.to_bytes((n.bit_length() + 7) // 8, 'big'); l = bytes([0x80 | len(b)]) + b
+    return bytes([tag]) + l + body
+oid_signed = bytes.fromhex('06092a864886f70d010702')
+oid_data = bytes.fromhex('06092a864886f70d010701')
+cert = open(sys.argv[1], 'rb').read()
+certs = tlv(0xa0, cert + tlv(0xa1, b''))
+sd = tlv(0x30, bytes.fromhex('020101') + tlv(0x31, b'') + tlv(0x30, oid_data) + certs + tlv(0x31, b''))
+open(sys.argv[2], 'wb').write(tlv(0x30, oid_signed + tlv(0xa0, sd)))
+PY
+(cd "$C" && timeout 300 "$WINE" "$mcs" -r:"$(gac WindowsBase)" -r:System.Security.dll -out:sg15.exe sg15.cs >"$T/mcs15.out" 2>&1)
+[ -f "$C/sg15.exe" ] || { fail "the sg15 probe did not compile: $(cat "$T/mcs15.out")"; exit 1; }
+out=$(cd "$C" && timeout 180 "$WINE" sg15.exe 2>&1 | tr -d '\r')
+[ "$(v handle)" = context ] && pass "X509Chain is crypt32's: its handle is a chain context" || fail "chain handle: '$(v handle)' (Mono's managed chain)"
+[ "$(v selfsigned)" = "False|UntrustedRoot|1" ] && pass "a chain asked to check revocation is built; a self-signed certificate's is UntrustedRoot (Visual Studio's installer)" \
+    || fail "revocation-checked chain: '$(v selfsigned)'"
+case "$(v root)" in True\|1) pass "a root of the system's store is a valid chain of one" ;; *) fail "system root chain: '$(v root)'" ;; esac
+[ "$(v import)" = "CN=sg-mono-fork-gate" ] && pass "X509Certificate2.Import reads a certificate into an empty one" || fail "Import: '$(v import)'"
+[ "$(v hrsuccess)" = none ] && pass "ThrowExceptionForHR and GetExceptionForHR ignore a success code" || fail "success HRESULT: '$(v hrsuccess)'"
+[ "$(v handlecert)" = "CN=sg-mono-fork-gate" ] && pass "a certificate is made from a CryptoAPI certificate context" || fail "X509Certificate(IntPtr): '$(v handlecert)'"
+[ "$(v cms)" = "1|0" ] && pass "a CMS message with an attribute certificate in its set decodes (Microsoft's time stamps)" || fail "CMS decode: '$(v cms)'"
+[ "$(v newslotattr)" = one ] && pass "a property implemented anew over a base class's has its own attribute only" || fail "newslot attributes: '$(v newslotattr)'"
+[ "$(v zipseek)" = "True|True|True" ] && pass "a deflated package part seeks: back to the start, and to a place ahead" || fail "package part seek: '$(v zipseek)'"
+# (sg15) a Windows Runtime reference: the probe is assembled, then its
+# reference to "Windows" (the only one at 255.255.255.255) is marked
+# ContentType=WindowsRuntime (AssemblyRef flags 0x200), which ilasm here
+# cannot write; Windows.winmd is not beside it, so only WinMetadata can serve it
+cat > "$C/winrt.il" <<'IL'
+.assembly extern mscorlib { .publickeytoken = (B7 7A 5C 56 19 34 E0 89) .ver 4:0:0:0 }
+.assembly extern Windows { .ver 255:255:255:255 }
+.assembly winrtprobe { .ver 1:0:0:0 }
+.class public auto ansi P extends [mscorlib]System.Object {
+  .method public static void Main() cil managed {
+    .entrypoint
+    .maxstack 2
+    .locals init (class [Windows]Windows.Networking.Connectivity.ConnectionProfile p)
+    call class [Windows]Windows.Networking.Connectivity.ConnectionProfile [Windows]Windows.Networking.Connectivity.NetworkInformation::GetInternetConnectionProfile()
+    stloc.0
+    ldstr "winrt="
+    ldloc.0
+    brtrue.s HAVE
+    ldstr "noprofile"
+    br.s DONE
+  HAVE:
+    ldloc.0
+    callvirt instance class [Windows]Windows.Networking.Connectivity.ConnectionCost [Windows]Windows.Networking.Connectivity.ConnectionProfile::GetConnectionCost()
+    callvirt instance valuetype [Windows]Windows.Networking.Connectivity.NetworkCostType [Windows]Windows.Networking.Connectivity.ConnectionCost::get_NetworkCostType()
+    box [Windows]Windows.Networking.Connectivity.NetworkCostType
+    callvirt instance string [mscorlib]System.Object::ToString()
+  DONE:
+    call string [mscorlib]System.String::Concat(string, string)
+    call void [mscorlib]System.Console::WriteLine(string)
+    ret
+  }
+}
+IL
+ilasm=$("$WINE" winepath -w "$MONO/lib/mono/4.5/ilasm.exe" | tr -d '\r')
+(cd "$C" && timeout 300 "$WINE" "$ilasm" /exe /out:winrt.exe winrt.il >"$T/ilasm.out" 2>&1)
+python3 - "$C/winrt.exe" <<'PY'
+import sys
+p = sys.argv[1]; b = bytearray(open(p, 'rb').read())
+pat = bytes.fromhex('ff00ff00ff00ff0000000000')
+i = b.find(pat)
+assert i >= 0 and b.find(pat, i + 1) < 0, "Windows reference not found once"
+b[i + 8:i + 12] = (0x200).to_bytes(4, 'little')
+open(p, 'wb').write(b)
+PY
+[ -f "$C/winrt.exe" ] || fail "the Windows Runtime probe did not assemble: $(cat "$T/ilasm.out")"
+out=$(cd "$C" && timeout 120 "$WINE" winrt.exe 2>&1 | tr -d '\r')
+case "$(v winrt)" in Unrestricted|noprofile) pass "a WindowsRuntime reference loads WinMetadata/Windows.winmd: the connection's cost is '$(v winrt)'" ;;
+    *) fail "Windows Runtime reference: '$(v winrt)' $(printf '%s' "$out" | grep -m1 -i 'could not load\|exception')" ;; esac
 exit $RC
