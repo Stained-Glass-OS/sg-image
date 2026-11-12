@@ -1,0 +1,96 @@
+diff --git a/mcs/class/corlib/System.Threading/Thread.cs b/mcs/class/corlib/System.Threading/Thread.cs
+index 7dca3e60..1db9a7df 100644
+--- a/mcs/class/corlib/System.Threading/Thread.cs
++++ b/mcs/class/corlib/System.Threading/Thread.cs
+@@ -346,7 +346,7 @@ private Thread (InternalThread it) {
+ 		public ApartmentState ApartmentState {
+ 			get {
+ 				ValidateThreadState ();
+-				return (ApartmentState)Internal.apartment_state;
++				return CurrentApartmentState ();
+ 			}
+ 
+ 			set {
+@@ -670,9 +670,38 @@ public static void EndThreadAffinity ()
+ 		public ApartmentState GetApartmentState ()
+ 		{
+ 			ValidateThreadState ();
+-			return (ApartmentState)Internal.apartment_state;
++			return CurrentApartmentState ();
+ 		}
+ 
++		// A thread that entered managed code from native code (a native host such as Visual Studio's
++		// devenv, which made its main thread an STA) has no apartment state of its own: the COM
++		// apartment the thread is in is its state, as .NET reports it.
++		ApartmentState CurrentApartmentState ()
++		{
++			var state = (ApartmentState)Internal.apartment_state;
++			if (state != ApartmentState.Unknown || !object.ReferenceEquals (this, CurrentThread) ||
++			    !Environment.IsRunningOnWindows)
++				return state;
++			try {
++				int type, qualifier;
++				if (CoGetApartmentType (out type, out qualifier) == 0) {
++					if (type == 0 /* APTTYPE_STA */ || type == 3 /* APTTYPE_MAINSTA */)
++						return ApartmentState.STA;
++					if (type == 1 /* APTTYPE_MTA */)
++						return ApartmentState.MTA;
++					if (type == 2 /* APTTYPE_NA */)
++						return qualifier == 4 /* APTTYPEQUALIFIER_NA_ON_STA */ || qualifier == 5 /* ON_MAINSTA */
++							? ApartmentState.STA : ApartmentState.MTA;
++				}
++			} catch (DllNotFoundException) {
++			} catch (EntryPointNotFoundException) {
++			}
++			return state;
++		}
++
++		[DllImport ("ole32.dll")]
++		static extern int CoGetApartmentType (out int type, out int qualifier);
++
+ 		public void SetApartmentState (ApartmentState state)
+ 		{
+ 			if (!InternalSetApartmentState (state, true))
+--- a/mono/metadata/cominterop.c
++++ b/mono/metadata/cominterop.c
+@@ -3435,6 +3435,31 @@
+ 	return result;
+ }
+ 
++/* .NET answers QueryInterface only for COM-visible interfaces: a managed interface marked
++ * [ComVisible(false)] (such as the service id marker interfaces Visual Studio declares) gets
++ * E_NOINTERFACE, not a CCW whose vtable has no methods. Imported interfaces are always visible. */
++static gboolean
++cominterop_iface_com_invisible (MonoClass *ic)
++{
++	ERROR_DECL (error);
++	MonoCustomAttrInfo *cinfo;
++	gboolean invisible = FALSE;
++
++	if (MONO_CLASS_IS_IMPORT (ic))
++		return FALSE;
++	cinfo = mono_custom_attrs_from_class_checked (ic, error);
++	mono_error_assert_ok (error);
++	if (cinfo) {
++		MonoReflectionComVisibleAttribute *attr = (MonoReflectionComVisibleAttribute *)mono_custom_attrs_get_attr_checked (cinfo, mono_class_get_com_visible_attribute_class (), error);
++		mono_error_assert_ok (error);
++		if (attr)
++			invisible = !attr->visible;
++		if (!cinfo->cached)
++			mono_custom_attrs_free (cinfo);
++	}
++	return invisible;
++}
++
+ static int STDCALL 
+ cominterop_ccw_queryinterface_impl (MonoCCWInterface* ccwe, const guint8* riid, gpointer* ppv)
+ {
+@@ -3493,7 +3518,7 @@
+ 			for (i = 0; i < ifaces->len; ++i) {
+ 				MonoClass *ic = NULL;
+ 				ic = (MonoClass *)g_ptr_array_index (ifaces, i);
+-				if (cominterop_class_guid_equal (riid, ic)) {
++				if (cominterop_class_guid_equal (riid, ic) && !cominterop_iface_com_invisible (ic)) {
+ 					itf = ic;
+ 					break;
+ 				}

@@ -57,6 +57,12 @@
 #     marshals it (Visual Studio's IVsUIContextManagerPrivate); a CCW's
 #     GetIDsOfNames with a NULL name is DISP_E_UNKNOWNNAME, not a crash;
 #     AppDomainSetup.TargetFrameworkName can be set (VsAppDomainManager).
+#   - (sg18) a thread that came into managed code from native code reports
+#     the COM apartment it is in (GetApartmentState, ApartmentState), not
+#     Unknown: Visual Studio's main thread is an STA, and WPF refused it
+#     ("The calling thread must be STA"); a CCW asked for a [ComVisible(false)]
+#     interface answers E_NOINTERFACE, as .NET does (Visual Studio's shell
+#     asked for a service id marker interface and crashed in what came back).
 # Programs are compiled here with Mono's own mcs.exe, under Wine; the image's
 # addons tree is the Mono that runs them.
 #
@@ -604,4 +610,44 @@ out=$(cd "$C" && timeout 180 "$WINE" sg17.exe 2>&1 | tr -d '\r')
     || fail "Guid[] as a SAFEARRAY: '$(v record)'"
 [ "$(v nullname)" = 80020006 ] && pass "a CCW's GetIDsOfNames with a NULL name is DISP_E_UNKNOWNNAME" || fail "GetIDsOfNames(NULL): '$(v nullname)'"
 [ "$(v tfm)" = ".NETFramework,Version=v4.7.2|False" ] && pass "AppDomainSetup.TargetFrameworkName can be set (VsAppDomainManager)" || fail "TargetFrameworkName: '$(v tfm)'"
+# (sg18) native threads in an STA and in the MTA, calling into managed code
+cat > "$C/sg18.cs" <<'CS'
+using System; using System.Runtime.InteropServices; using System.Threading;
+class A {
+    delegate uint ThreadProc(IntPtr arg);
+    [DllImport("kernel32.dll")] static extern IntPtr CreateThread(IntPtr a, UIntPtr s, ThreadProc p, IntPtr arg, uint f, out uint id);
+    [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr h, uint ms);
+    [DllImport("ole32.dll")] static extern int CoInitializeEx(IntPtr r, uint flags);
+    static ApartmentState sta = ApartmentState.Unknown, mta = ApartmentState.Unknown, prop = ApartmentState.Unknown;
+    static uint StaProc(IntPtr arg) { CoInitializeEx(IntPtr.Zero, 2); sta = Thread.CurrentThread.GetApartmentState(); prop = Thread.CurrentThread.ApartmentState; return 0; }
+    static uint MtaProc(IntPtr arg) { CoInitializeEx(IntPtr.Zero, 0); mta = Thread.CurrentThread.GetApartmentState(); return 0; }
+    static ThreadProc p1 = StaProc, p2 = MtaProc;
+    static void Main() {
+        uint id;
+        WaitForSingleObject(CreateThread(IntPtr.Zero, UIntPtr.Zero, p1, IntPtr.Zero, 0, out id), 30000);
+        WaitForSingleObject(CreateThread(IntPtr.Zero, UIntPtr.Zero, p2, IntPtr.Zero, 0, out id), 30000);
+        Console.WriteLine("apartment=" + sta + "|" + prop + "|" + mta);
+        IntPtr unk = Marshal.GetIUnknownForObject(new Service()), p;
+        Guid marker = typeof(IMarker).GUID, visible = typeof(IVisible).GUID;
+        int hm = Marshal.QueryInterface(unk, ref marker, out p);
+        if (p != IntPtr.Zero) Marshal.Release(p);
+        int hv = Marshal.QueryInterface(unk, ref visible, out p);
+        if (p != IntPtr.Zero) Marshal.Release(p);
+        Marshal.Release(unk);
+        Console.WriteLine("comvisible=" + hm.ToString("x8") + "|" + hv.ToString("x8"));
+    }
+}
+[ComVisible(false), Guid("6F1C1D6A-7A55-4F1E-9C2B-3D7E1C0A5B11")] public interface IMarker { }
+[ComVisible(true), Guid("6F1C1D6A-7A55-4F1E-9C2B-3D7E1C0A5B12"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IVisible { [PreserveSig] int Answer(); }
+[ComVisible(true), ClassInterface(ClassInterfaceType.None)]
+public class Service : IMarker, IVisible { public int Answer() { return 42; } }
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg18.exe sg18.cs >"$T/mcs18.out" 2>&1)
+[ -f "$C/sg18.exe" ] || { fail "the sg18 probe did not compile: $(cat "$T/mcs18.out")"; exit 1; }
+out=$(cd "$C" && timeout 180 "$WINE" sg18.exe 2>&1 | tr -d '\r')
+[ "$(v apartment)" = "STA|STA|MTA" ] && pass "a native thread's apartment is what it is in, STA or MTA, not Unknown (Visual Studio's main thread)" \
+    || fail "native threads' apartment: '$(v apartment)'"
+[ "$(v comvisible)" = "80004002|00000000" ] && pass "a CCW asked for a [ComVisible(false)] interface says E_NOINTERFACE; a visible one is given (Visual Studio's shell)" \
+    || fail "QueryInterface of a COM-invisible interface: '$(v comvisible)'"
 exit $RC

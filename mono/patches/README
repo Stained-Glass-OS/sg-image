@@ -224,3 +224,18 @@ mono-0006-safearray-records-ccw-null-name-target-framework.patch (sg17)
       (VsAppDomainManager.InitializeNewDomain: MissingMethodException).
     Gate: test/mono-fork-test.sh (sg17 section); the sg16 build fails its
       three new checks.
+
+mono-0007-apartment-state-ccw-comvisible-qi.patch (sg18)
+    corlib Thread.GetApartmentState / ApartmentState: a thread with no
+      apartment state of its own (one that came into managed code from
+      native code) reports the COM apartment it is in (CoGetApartmentType),
+      as .NET does. Visual Studio's devenv makes its main thread an STA and
+      WPF said "The calling thread must be STA" (WindowManagerService's type
+      initializer).
+    runtime cominterop.c: a CCW's QueryInterface for a managed interface
+      marked [ComVisible(false)] is E_NOINTERFACE, as on .NET, not a CCW
+      with no methods. Visual Studio's shell QueryService()s with a service
+      id (an empty [ComVisible(false)] marker interface) as the IID, called
+      slot 5 of what came back and crashed writing into msenv.
+    Both from gaps2.
+    Gate: test/mono-fork-test.sh (sg18 section); the sg17 build fails it.
