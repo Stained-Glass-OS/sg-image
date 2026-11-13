@@ -106,7 +106,9 @@ systemctl enable greetd.service
 # the new session's compositor loses it and dies -- straight back to the login
 # screen. Autologin never had a handover, so this only appeared with the real
 # login screen.
-systemctl mask getty@tty1.service autovt@tty1.service
+# (masked in mkosi.finalize, after mkosi's "systemctl preset-all": a unit
+# masked here made preset-all fail -- "Unit ... getty@tty1.service is masked"
+# -- on newer systemd, and the image step stopped)
 systemctl enable sg-prefix-init.service
 # The machine-level wineserver: the Windows system itself, running before any
 # login. Enabled explicitly rather than relying on the package's own enable --

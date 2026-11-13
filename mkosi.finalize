@@ -1,0 +1,8 @@
+#!/bin/sh
+# Runs on the host after mkosi's "systemctl preset-all" (mkosi.postinst.chroot
+# runs before it). greetd owns tty1: nothing else may start a getty there (see
+# mkosi.postinst.chroot) -- masked here, where preset-all does not trip on it.
+set -eu
+for unit in getty@tty1.service autovt@tty1.service; do
+    ln -sf /dev/null "$BUILDROOT/etc/systemd/system/$unit"
+done
