@@ -1,6 +1,7 @@
 #!/bin/sh
-# Install (or update) the problem report receiver on freesoft.page and the
-# Caddyfile that puts it at /api/report. Validates Caddy's configuration
+# Install (or update) the problem report receiver on freesoft.page, the ISO
+# download counter (server/stats) and the Caddyfile that puts the receiver
+# at /api/report. Validates Caddy's configuration
 # before reloading it; the old one is kept as Caddyfile.bak.
 set -eu
 HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -13,6 +14,9 @@ $SSH 'cat > /etc/systemd/system/sg-report-receiver.service' < "$HERE/sg-report-r
 $SSH 'cat > /usr/local/lib/sg-report-receiver/geoip-update.sh' < "$HERE/geoip-update.sh"
 $SSH 'cat > /etc/systemd/system/sg-geoip-update.service' < "$HERE/sg-geoip-update.service"
 $SSH 'cat > /etc/systemd/system/sg-geoip-update.timer' < "$HERE/sg-geoip-update.timer"
+$SSH 'cat > /usr/local/bin/sg-iso-count && chmod 755 /usr/local/bin/sg-iso-count' < "$HERE/../stats/sg-iso-count"
+$SSH 'cat > /etc/systemd/system/sg-iso-count.service' < "$HERE/../stats/sg-iso-count.service"
+$SSH 'cat > /etc/systemd/system/sg-iso-count.timer' < "$HERE/../stats/sg-iso-count.timer"
 $SSH 'cat > /etc/caddy/Caddyfile.new' < "$HERE/../Caddyfile"
 $SSH 'set -e
 dpkg -s python3-maxminddb >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-maxminddb >/dev/null
@@ -20,6 +24,7 @@ systemctl daemon-reload
 [ -s /var/lib/sg-geoip/dbip-city-lite.mmdb ] || systemctl start sg-geoip-update.service
 systemctl enable --now sg-geoip-update.timer
 systemctl enable --now sg-report-receiver.service
+systemctl enable --now sg-iso-count.timer
 systemctl restart sg-report-receiver.service
 caddy validate --config /etc/caddy/Caddyfile.new --adapter caddyfile >/dev/null
 cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak

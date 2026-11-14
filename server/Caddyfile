@@ -1,8 +1,37 @@
 # freesoft.page (the project server): the website, the apt repository, the
 # ISOs, and the problem report receiver (reports/). Installed by
 # server/reports/deploy.sh; edit here, not on the server.
+#
+# What the server keeps is in server/PRIVACY.md: the only access log is
+# the ISO downloads' (no address, no headers), which server/stats/
+# sg-iso-count turns into a daily count of downloads every hour.
 freesoft.page, www.freesoft.page {
 	encode gzip
+	# The only access log: ISO downloads, with the time, the file, the
+	# status and the bytes sent -- the address, port and headers deleted
+	# before anything is written. Everything else is not logged at all.
+	@notiso not path /iso/*.iso
+	skip_log @notiso
+	log {
+		output file /var/log/caddy/iso.log {
+			roll_size 50MiB
+			roll_keep 1
+		}
+		format filter {
+			wrap json
+			fields {
+				request>remote_ip delete
+				request>remote_port delete
+				request>client_ip delete
+				request>headers delete
+				request>tls delete
+				request>host delete
+				request>proto delete
+				resp_headers delete
+				user_id delete
+			}
+		}
+	}
 	# Report a problem: plain-text reports, at most 512 KB (the receiver
 	# limits them per address); the client's address goes with them
 	handle /api/report {

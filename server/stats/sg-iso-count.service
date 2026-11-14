@@ -1,0 +1,6 @@
+[Unit]
+Description=Count ISO downloads (no addresses) and empty the ISO log
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/sg-iso-count

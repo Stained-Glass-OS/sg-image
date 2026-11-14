@@ -31,7 +31,8 @@
 #                         place, then the zone of the nearest town of 15,000
 #                         people in its country (GeoNames' cities15000, CC BY
 #                         4.0; zone1970.tab's zones when it is missing).
-#                         Nothing is kept; 60 a day per address.
+#                         Nothing is kept, not even in a log: the address is
+#                         held in memory for the day's limit of 60 only.
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import collections
@@ -317,8 +318,9 @@ class Handler(BaseHTTPRequestHandler):
                           "source": "IP Geolocation by DB-IP (https://db-ip.com), CC BY 4.0"})
 
     def log_message(self, fmt, *args):
-        sys.stderr.write("%s %s\n" % (self.headers.get("X-Sg-Client-Ip", "-") if hasattr(self, "headers") and self.headers else "-",
-                                      fmt % args))
+        # No access log: no request, and no address, is written anywhere
+        # (David 2026-11-14; server/PRIVACY.md). Errors still go to stderr.
+        pass
 
 
 # ---- the public Debug Reports --------------------------------------------------------------

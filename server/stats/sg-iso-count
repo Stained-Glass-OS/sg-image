@@ -1,0 +1,111 @@
+#!/usr/bin/python3
+# sg-iso-count -- how many times the ISO was downloaded, and nothing else.
+#
+# Caddy writes one line per ISO request to /var/log/caddy/iso.log with the
+# time, the file, the status and the bytes sent; the address, port and
+# headers are deleted before the line is written (server/Caddyfile). Every
+# hour (sg-iso-count.timer) this adds those lines into a daily total in
+# COUNTS and then empties the log, so no line lives longer than an hour.
+#
+# COUNTS (tab separated, one line per UTC day):
+#   date  requests  bytes  downloads
+# "downloads" is bytes / the ISO's size: download managers and resumed
+# downloads make several requests for one download, and an abandoned one
+# sends only part of it, so whole ISOs' worth of bytes is the honest count.
+#
+#   sg-iso-count          add the log into COUNTS and empty it
+#   sg-iso-count --show   print COUNTS with a total
+#
+# SG_ISO_LOG, SG_ISO_COUNTS, SG_ISO_DIR: the test.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+import glob
+import json
+import os
+import sys
+import time
+
+LOG = os.environ.get("SG_ISO_LOG", "/var/log/caddy/iso.log")
+COUNTS = os.environ.get("SG_ISO_COUNTS", "/var/lib/sg-stats/iso-downloads.tsv")
+ISO_DIR = os.environ.get("SG_ISO_DIR", "/srv/www/iso")
+DEFAULT_SIZE = 3 * 1024 ** 3
+
+
+def read_counts():
+    counts = {}
+    try:
+        with open(COUNTS) as f:
+            for line in f:
+                p = line.split()
+                if len(p) >= 3 and p[0][:1].isdigit():
+                    counts[p[0]] = [int(p[1]), int(p[2])]
+    except FileNotFoundError:
+        pass
+    return counts
+
+
+def iso_size():
+    """The newest ISO's size (only the newest is kept on the server)."""
+    isos = glob.glob(os.path.join(ISO_DIR, "*.iso"))
+    return max((os.path.getsize(i) for i in isos if not os.path.islink(i)), default=0) or DEFAULT_SIZE
+
+
+def write_counts(counts):
+    os.makedirs(os.path.dirname(COUNTS), exist_ok=True)
+    size = iso_size()
+    tmp = COUNTS + ".new"
+    with open(tmp, "w") as f:
+        f.write("# date\trequests\tbytes\tdownloads (bytes / ISO size)\n")
+        for day in sorted(counts):
+            req, sent = counts[day]
+            f.write("%s\t%d\t%d\t%.1f\n" % (day, req, sent, sent / size))
+    os.replace(tmp, COUNTS)
+
+
+def count_lines(lines, counts):
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        uri = (e.get("request") or {}).get("uri", "")
+        if not uri.split("?")[0].endswith(".iso") or e.get("status") not in (200, 206):
+            continue
+        day = time.strftime("%Y-%m-%d", time.gmtime(float(e.get("ts", time.time()))))
+        c = counts.setdefault(day, [0, 0])
+        c[0] += 1
+        c[1] += int(e.get("size") or 0)
+
+
+def collect():
+    counts = read_counts()
+    # files Caddy rolled over (closed): count them and remove them
+    for path in sorted(glob.glob(os.path.splitext(LOG)[0] + "-*.log")):
+        with open(path, errors="replace") as f:
+            count_lines(f, counts)
+        os.remove(path)
+    # the live log: Caddy appends to it (O_APPEND), so it is read and then
+    # truncated in place, never renamed
+    try:
+        with open(LOG, "r+", errors="replace") as f:
+            lines = f.readlines()
+            f.truncate(0)
+        count_lines(lines, counts)
+    except FileNotFoundError:
+        pass
+    write_counts(counts)
+
+
+def show():
+    counts = read_counts()
+    size = iso_size()
+    tr = tb = 0
+    for day in sorted(counts):
+        r, b = counts[day]
+        tr += r
+        tb += b
+        print("%s  %6d requests  %8.1f GB  %7.1f downloads" % (day, r, b / 1e9, b / size))
+    print("total       %6d requests  %8.1f GB  %7.1f downloads" % (tr, tb / 1e9, tb / size))
+
+
+if __name__ == "__main__":
+    show() if "--show" in sys.argv[1:] else collect()
