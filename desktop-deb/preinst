@@ -1,0 +1,9 @@
+#!/bin/sh
+# stained-glass-desktop: greetd's own config.toml (its conffile) steps aside
+# for ours -- the login screen -- and comes back when this package is purged.
+set -e
+if [ "$1" = install ] || [ "$1" = upgrade ]; then
+    dpkg-divert --package stained-glass-desktop --add --rename \
+        --divert /etc/greetd/config.toml.debian /etc/greetd/config.toml >/dev/null
+fi
+exit 0

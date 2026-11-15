@@ -1,0 +1,125 @@
+#!/bin/sh
+# stained-glass-desktop: what the image build does (sg-image
+# mkosi.postinst.chroot), done to a Debian machine that already exists. What
+# its owner set up stays as it was: no service is turned off but the previous
+# display manager (greetd takes its place) and the gettys on tty1.
+set -e
+STATE=/var/lib/stained-glass-desktop
+
+case "$1" in
+configure)
+    mkdir -p "$STATE"
+
+    # --- the login screen: greetd in place of the previous display manager ---
+    # (remembered once, for purge)
+    GREETD=$(command -v greetd 2>/dev/null || echo /usr/sbin/greetd)
+    prev=$(cat /etc/X11/default-display-manager 2>/dev/null || true)
+    if [ "$prev" != "$GREETD" ]; then
+        [ -e "$STATE/previous-display-manager" ] || printf '%s\n' "$prev" > "$STATE/previous-display-manager"
+        if [ -n "$prev" ]; then
+            systemctl disable "$(basename "$prev").service" >/dev/null 2>&1 || true
+        fi
+        mkdir -p /etc/X11
+        printf '%s\n' "$GREETD" > /etc/X11/default-display-manager
+    fi
+    # display-manager.service is an alias only one unit may hold
+    rm -f /etc/systemd/system/display-manager.service
+    systemctl enable greetd.service >/dev/null 2>&1 || true
+    # greetd owns tty1 (vt = 1): no getty may take it at the handover from the
+    # login screen to the session (see mkosi.postinst.chroot)
+    systemctl mask getty@tty1.service autovt@tty1.service >/dev/null 2>&1 || true
+    systemctl set-default graphical.target >/dev/null 2>&1 || true
+
+    # --- the Windows system and the services the image turns on ---------------
+    for u in sg-prefix-init.service sg-wineserver.service sg-lockd.service sg-drivers.service \
+             ssh.service systemd-resolved.service sg-netd.socket; do
+        systemctl enable "$u" >/dev/null 2>&1 || true
+    done
+    # NetworkManager configures the network -- unless systemd-networkd already
+    # does here: then it is left as it is (turning it off from a package could
+    # cut the machine off its network, and the ssh session doing the install)
+    if systemctl is-enabled --quiet systemd-networkd.service 2>/dev/null; then
+        echo "stained-glass-desktop: systemd-networkd configures this machine's network and stays on;" \
+             "NetworkManager (Settings > Network) manages only what networkd leaves alone" >&2
+    fi
+    systemctl enable NetworkManager.service >/dev/null 2>&1 || true
+
+    # --- the people of this machine ---------------------------------------------
+    # Every person's account is admitted to the Windows side (sgwine: wine-sg
+    # lets members of the group owning the machine's wineserver directory
+    # connect -- outside it a session cannot start), and the people who already
+    # administer the machine (its sudo group) are its administrators: what an
+    # account Setup or the first-run setup makes gets (sg-install, sg-oobed).
+    if getent group sgwine >/dev/null; then
+        getent passwd | while IFS=: read -r name _ uid _ _ _ shell; do
+            [ "$uid" -ge 1000 ] && [ "$uid" -lt 60000 ] || continue
+            case "$shell" in */nologin|*/false|"") continue ;; esac
+            adduser "$name" sgwine >/dev/null 2>&1 || true
+        done
+    fi
+    if getent group sg-admins >/dev/null; then
+        for u in $(getent group sudo | cut -d: -f4 | tr ',' ' '); do
+            adduser "$u" sg-admins >/dev/null 2>&1 || true
+        done
+    fi
+
+    # --- people's homes are their Windows profiles: /etc/fstab ---------------
+    # Each home stays where it is (often its own disk) and is bind-mounted on
+    # the person's profile, C:\users\<name>, so Windows programs see a real
+    # folder there (sg-session's profile-in-home: sg-profile-create gives the
+    # SYSTEM account only the Windows folders, sg-shared-home never copies).
+    # nofail: a missing home never stops the boot; x-mount.mkdir makes the
+    # mount point. A profile that already holds files is left as it is.
+    PREFIX=/var/lib/stained-glass/prefix
+    getent passwd | while IFS=: read -r name _ uid _ _ home shell; do
+        [ "$uid" -ge 1000 ] && [ "$uid" -lt 60000 ] || continue
+        case "$shell" in */nologin|*/false|"") continue ;; esac
+        case "$home" in /*/*) ;; *) continue ;; esac
+        [ -d "$home" ] && [ ! -L "$home" ] || continue
+        case "$home$name" in *[[:space:]]*) continue ;; esac
+        target="$PREFIX/drive_c/users/$name"
+        grep -q "^# stained-glass-desktop: $name\$" /etc/fstab 2>/dev/null && continue
+        if [ -d "$target" ] && [ -n "$(ls -A "$target" 2>/dev/null)" ]; then
+            echo "stained-glass-desktop: $name already has a Windows profile with files; their home is not mounted on it" >&2
+            continue
+        fi
+        printf '# stained-glass-desktop: %s\n%s %s none bind,nofail,x-mount.mkdir,x-systemd.requires-mounts-for=%s 0 0\n' \
+            "$name" "$home" "$target" "$home" >> /etc/fstab
+    done
+    [ -d /run/systemd/system ] && systemctl daemon-reload >/dev/null 2>&1 || true
+
+    # --- os-release: Stained Glass OS (as mkosi.postinst.chroot) ---------------
+    # Debian's file is diverted, so base-files upgrades write beside ours.
+    if [ "$(dpkg-divert --truename /usr/lib/os-release)" = /usr/lib/os-release ]; then
+        dpkg-divert --package stained-glass-desktop --add --rename \
+            --divert /usr/lib/os-release.debian /usr/lib/os-release >/dev/null
+    fi
+    if [ -f /usr/lib/os-release.debian ]; then
+        VERSION_CODENAME=$(sed -n 's/^VERSION_CODENAME=//p' /usr/lib/os-release.debian)
+        DEBIAN_VERSION_ID=$(sed -n 's/^VERSION_ID=//p' /usr/lib/os-release.debian | tr -d '"')
+        cat > /usr/lib/os-release <<OSR
+PRETTY_NAME="Stained Glass OS 0.1"
+NAME="Stained Glass OS"
+ID=stained-glass
+ID_LIKE=debian
+VERSION_ID="0.1"
+VERSION="0.1 ($VERSION_CODENAME)"
+VERSION_CODENAME=$VERSION_CODENAME
+IMAGE_ID=stained-glass
+IMAGE_VERSION="debian-conversion"
+DEBIAN_VERSION_ID="$DEBIAN_VERSION_ID"
+HOME_URL="https://freesoft.page/"
+SUPPORT_URL="https://github.com/Stained-Glass-OS/stained-glass"
+BUG_REPORT_URL="https://github.com/Stained-Glass-OS/stained-glass/issues"
+ANSI_COLOR="1;35"
+OSR
+        ln -sf ../usr/lib/os-release /etc/os-release
+    fi
+
+    if [ -z "$2" ]; then
+        echo "stained-glass-desktop: restart to sign in to Stained Glass OS" \
+             "(the previous desktop's display manager is off; apt purge stained-glass-desktop brings it back)" >&2
+    fi
+    ;;
+esac
+exit 0

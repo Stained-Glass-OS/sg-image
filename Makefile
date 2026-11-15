@@ -19,7 +19,7 @@ SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 SG_MAIL     ?= ../sg-mail
 
-.PHONY: keyring-test keyring-reset-test netlock-test firewall-test gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test surface-handle-test d3d-patchrev upgrade-order-test clean distclean
+.PHONY: desktop-deb desktop-test keyring-test keyring-reset-test netlock-test firewall-test gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-deb apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test surface-handle-test d3d-patchrev upgrade-order-test clean distclean
 
 all: image
 
@@ -328,7 +328,7 @@ PWSH_SHA256    := 02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c8
 PYTHON_VERSION := 3.14.7
 PYTHON_SHA256  := 46a4da5529a92d18ff894911f6e6033a8253198d705b8161bf28c9123c87d46b
 
-APPS_DIR   := $(EXTRA_TREE)/opt/sg-apps
+APPS_DIR   := $(BUILD)/apps-payload
 APPS_CACHE := $(BUILD)/apps-cache
 
 apps: $(APPS_DIR)/VERSION
@@ -354,6 +354,15 @@ $(APPS_DIR)/VERSION: Makefile
 	@echo "$(PYTHON_VERSION)" > $(APPS_DIR)/python/SG_VERSION
 	@echo "powershell $(PWSH_VERSION), python $(PYTHON_VERSION)" > $@
 	@echo "staged apps: $$(cat $@)"
+
+# ...as the package sg-apps (apps-deb/build-deb.sh): images install it with
+# the other packages, and installed and converted machines get it from apt.
+# An older build's loose copy in the extra tree must not ship beside it.
+apps-deb: staged-debs apps
+	@rm -rf $(EXTRA_TREE)/opt/sg-apps
+	apps-deb/build-deb.sh $(APPS_DIR) $(EXTRA_TREE)/opt/sg-packages
+	@echo "sg-apps $$( { cat apps-deb/build-deb.sh $(APPS_DIR)/VERSION; echo $(PWSH_SHA256) $(PYTHON_SHA256); } | sha256sum | cut -c1-40)" \
+	  >> $(EXTRA_TREE)/opt/sg-packages/SOURCES
 
 # --- Wine's .NET Framework and HTML engine ------------------------------------
 
@@ -663,6 +672,22 @@ speech: staged-debs
 	@echo "sg-speech-model-parakeet $$( { cat speech-model/build-deb.sh; SG_SPEECH_LIB=$(SG_SESSION)/speech python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import sgspeech; print(sgspeech.MODEL_NAME, sgspeech.FILES)' $(SG_SESSION)/speech; } | sha256sum | cut -c1-40)" \
 	  >> $(EXTRA_TREE)/opt/sg-packages/SOURCES
 
+# --- Stained Glass OS on an existing Debian ------------------------------------
+
+# stained-glass-desktop (desktop-deb/build-deb.sh): `apt install` turns a
+# Debian 13 machine into a Stained Glass machine -- the image's packages (read
+# from mkosi.conf) and what mkosi.postinst.chroot does. Published on the apt
+# site only: an image is built with all of it already.
+DESKTOP_OUT := $(BUILD)/desktop-deb
+
+desktop-deb:
+	rm -rf $(DESKTOP_OUT) && mkdir -p $(DESKTOP_OUT)
+	desktop-deb/build-deb.sh $(DESKTOP_OUT)
+	@echo "stained-glass-desktop $$(cat mkosi.conf desktop-deb/* mkosi.extra/etc/greetd/config.toml mkosi.extra/etc/NetworkManager/conf.d/50-stained-glass.conf | sha256sum | cut -c1-40)" > $(DESKTOP_OUT)/SOURCES
+
+desktop-test:
+	sh test/desktop-deb-test.sh
+
 # --- package repository --------------------------------------------------------
 
 # The signed apt repository, https://freesoft.page/apt (stained-glass
@@ -673,7 +698,7 @@ speech: staged-debs
 #   make repo-check   verify it with apt, as a machine would (and that a
 #                     tampered index is rejected)
 #   make publish      fetch what is live, rebuild, verify, replace the live site
-REPO_DEBS = $(wildcard $(EXTRA_TREE)/opt/sg-packages/*.deb) $(wildcard $(REPO_ONLY)/*.deb)
+REPO_DEBS = $(wildcard $(EXTRA_TREE)/opt/sg-packages/*.deb) $(wildcard $(REPO_ONLY)/*.deb) $(wildcard $(DESKTOP_OUT)/*.deb)
 
 repo: staged-debs
 	repo/build-repo.sh $(BUILD)/apt $(REPO_DEBS)
@@ -681,7 +706,7 @@ repo: staged-debs
 repo-check: repo
 	repo/check-repo.sh $(BUILD)/apt
 
-publish: staged-debs speech d3d-deb mono-deb gecko-deb gtk-deb gtk-scale-debs dymo-deb davmail-deb thunderbird-deb
+publish: staged-debs speech d3d-deb apps-deb mono-deb gecko-deb gtk-deb gtk-scale-debs dymo-deb davmail-deb thunderbird-deb desktop-deb
 	repo/publish.sh $(REPO_DEBS)
 
 # --- the boot splash ---------------------------------------------------------
@@ -706,7 +731,7 @@ splash: staged-debs
 
 # --- image -----------------------------------------------------------------
 
-image: staged-debs d3d-deb apps addons mono-deb gecko-deb gtk-deb gtk-scale-debs dymo-deb davmail-deb thunderbird-deb speech splash
+image: staged-debs d3d-deb apps-deb addons mono-deb gecko-deb gtk-deb gtk-scale-debs dymo-deb davmail-deb thunderbird-deb speech splash
 	@# Our packages go in with dpkg: their dependencies must be in mkosi.conf
 	@# (or come with what is), else the build fails at its very end.
 	sh test/image-deps-test.sh $(EXTRA_TREE)/opt/sg-packages || [ $$? = 77 ]
