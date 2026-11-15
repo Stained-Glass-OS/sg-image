@@ -606,7 +606,9 @@ gtk-theme-test:
 # once per Debian version and patch, cached). The image has GTK 3's library
 # and data (libgtk-3-0t64, libgtk-3-common): those are staged for it; the
 # rest of both sources (GTK 4, gir, -bin, -dev) only goes to the apt
-# repository, so a machine installing them gets matching versions.
+# repository, so a machine installing them gets matching versions -- and so
+# do both sources' i386 builds (gtk-scale/build-i386.sh, in an i386 chroot:
+# Steam's libgtk-3-0t64:i386 must be at the amd64 copy's version).
 GTK_SCALE_CACHE := $(BUILD)/gtk-scale-cache
 GTK_SCALE_OUT   := $(BUILD)/gtk-scale-out
 REPO_ONLY       := $(BUILD)/repo-only
@@ -619,10 +621,12 @@ gtk-scale-debs: staged-debs
 	@if [ "$(SG_GTK_FROM_REPO)" = 1 ]; then \
 		exec gtk-scale/from-repo.sh $(GTK_SCALE_OUT); fi; \
 	gtk-scale/build-debs.sh gtk3 $(GTK_SCALE_CACHE) $(GTK_SCALE_OUT) && \
-	gtk-scale/build-debs.sh gtk4 $(GTK_SCALE_CACHE) $(GTK_SCALE_OUT)
+	gtk-scale/build-debs.sh gtk4 $(GTK_SCALE_CACHE) $(GTK_SCALE_OUT) && \
+	gtk-scale/build-i386.sh gtk3 $(GTK_SCALE_CACHE) $(GTK_SCALE_OUT) && \
+	gtk-scale/build-i386.sh gtk4 $(GTK_SCALE_CACHE) $(GTK_SCALE_OUT)
 	@rm -f $(REPO_ONLY)/*.deb
 	@for d in $(GTK_SCALE_OUT)/*.deb; do \
-	    case "$$(basename $$d)" in libgtk-3-0t64_*|libgtk-3-common_*) cp $$d $(EXTRA_TREE)/opt/sg-packages/ ;; *) cp $$d $(REPO_ONLY)/ ;; esac; \
+	    case "$$(basename $$d)" in libgtk-3-0t64_*_amd64.deb|libgtk-3-common_*) cp $$d $(EXTRA_TREE)/opt/sg-packages/ ;; *) cp $$d $(REPO_ONLY)/ ;; esac; \
 	done
 	@src="gtk-scale $$(cat gtk-scale/build-debs.sh gtk-scale/*.patch | sha256sum | cut -c1-40)"; \
 	for d in $(GTK_SCALE_OUT)/*.deb; do echo "$$(dpkg-deb -f $$d Package) $$src"; done > $(REPO_ONLY)/SOURCES; \

@@ -25,6 +25,7 @@ apt_root() {
 }
 apt_opts() {
     echo -o "Dir=$1" -o "Dir::State::status=$1/var/lib/dpkg/status" \
+         -o APT::Architecture=amd64 -o APT::Architectures::=amd64 -o APT::Architectures::=i386 \
          -o Debug::NoLocking=1 -o APT::Update::Error-Mode=any -o APT::Sandbox::User="$(id -un)"
 }
 
@@ -33,11 +34,13 @@ R=$(apt_root "$REPO")
 # shellcheck disable=SC2046
 if out=$(apt-get $(apt_opts "$R") update 2>&1); then
     pass "apt accepts the signed repository"
-    want=$(find "$REPO/pool" -name '*.deb' | wc -l)
-    # shellcheck disable=SC2046
-    got=$(apt-cache $(apt_opts "$R") dumpavail | grep -c '^Package:' || true)
-    if [[ "$got" -eq "$want" ]]; then pass "apt lists all $want packages"
-    else fail "apt lists $got packages, the pool has $want"; fi
+    # each architecture's index: its own packages and the independent ones
+    for a in amd64 i386; do
+        want=$(find "$REPO/pool" \( -name "*_$a.deb" -o -name '*_all.deb' \) | wc -l)
+        got=$(grep -c '^Package:' "$R/var/lib/apt/lists/"*"_binary-${a}_Packages" 2>/dev/null || true)
+        if [[ "$got" -eq "$want" ]]; then pass "apt lists all $want $a packages"
+        else fail "apt lists ${got:-0} $a packages, the pool has $want"; fi
+    done
 else
     fail "apt rejected the repository"; printf '%s\n' "$out" | sed 's/^/      /'
 fi

@@ -4,7 +4,10 @@
 #   repo/build-repo.sh OUT_DIR DEB...
 #
 # Produces a standard layout -- pool/main/<package>/<file>.deb and
-# dists/trixie/{Release,InRelease,Release.gpg} with main/binary-amd64 indexes --
+# dists/trixie/{Release,InRelease,Release.gpg} with main/binary-amd64 and
+# main/binary-i386 indexes (i386: our GTK's 32-bit libraries, see
+# gtk-scale/build-i386.sh; each index has its own architecture's packages and
+# the architecture-independent ones) --
 # signed with the archive key kept in ~/.sgkeys (SG_KEY_DIR), never in a
 # repository. Machines verify it with the public key the image ships
 # (/usr/share/keyrings/stained-glass-archive-keyring.gpg).
@@ -20,7 +23,7 @@ KEY_DIR="${SG_KEY_DIR:-$HOME/.sgkeys}"
 export GNUPGHOME="$KEY_DIR/gnupg"
 SUITE=trixie
 COMPONENT=main
-ARCH=amd64
+ARCHES="amd64 i386"
 
 log() { echo "[repo] $*"; }
 [[ -d "$GNUPGHOME" ]] || { echo "no signing key at $GNUPGHOME -- see stained-glass docs/package-repository.md" >&2; exit 2; }
@@ -28,7 +31,7 @@ FPR=$(gpg --list-secret-keys --with-colons "Stained Glass OS Archive" 2>/dev/nul
 [[ -n "$FPR" ]] || { echo "no 'Stained Glass OS Archive' secret key in $GNUPGHOME" >&2; exit 2; }
 
 rm -rf "$OUT"
-mkdir -p "$OUT/dists/$SUITE/$COMPONENT/binary-$ARCH"
+for a in $ARCHES; do mkdir -p "$OUT/dists/$SUITE/$COMPONENT/binary-$a"; done
 
 for deb in "$@"; do
     pkg=$(dpkg-deb -f "$deb" Package)
@@ -66,15 +69,18 @@ for deb in "$@"; do
 done
 
 cd "$OUT"
-apt-ftparchive packages "pool/$COMPONENT" > "dists/$SUITE/$COMPONENT/binary-$ARCH/Packages"
-gzip -9 -k "dists/$SUITE/$COMPONENT/binary-$ARCH/Packages"
-xz -9 -k "dists/$SUITE/$COMPONENT/binary-$ARCH/Packages"
+for a in $ARCHES; do
+    # --arch: *_<a>.deb and *_all.deb only
+    apt-ftparchive --arch "$a" packages "pool/$COMPONENT" > "dists/$SUITE/$COMPONENT/binary-$a/Packages"
+    gzip -9 -k "dists/$SUITE/$COMPONENT/binary-$a/Packages"
+    xz -9 -k "dists/$SUITE/$COMPONENT/binary-$a/Packages"
+done
 apt-ftparchive \
     -o APT::FTPArchive::Release::Origin="Stained Glass OS" \
     -o APT::FTPArchive::Release::Label="Stained Glass OS" \
     -o APT::FTPArchive::Release::Suite="$SUITE" \
     -o APT::FTPArchive::Release::Codename="$SUITE" \
-    -o APT::FTPArchive::Release::Architectures="$ARCH all" \
+    -o APT::FTPArchive::Release::Architectures="$ARCHES all" \
     -o APT::FTPArchive::Release::Components="$COMPONENT" \
     -o APT::FTPArchive::Release::Description="Stained Glass OS packages" \
     release "dists/$SUITE" > "dists/$SUITE/Release"
