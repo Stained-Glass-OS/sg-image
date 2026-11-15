@@ -31,8 +31,9 @@ CACHE=${2:?usage}
 OUT=${3:?usage}
 case "$WHICH" in
     # REV 2 (GTK 3): XInput2's events divided by the fractional scale too
-    gtk3) SRC=gtk+3.0 PATCH="$HERE/gtk3-fractional-scale.patch" REV=2 ;;
-    gtk4) SRC=gtk4 PATCH="$HERE/gtk4-fractional-scale.patch" REV=1 ;;
+    # REV 3 / 2: our changelog entry dated as Debian's (identical in amd64 and i386)
+    gtk3) SRC=gtk+3.0 PATCH="$HERE/gtk3-fractional-scale.patch" REV=3 ;;
+    gtk4) SRC=gtk4 PATCH="$HERE/gtk4-fractional-scale.patch" REV=2 ;;
     *) echo "build-debs: gtk3 or gtk4" >&2; exit 2 ;;
 esac
 
@@ -57,13 +58,19 @@ patch -d "$S" -p1 -s --dry-run < "$PATCH" >/dev/null || { echo "build-debs: $(ba
 cp "$PATCH" "$S/debian/patches/sg-fractional-scale.patch"
 echo sg-fractional-scale.patch >> "$S/debian/patches/series"   # dpkg-buildpackage applies it (3.0 quilt)
 
-DATE=$(cd "$S" && date -u -d "$(dpkg-parsechangelog -S Date)" +%Y%m%d)
+DEBDATE=$(cd "$S" && dpkg-parsechangelog -S Date)
+DATE=$(date -u -d "$DEBDATE" +%Y%m%d)
 UP=${DEBVER%-*}
 DREV=${DEBVER##*-}
 VERSION="$UP-${DREV%%+*}+sg$DATE.$REV"
 ( cd "$S" && DEBFULLNAME="Stained Glass OS" DEBEMAIL="ke7oxh@gmail.com" \
     dch -v "$VERSION" -D trixie --force-distribution \
     "X11: fractional window scale from the XSETTINGS manager's Gdk/SgFractionalScale (Stained Glass OS; on $DEBVER)" )
+# dch dates the entry now; the amd64 and i386 builds (gtk-scale/build-i386.sh)
+# run at different times, and Multi-Arch: same packages must ship a
+# byte-identical changelog.Debian.gz, or dpkg refuses the second architecture.
+# Date it as Debian's entry, so every build of this version says the same.
+sed -i "0,/^ -- .*>  .*/s//$(sed -n '0,/^ -- /s/^\( -- .*>\)  .*/\1/p' "$S/debian/changelog" | sed 's/[&/\]/\\&/g')  $DEBDATE/" "$S/debian/changelog"
 
 ( cd "$S" && DEB_BUILD_OPTIONS="nocheck nodoc parallel=${SG_JOBS:-4}" DEB_BUILD_PROFILES="noudeb nocheck nodoc" \
     nice dpkg-buildpackage -b -uc -us -j"${SG_JOBS:-4}" > "$W/build.log" 2>&1 ) || {
