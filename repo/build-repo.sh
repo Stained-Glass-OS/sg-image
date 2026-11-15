@@ -42,7 +42,7 @@ for deb in "$@"; do
     mkdir -p "$dest"
     cp "$deb" "$dest/"
     # The source it was built from (sg-image's staged SOURCES), kept beside it.
-    src=$(awk -v p="$pkg" '$1 == p {print $2}' "$(dirname "$deb")/SOURCES" 2>/dev/null || true)
+    src=$(awk -v p="$pkg" '$1 == p {print $2; exit}' "$(dirname "$deb")/SOURCES" 2>/dev/null || true)
     [[ -z "$src" ]] || echo "$src" > "$dest/$(basename "$deb").src"
     if [[ -n "${PUBLISHED_DIR:-}" ]]; then
         live="$PUBLISHED_DIR/pool/$COMPONENT/$pkg/$(basename "$deb")"

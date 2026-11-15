@@ -629,7 +629,7 @@ gtk-scale-debs: staged-debs
 	    case "$$(basename $$d)" in libgtk-3-0t64_*_amd64.deb|libgtk-3-common_*) cp $$d $(EXTRA_TREE)/opt/sg-packages/ ;; *) cp $$d $(REPO_ONLY)/ ;; esac; \
 	done
 	@src="gtk-scale $$(cat gtk-scale/build-debs.sh gtk-scale/*.patch | sha256sum | cut -c1-40)"; \
-	for d in $(GTK_SCALE_OUT)/*.deb; do echo "$$(dpkg-deb -f $$d Package) $$src"; done > $(REPO_ONLY)/SOURCES; \
+	for d in $(GTK_SCALE_OUT)/*.deb; do echo "$$(dpkg-deb -f $$d Package) $$src"; done | sort -u > $(REPO_ONLY)/SOURCES; \
 	for d in libgtk-3-0t64 libgtk-3-common; do echo "$$d $$src"; done >> $(EXTRA_TREE)/opt/sg-packages/SOURCES
 
 gtk-scale-test:
