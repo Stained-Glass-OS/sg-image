@@ -57,10 +57,20 @@ configure)
             adduser "$name" sgwine >/dev/null 2>&1 || true
         done
     fi
+    # (a member of the sudo group, or anyone sudoers lets run everything:
+    # "david ALL=(ALL) NOPASSWD: ALL" in /etc/sudoers.d is as common)
     if getent group sg-admins >/dev/null; then
         for u in $(getent group sudo | cut -d: -f4 | tr ',' ' '); do
             adduser "$u" sg-admins >/dev/null 2>&1 || true
         done
+        if command -v sudo >/dev/null 2>&1; then
+            getent passwd | while IFS=: read -r name _ uid _ _ _ shell; do
+                [ "$uid" -ge 1000 ] && [ "$uid" -lt 60000 ] || continue
+                case "$shell" in */nologin|*/false|"") continue ;; esac
+                sudo -n -l -U "$name" 2>/dev/null | grep -qE '^ +\(ALL(:ALL)?\) +(NOPASSWD: +)?ALL$' &&
+                    adduser "$name" sg-admins >/dev/null 2>&1 || true
+            done
+        fi
     fi
 
     # --- people's homes are their Windows profiles: /etc/fstab ---------------
