@@ -191,15 +191,22 @@ while time.time() < end:
     # in through the X server (XTEST, below Wine, above the compositor)
     # reach the wizard? Then what else the machine did around it.
     echo "      the X server under the first-run setup:"
-    ssh_guest 'x=$(ps -C Xwayland -o args= | head -1)
-export DISPLAY=$(echo "$x" | grep -o " :[0-9]*" | head -1 | tr -d " ") XAUTHORITY=$(echo "$x" | sed -n "s/.* -auth \([^ ]*\).*/\1/p")
-echo "display $DISPLAY"
+    # Release 661: the cookie wasn't found on Xwayland's command line, so
+    # take the X display and its cookie from the wizard's own environment first.
+    ssh_guest 'p=$(pgrep -x sg-oobe64.exe | head -1)
+e() { tr "\0" "\n" < /proc/$p/environ 2>/dev/null | sed -n "s/^$1=//p"; }
+export DISPLAY=$(e DISPLAY) XAUTHORITY=$(e XAUTHORITY)
+x=$(ps -C Xwayland -o args= | head -1)
+[ -n "$DISPLAY" ] || export DISPLAY=$(echo "$x" | grep -o " :[0-9]*" | head -1 | tr -d " ")
+[ -n "$XAUTHORITY" ] || export XAUTHORITY=$(echo "$x" | sed -n "s/.* -auth \([^ ]*\).*/\1/p")
+echo "display $DISPLAY, cookie ${XAUTHORITY:-none} (the wizard, pid $p)"
 python3 -c "
 import ctypes
 x = ctypes.CDLL(\"libX11.so.6\"); x.XOpenDisplay.restype = ctypes.c_void_p; x.XDefaultRootWindow.restype = ctypes.c_ulong
 x.XDefaultRootWindow.argtypes = [ctypes.c_void_p]; x.XGrabKeyboard.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
 x.XUngrabKeyboard.argtypes = [ctypes.c_void_p, ctypes.c_ulong]; x.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
 d = x.XOpenDisplay(None)
+if not d: raise SystemExit(\"keyboard grab test: cannot open the display\")
 r = x.XGrabKeyboard(d, x.XDefaultRootWindow(d), 0, 1, 1, 0)
 print(\"keyboard grab test:\", {0: \"free\", 1: \"ALREADY GRABBED by another client\", 3: \"not viewable\", 4: \"FROZEN\"}.get(r, r))
 x.XUngrabKeyboard(d, 0); x.XSync(d, 0)
