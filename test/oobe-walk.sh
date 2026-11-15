@@ -199,8 +199,12 @@ export DISPLAY=$(e DISPLAY) XAUTHORITY=$(e XAUTHORITY)
 x=$(ps -C Xwayland -o args= | head -1)
 [ -n "$DISPLAY" ] || export DISPLAY=$(echo "$x" | grep -o " :[0-9]*" | head -1 | tr -d " ")
 [ -n "$XAUTHORITY" ] || export XAUTHORITY=$(echo "$x" | sed -n "s/.* -auth \([^ ]*\).*/\1/p")
-echo "display $DISPLAY, cookie ${XAUTHORITY:-none} (the wizard, pid $p)"
-python3 -c "
+# Release 664: Xwayland has no cookie either; it admits local users by
+# name (root is not one), so ask as the user the wizard runs as.
+u=$(stat -c %U /proc/$p)
+X() { runuser -u "$u" -- env DISPLAY="$DISPLAY" XAUTHORITY="$XAUTHORITY" "$@"; }
+echo "display $DISPLAY, cookie ${XAUTHORITY:-none} (the wizard, pid $p, user $u)"
+X python3 -c "
 import ctypes
 x = ctypes.CDLL(\"libX11.so.6\"); x.XOpenDisplay.restype = ctypes.c_void_p; x.XDefaultRootWindow.restype = ctypes.c_ulong
 x.XDefaultRootWindow.argtypes = [ctypes.c_void_p]; x.XGrabKeyboard.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
@@ -211,11 +215,11 @@ r = x.XGrabKeyboard(d, x.XDefaultRootWindow(d), 0, 1, 1, 0)
 print(\"keyboard grab test:\", {0: \"free\", 1: \"ALREADY GRABBED by another client\", 3: \"not viewable\", 4: \"FROZEN\"}.get(r, r))
 x.XUngrabKeyboard(d, 0); x.XSync(d, 0)
 "
-f=$(xdotool getwindowfocus 2>&1); echo "focus $f: $(xdotool getwindowname "$f" 2>&1) pid $(xdotool getwindowpid "$f" 2>&1)"
-xprop -root _NET_ACTIVE_WINDOW 2>&1
-xwininfo -root -children 2>&1 | grep -v "has no name" | head -12
+f=$(X xdotool getwindowfocus 2>&1); echo "focus $f: $(X xdotool getwindowname "$f" 2>&1) pid $(X xdotool getwindowpid "$f" 2>&1)"
+X xprop -root _NET_ACTIVE_WINDOW 2>&1
+X xwininfo -root -children 2>&1 | grep -v "has no name" | head -12
 n=$(journalctl -b -t sg-oobe --no-pager -o cat | grep -c "key enter down")
-xdotool key Return; sleep 2
+X xdotool key Return; sleep 2
 [ "$(journalctl -b -t sg-oobe --no-pager -o cat | grep -c "key enter down")" -gt "$n" ] && echo "an XTEST Enter reached the wizard" || echo "an XTEST Enter did not reach the wizard either"
 journalctl -b -t sg-compositor --no-pager -o cat | tail -8
 journalctl -b --since -3min --no-pager -o short-monotonic | grep -v -e sshd -e "sg-oobe\[" | tail -40' 2>&1 | cut -c1-220 | sed 's/^/        /'
