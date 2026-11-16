@@ -19,6 +19,8 @@ command -v Xvfb >/dev/null || { echo "SKIP: Xvfb not installed"; exit 77; }
 unset WAYLAND_DISPLAY
 T=$(mktemp -d /var/tmp/sg-gecko.XXXXXX)
 export HOME="$T/home" WINEPREFIX="$T/pfx" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree=;winemenubuilder.exe=d"
+# never the person's live desktop: Wine's Wayland driver connects to $XDG_RUNTIME_DIR/wayland-0 (2026-11-16)
+export XDG_RUNTIME_DIR="$(mktemp -d /var/tmp/sg-xdgrun.XXXXXX)" WAYLAND_DISPLAY=sg-no-wayland XDG_DATA_DIRS=/usr/local/share:/usr/share
 mkdir -p "$HOME"
 # Gecko makes a (hidden) window for its browser: a display of our own
 for n in $(seq 140 199); do [ -e "/tmp/.X11-unix/X$n" ] || break; done

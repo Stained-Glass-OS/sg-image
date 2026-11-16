@@ -22,6 +22,8 @@ T=$(mktemp -d "${TMPDIR:-/var/tmp}/sg-ctxstate.XXXXXX"); XP=
 # a scratch HOME: a prefix links its Desktop, Documents... into HOME
 export HOME="$T/home" WINEPREFIX="$T/prefix" WINEDEBUG=-all WINESERVER \
        WINEDLLOVERRIDES="mscoree,mshtml=;winemenubuilder.exe=d"
+# never the person's live desktop: Wine's Wayland driver connects to $XDG_RUNTIME_DIR/wayland-0 (2026-11-16)
+export XDG_RUNTIME_DIR="$(mktemp -d /var/tmp/sg-xdgrun.XXXXXX)" WAYLAND_DISPLAY=sg-no-wayland XDG_DATA_DIRS=/usr/local/share:/usr/share
 mkdir -p "$HOME"
 trap '"$WINESERVER" -k 2>/dev/null; [ -n "$XP" ] && kill "$XP" 2>/dev/null; rm -rf "$T"' EXIT INT TERM
 x86_64-w64-mingw32-g++ -O2 -static -o "$T/ctxstate-probe.exe" "$HERE/test/ctxstate-probe.cpp" \

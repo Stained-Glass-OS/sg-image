@@ -50,6 +50,8 @@ command -v Xvfb >/dev/null || { echo "SKIP: Xvfb not installed"; exit 77; }
 unset WAYLAND_DISPLAY
 T=$(mktemp -d /var/tmp/sg-wpfflow.XXXXXX)
 export HOME="$T/home" WINEPREFIX="$T/pfx" WINEDEBUG=-all WINEDLLOVERRIDES="mshtml=;winemenubuilder.exe=d"
+# never the person's live desktop: Wine's Wayland driver connects to $XDG_RUNTIME_DIR/wayland-0 (2026-11-16)
+export XDG_RUNTIME_DIR="$(mktemp -d /var/tmp/sg-xdgrun.XXXXXX)" WAYLAND_DISPLAY=sg-no-wayland XDG_DATA_DIRS=/usr/local/share:/usr/share
 mkdir -p "$HOME"
 n=170; while [ -e "/tmp/.X$n-lock" ]; do n=$((n + 1)); done
 Xvfb ":$n" -screen 0 1024x768x24 -nolisten tcp >/dev/null 2>&1 & XP=$!
