@@ -1,0 +1,185 @@
+--- a/mono/metadata/cominterop.c
++++ b/mono/metadata/cominterop.c
+@@ -4220,22 +4220,35 @@
+ 	if (elem_type == 0)
+ 	{
+ 		MonoClass *klass = mono_class_from_mono_type_internal (t);
+-		MonoClass *eklass = m_class_get_element_class (klass);
+-		elem_type = vt_from_class (eklass);
++		if (klass == mono_defaults.array_class)
++			/* Stained Glass OS: a System.Array with no element type is a SAFEARRAY of VARIANT */
++			elem_type = MONO_VARIANT_VARIANT;
++		else {
++			MonoClass *eklass = m_class_get_element_class (klass);
++			elem_type = vt_from_class (eklass);
++		}
+ 	}
+ 
+ #ifndef DISABLE_JIT
+ 	switch (action) {
+ 	case MARSHAL_ACTION_CONV_IN: {
+-		if ((t->attrs & (PARAM_ATTRIBUTE_IN | PARAM_ATTRIBUTE_OUT)) == PARAM_ATTRIBUTE_OUT)
+-			break;
+-
+-		/* conv = mono_marshal_safearray_from_array (array, elem_type); */
+-
++		/* Stained Glass OS: an [Out] parameter needs its own local too; it used
++		 * local 0, so two out SAFEARRAYs (IVsSettingsStore2.GetPropertyNamesAndValues)
++		 * both landed in it and the first came back as the second. */
+ 		MonoType *int_type = mono_get_int_type ();
+ 		*conv_arg_type = int_type;
+ 		conv_arg = mono_mb_add_local (mb, int_type);
+ 
++		if ((t->attrs & (PARAM_ATTRIBUTE_IN | PARAM_ATTRIBUTE_OUT)) == PARAM_ATTRIBUTE_OUT) {
++			/* conv = NULL, so a callee that fails leaves nothing to destroy */
++			mono_mb_emit_byte (mb, CEE_LDC_I4_0);
++			mono_mb_emit_byte (mb, CEE_CONV_I);
++			mono_mb_emit_stloc (mb, conv_arg);
++			break;
++		}
++
++		/* conv = mono_marshal_safearray_from_array (array, elem_type); */
++
+ 		if (t->byref) {
+ 			mono_mb_emit_ldarg (mb, argnum);
+ 			mono_mb_emit_byte (mb, CEE_LDIND_REF);
+diff --git a/mcs/class/corlib/System.Reflection.Emit/AssemblyBuilder.cs b/mcs/class/corlib/System.Reflection.Emit/AssemblyBuilder.cs
+index 51c023e0..bc875ef0 100644
+--- a/mcs/class/corlib/System.Reflection.Emit/AssemblyBuilder.cs
++++ b/mcs/class/corlib/System.Reflection.Emit/AssemblyBuilder.cs
+@@ -1013,6 +1013,11 @@ public void SetCustomAttribute( CustomAttributeBuilder customBuilder)
+ 			*/
+ 			if (customBuilder.Ctor != null && customBuilder.Ctor.DeclaringType == typeof (System.Runtime.CompilerServices.RuntimeCompatibilityAttribute))
+ 				UpdateNativeCustomAttributes (this);
++			/* Stained Glass OS: the runtime's access checks read
++			 * [IgnoresAccessChecksTo] (a type the program defines itself) */
++			else if (customBuilder.Ctor != null && customBuilder.Ctor.DeclaringType != null &&
++				 customBuilder.Ctor.DeclaringType.FullName == "System.Runtime.CompilerServices.IgnoresAccessChecksToAttribute")
++				UpdateNativeCustomAttributes (this);
+ 		}
+ 
+ 		[ComVisible (true)]
+diff --git a/mono/metadata/class.c b/mono/metadata/class.c
+index c2abf0e5..c5928448 100644
+--- a/mono/metadata/class.c
++++ b/mono/metadata/class.c
+@@ -35,6 +35,7 @@
+ #include <mono/metadata/mono-endian.h>
+ #include <mono/metadata/debug-helpers.h>
+ #include <mono/metadata/reflection.h>
++#include <mono/metadata/reflection-internals.h>
+ #include <mono/metadata/exception.h>
+ #include <mono/metadata/security-manager.h>
+ #include <mono/metadata/security-core-clr.h>
+@@ -5887,6 +5888,48 @@ is_valid_family_access (MonoClass *access_klass, MonoClass *member_klass, MonoCl
+ 	return TRUE;
+ }
+ 
++/* Stained Glass OS: a dynamic assembly carrying
++ * [IgnoresAccessChecksTo("Name")] may reach anything in assembly Name, as
++ * .NET Framework allows (StreamJsonRpc's and ServiceHub's proxies, generated
++ * with Reflection.Emit, call the framework's internal helpers: Visual
++ * Studio's brokered services stopped with MethodAccessException). */
++static gboolean
++ignores_access_checks_to (MonoAssembly *accessing, MonoAssembly *accessed)
++{
++	ERROR_DECL (error);
++	MonoCustomAttrInfo *attrs;
++	gboolean found = FALSE;
++	int i;
++
++	if (!accessing || !accessed || accessing == accessed || !accessed->aname.name)
++		return FALSE;
++	if (!accessing->image || !image_is_dynamic (accessing->image))
++		return FALSE;
++	attrs = mono_custom_attrs_from_assembly_checked (accessing, TRUE, error);
++	mono_error_cleanup (error);
++	if (!attrs)
++		return FALSE;
++	for (i = 0; i < attrs->num_attrs && !found; ++i) {
++		MonoCustomAttrEntry *attr = &attrs->attrs [i];
++		const char *data;
++		guint32 len;
++		if (!attr->ctor || strcmp (m_class_get_name (attr->ctor->klass), "IgnoresAccessChecksToAttribute") ||
++		    strcmp (m_class_get_name_space (attr->ctor->klass), "System.Runtime.CompilerServices"))
++			continue;
++		if (attr->data_size < 4)
++			continue;
++		data = (const char *)attr->data;
++		/* prolog 0x0001, then the string; 0xFF is a null string */
++		if (data [0] != 1 || data [1] != 0 || (data [2] & 0xFF) == 0xFF)
++			continue;
++		len = mono_metadata_decode_value (data + 2, &data);
++		if (strlen (accessed->aname.name) == len && !g_ascii_strncasecmp (data, accessed->aname.name, len))
++			found = TRUE;
++	}
++	mono_custom_attrs_free (attrs);
++	return found;
++}
++
+ static gboolean
+ can_access_internals (MonoAssembly *accessing, MonoAssembly* accessed)
+ {
+@@ -5983,6 +6026,8 @@ can_access_type (MonoClass *access_klass, MonoClass *member_klass)
+ 
+ 	if (access_klass_assembly && m_class_get_image (access_klass)->assembly->corlib_internal)
+ 		return TRUE;
++	if (ignores_access_checks_to (access_klass_assembly, member_klass_assembly))
++		return TRUE;
+ 
+ 	if (m_class_get_element_class (access_klass) && !m_class_is_enumtype (access_klass)) {
+ 		access_klass = m_class_get_element_class (access_klass);
+@@ -6048,6 +6093,8 @@ can_access_member (MonoClass *access_klass, MonoClass *member_klass, MonoClass*
+ 	MonoAssembly *access_klass_assembly = m_class_get_image (access_klass)->assembly;
+ 	if (access_klass_assembly && access_klass_assembly->corlib_internal)
+ 		return TRUE;
++	if (ignores_access_checks_to (access_klass_assembly, m_class_get_image (member_klass)->assembly))
++		return TRUE;
+ 
+ 	MonoGenericClass *access_gklass = mono_class_try_get_generic_class (access_klass);
+ 	if (((access_gklass && access_gklass->container_class) ||
+diff --git a/mono/metadata/custom-attrs.c b/mono/metadata/custom-attrs.c
+index 7e9e1bbf..8b8a22bc 100644
+--- a/mono/metadata/custom-attrs.c
++++ b/mono/metadata/custom-attrs.c
+@@ -102,7 +102,10 @@ custom_attr_visible (MonoImage *image, MonoReflectionCustomAttrHandle cattr, Mon
+ 	/* FIXME: Need to do more checks */
+ 	if (*ctor_method) {
+ 		MonoClass *klass = (*ctor_method)->klass;
+-		if (m_class_get_image (klass) != image) {
++		/* Stained Glass OS: another module of the same assembly sees its
++		 * internal attribute types (a Reflection.Emit assembly's
++		 * [IgnoresAccessChecksTo] is a NotPublic type of its module) */
++		if (m_class_get_image (klass) != image && m_class_get_image (klass)->assembly != image->assembly) {
+ 			const int visibility = (mono_class_get_flags (klass) & TYPE_ATTRIBUTE_VISIBILITY_MASK);
+ 			if ((visibility != TYPE_ATTRIBUTE_PUBLIC) && (visibility != TYPE_ATTRIBUTE_NESTED_PUBLIC))
+ 				return FALSE;
+diff --git a/mono/metadata/marshal.c b/mono/metadata/marshal.c
+index 1dc5f2f2..d19beaf6 100644
+--- a/mono/metadata/marshal.c
++++ b/mono/metadata/marshal.c
+@@ -3411,6 +3411,24 @@ mono_emit_marshal (EmitMarshalContext *m, int argnum, MonoType *t,
+ 			(spec->data.safearray_data.elem_type == MONO_VARIANT_VARIANT) && 
+ 			((action == MARSHAL_ACTION_CONV_OUT) || (action == MARSHAL_ACTION_CONV_IN) || (action == MARSHAL_ACTION_PUSH)))
+ 			return mono_cominterop_emit_marshal_safearray (m, argnum, t, spec, conv_arg, conv_arg_type, action);
++		/* Stained Glass OS: a System.Array declared as a SAFEARRAY of any element
++		 * type (Visual Studio's IVsSettingsStore2.GetSubCollectionNames returns
++		 * SAFEARRAY(VT_BSTR) as Array), as .NET does; it went to the object
++		 * marshaller and came back empty. */
++		if (spec && (spec->native == MONO_NATIVE_SAFEARRAY) &&
++			mono_class_from_mono_type_internal (t) == mono_defaults.array_class) {
++			switch (action) {
++			case MARSHAL_ACTION_CONV_OUT:
++			case MARSHAL_ACTION_CONV_IN:
++			case MARSHAL_ACTION_PUSH:
++			case MARSHAL_ACTION_MANAGED_CONV_IN:
++			case MARSHAL_ACTION_MANAGED_CONV_OUT:
++			case MARSHAL_ACTION_MANAGED_INIT_OUT:
++				return mono_cominterop_emit_marshal_safearray (m, argnum, t, spec, conv_arg, conv_arg_type, action);
++			default:
++				break;
++			}
++		}
+ #endif
+ 
+ 		if (mono_class_try_get_safehandle_class () != NULL && t->data.klass &&

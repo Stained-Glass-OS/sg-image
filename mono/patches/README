@@ -239,3 +239,38 @@ mono-0007-apartment-state-ccw-comvisible-qi.patch (sg18)
       slot 5 of what came back and crashed writing into msenv.
     Both from gaps2.
     Gate: test/mono-fork-test.sh (sg18 section); the sg17 build fails it.
+
+mono-0008-debugger-agent-dt-unix.patch (sg20)
+    The soft debugger agent's one transport in Wine Mono is dt_unix: the
+    user's own Unix socket ($XDG_RUNTIME_DIR/wine-mono-debug/ADDRESS.sock,
+    0700 directory, 0600 socket), opened in the program's process through
+    Wine's sgdbgsock.dll (wine-sg 7791), the peer's uid checked
+    (SO_PEERCRED) before a byte is read. dt_socket and socket-fd are not
+    registered on HOST_WIN32: no TCP at all (David 2026-11-15: option c --
+    a loopback port with an unauthenticated handshake is cross-user code
+    execution on a shared machine). server=y,suspend=n waits for the attach
+    in the debugger thread, which ICorDebug's DebugActiveProcess needs
+    (wine-sg 7792/7796).
+
+mono-0009-safearray-array-out-ignoresaccesschecks.patch (sg20)
+    runtime marshal.c/cominterop.c: a System.Array declared as a SAFEARRAY
+      of any element type goes through the SAFEARRAY marshaller (it went to
+      the object marshaller and came back empty unless the subtype was
+      VARIANT); with no subtype it is SAFEARRAY(VARIANT). Visual Studio's
+      IVsSettingsStore2.GetSubCollectionNames returns SAFEARRAY(VT_BSTR) as
+      Array: the brokered-service registry came back empty, nothing was
+      registered, and VSGlobalBrokeredServiceContainer.Proffer threw
+      "Cannot proffer unregistered service(s)".
+    runtime cominterop.c: an [Out]-only SAFEARRAY parameter gets its own
+      local (NULL first); every one used local 0, so with two of them
+      (GetPropertyNamesAndValues) the first came back as the second:
+      SafeArrayTypeMismatchException in the first-launch window's colours.
+    runtime class.c + custom-attrs.c, corlib AssemblyBuilder: a dynamic
+      assembly carrying [IgnoresAccessChecksTo("Name")] may reach anything
+      in assembly Name, as on .NET Framework (ServiceHub's/StreamJsonRpc's
+      Reflection.Emit proxies call internal helpers: MethodAccessException
+      and a native crash). AssemblyBuilder.SetCustomAttribute hands that
+      attribute to the runtime, and an internal attribute type of another
+      module of the same assembly is visible to it.
+    From gaps3. Gate: test/mono-fork-test.sh (sg20 section); sg18 fails
+      its three checks.

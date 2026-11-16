@@ -57,6 +57,7 @@
 #     marshals it (Visual Studio's IVsUIContextManagerPrivate); a CCW's
 #     GetIDsOfNames with a NULL name is DISP_E_UNKNOWNNAME, not a crash;
 #     AppDomainSetup.TargetFrameworkName can be set (VsAppDomainManager).
+#   - (sg20) the debugger agent only over the user's own Unix socket (no TCP);
 #   - (sg18) a thread that came into managed code from native code reports
 #     the COM apartment it is in (GetApartmentState, ApartmentState), not
 #     Unknown: Visual Studio's main thread is an STA, and WPF refused it
@@ -74,14 +75,22 @@ HERE=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 WINE=${1:-/opt/wine-sg/bin/wine}
 WINESERVER="$(dirname "$WINE")/wineserver"
 MONO=$(ls -d "${SG_MONO_DIR:-$HERE/build/mono-deb-root/usr/share/wine/mono}"/wine-mono-* 2>/dev/null | head -1)
+# absolute: the probes are compiled from inside the prefix (cd), and make passes build/... relative
+[ -n "$MONO" ] && MONO=$(CDPATH='' cd -- "$MONO" && pwd)
 [ -x "$WINE" ] || { echo "SKIP: no wine at $WINE"; exit 77; }
 [ -n "$MONO" ] || { echo "SKIP: no packaged Wine Mono (make mono-deb)"; exit 77; }
 command -v x86_64-w64-mingw32-gcc >/dev/null || { echo "SKIP: mingw-w64 not installed"; exit 77; }
 command -v msiinfo >/dev/null || { echo "SKIP: msitools not installed"; exit 77; }
-unset DISPLAY WAYLAND_DISPLAY
+unset DISPLAY
 T=$(mktemp -d /var/tmp/sg-monofork.XXXXXX)
 export HOME="$T/home" WINEPREFIX="$T/pfx" WINEDEBUG=-all WINEDLLOVERRIDES="mshtml=;winemenubuilder.exe=d"
-mkdir -p "$HOME"
+# a runtime directory of its own: Wine's Wayland driver connects to
+# $XDG_RUNTIME_DIR/wayland-0 by default -- on a Stained Glass machine the
+# person's live desktop, where a display-less wineboot then waited for ever
+# (2026-11-16). And the XDG spec's data dirs (a ~/.profile can drop /usr/share,
+# and the Vulkan loader finds no driver).
+export XDG_RUNTIME_DIR="$T/run" WAYLAND_DISPLAY=sg-no-wayland XDG_DATA_DIRS=/usr/local/share:/usr/share
+mkdir -p "$HOME" "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
 trap '"$WINESERVER" -k 2>/dev/null; rm -rf "$T"' EXIT INT TERM
 RC=0
 pass() { echo "PASS  $*"; }
@@ -650,4 +659,90 @@ out=$(cd "$C" && timeout 180 "$WINE" sg18.exe 2>&1 | tr -d '\r')
     || fail "native threads' apartment: '$(v apartment)'"
 [ "$(v comvisible)" = "80004002|00000000" ] && pass "a CCW asked for a [ComVisible(false)] interface says E_NOINTERFACE; a visible one is given (Visual Studio's shell)" \
     || fail "QueryInterface of a COM-invisible interface: '$(v comvisible)'"
+# (sg20) the debugger agent's one transport is the user's own Unix socket:
+# libmono exports mono_sg_debugger_unix_transport (Wine's mscoree starts no
+# agent without it). That no TCP transport is ever opened, wine-sg 7791's
+# monoagent gate checks (it and cordbgsdb drive the agent itself)
+for lib in "$MONO"/bin/libmono-2.0-x86.dll "$MONO"/bin/libmono-2.0-x86_64.dll; do
+    n=$(basename "$lib")
+    if [ ! -f "$lib" ]; then fail "no $n"; continue; fi
+    grep -a -q mono_sg_debugger_unix_transport "$lib" && pass "$n has the dt_unix debugger transport (the user's own socket)" \
+        || fail "$n has no mono_sg_debugger_unix_transport"
+done
+# (sg20) SAFEARRAYs as System.Array, two [Out] SAFEARRAYs, and a Reflection.Emit
+# assembly's [IgnoresAccessChecksTo]: Visual Studio's brokered services
+# (IVsSettingsStore2.GetSubCollectionNames came back empty, so nothing was
+# registered and Proffer threw), its first-launch window
+# (GetPropertyNamesAndValues: SafeArrayTypeMismatch) and ServiceHub's proxies
+# (MethodAccessException, then a crash)
+cat > "$T/sa2.c" <<'C'
+#include <windows.h>
+#include <oleauto.h>
+__declspec(dllexport) HRESULT WINAPI two_out(SAFEARRAY **names, SAFEARRAY **values)
+{
+    LONG i;
+    VARIANT v;
+    *names = SafeArrayCreateVector(VT_BSTR, 0, 2);
+    *values = SafeArrayCreateVector(VT_VARIANT, 0, 2);
+    i = 0; SafeArrayPutElement(*names, &i, SysAllocString(L"Background"));
+    i = 1; SafeArrayPutElement(*names, &i, SysAllocString(L"Foreground"));
+    i = 0; V_VT(&v) = VT_I4; V_I4(&v) = 42; SafeArrayPutElement(*values, &i, &v);
+    i = 1; V_VT(&v) = VT_BSTR; V_BSTR(&v) = SysAllocString(L"blue"); SafeArrayPutElement(*values, &i, &v); VariantClear(&v);
+    return S_OK;
+}
+C
+x86_64-w64-mingw32-gcc -shared -O1 -o "$C/sa2.dll" "$T/sa2.c" -loleaut32 || { fail "sa2.dll did not build"; exit 1; }
+cat > "$C/sg20.cs" <<'CS'
+using System;
+using System.Runtime.InteropServices;
+using System.Reflection;
+using System.Reflection.Emit;
+class P {
+    [DllImport("oleaut32.dll")] static extern IntPtr SafeArrayCreateVector(ushort vt, int lb, uint n);
+    [DllImport("oleaut32.dll")] static extern int SafeArrayPutElement(IntPtr psa, ref int idx, [MarshalAs(UnmanagedType.BStr)] string v);
+    [DllImport("oleaut32.dll", EntryPoint = "SafeArrayCopy")]
+    static extern int CopyArray(IntPtr psa, [MarshalAs(UnmanagedType.SafeArray, SafeArraySubType = VarEnum.VT_BSTR)] out Array copy);
+    [DllImport("sa2.dll")]
+    static extern int two_out([MarshalAs(UnmanagedType.SafeArray, SafeArraySubType = VarEnum.VT_BSTR)] out Array names,
+                              [MarshalAs(UnmanagedType.SafeArray, SafeArraySubType = VarEnum.VT_VARIANT)] out Array values);
+    static string J(Array a) { if (a == null) return "null"; var s = new string[a.Length]; int i = 0; foreach (object o in a) s[i++] = o == null ? "null" : o.ToString(); return a.GetType() + ":" + string.Join(",", s); }
+    static int Secret(int x) { return x * 7; }
+    // a Reflection.Emit assembly that names this one in [IgnoresAccessChecksTo],
+    // as StreamJsonRpc's/ServiceHub's proxies do, calls a private method
+    static string Ignores() {
+        var ab = AppDomain.CurrentDomain.DefineDynamicAssembly(new AssemblyName("proxies"), AssemblyBuilderAccess.Run);
+        var mb = ab.DefineDynamicModule("proxies");
+        var at = mb.DefineType("System.Runtime.CompilerServices.IgnoresAccessChecksToAttribute", TypeAttributes.NotPublic, typeof(Attribute));
+        var ac = at.DefineConstructor(MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName, CallingConventions.Standard, new[] { typeof(string) });
+        var il = ac.GetILGenerator(); il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Call, typeof(Attribute).GetConstructor(BindingFlags.NonPublic | BindingFlags.Instance, null, Type.EmptyTypes, null)); il.Emit(OpCodes.Ret);
+        var attr = at.CreateTypeInfo();
+        ab.SetCustomAttribute(new CustomAttributeBuilder(attr.GetConstructor(new[] { typeof(string) }), new object[] { typeof(P).Assembly.GetName().Name }));
+        var tb = mb.DefineType("Caller", TypeAttributes.Public);
+        var m = tb.DefineMethod("Call", MethodAttributes.Public | MethodAttributes.Static, typeof(int), new[] { typeof(int) });
+        il = m.GetILGenerator(); il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Call, typeof(P).GetMethod("Secret", BindingFlags.NonPublic | BindingFlags.Static)); il.Emit(OpCodes.Ret);
+        var t = tb.CreateTypeInfo();
+        try { return t.GetMethod("Call").Invoke(null, new object[] { 6 }).ToString(); }
+        catch (TargetInvocationException e) { return "EXC " + e.InnerException.GetType().Name; }
+    }
+    static void Main() {
+        try { Console.WriteLine("ignores=" + Ignores()); } catch (Exception e) { Console.WriteLine("ignores=EXC " + e.GetType().Name + " " + e.Message); }
+        IntPtr psa = SafeArrayCreateVector(8 /* VT_BSTR */, 0, 3);
+        string[] want = { "Alpha", "Beta", "Gamma" };
+        for (int i = 0; i < 3; i++) SafeArrayPutElement(psa, ref i, want[i]);
+        try { Array a; int hr = CopyArray(psa, out a); Console.WriteLine("array=" + hr + "|" + J(a)); }
+        catch (Exception e) { Console.WriteLine("array=EXC " + e.GetType().Name); }
+        try { Array n, v; int hr = two_out(out n, out v); Console.WriteLine("twoout=" + hr + "|" + J(n) + "|" + J(v)); }
+        catch (Exception e) { Console.WriteLine("twoout=EXC " + e.GetType().Name); }
+    }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg20.exe sg20.cs >"$T/mcs20.out" 2>&1)
+[ -f "$C/sg20.exe" ] || { fail "the sg20 probe did not compile: $(cat "$T/mcs20.out")"; exit 1; }
+out=$(cd "$C" && timeout 180 "$WINE" sg20.exe 2>&1 | tr -d '\r')
+[ "$(v array)" = "0|System.String[]:Alpha,Beta,Gamma" ] && pass "a SAFEARRAY(VT_BSTR) declared as System.Array comes back as its strings (Visual Studio's brokered services)" \
+    || fail "SAFEARRAY as System.Array: '$(v array)'"
+[ "$(v twoout)" = "0|System.String[]:Background,Foreground|System.Object[]:42,blue" ] && pass "two [Out] SAFEARRAYs each come back as their own (Visual Studio's colour themes)" \
+    || fail "two out SAFEARRAYs: '$(v twoout)'"
+[ "$(v ignores)" = 42 ] && pass "a Reflection.Emit assembly with [IgnoresAccessChecksTo] calls the named assembly's private method (ServiceHub's proxies)" \
+    || fail "IgnoresAccessChecksTo: '$(v ignores)'"
 exit $RC
