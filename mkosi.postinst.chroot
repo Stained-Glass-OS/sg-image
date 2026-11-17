@@ -168,20 +168,24 @@ SG_ROOT=/var/lib/stained-glass
 # is sgsystem's there. What is root's own in the prefix -- its profile folder,
 # its hive, its ProfileList entry -- is taken out before packing.
 mkdir -p "$SG_ROOT" /run/stained-glass /var/log/stained-glass
+# USER and LOGNAME name the machine account's profile as the services have it
+# (C:\users\sgsystem): without them Wine named it after uid 0, and the shipped
+# prefix kept HKLM ProfileList\S-1-5-18 = C:\users\root -- every process the
+# Click-to-Run service started with SYSTEM's environment got that profile.
 as_system() {
     env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME="$SG_ROOT" XDG_RUNTIME_DIR=/run/stained-glass \
-        LANG=C.UTF-8 "$@"
+        LANG=C.UTF-8 USER=sgsystem LOGNAME=sgsystem "$@"
 }
 t0=$(date +%s)
 as_system /usr/bin/sg-prefix-init
 as_system sh -c '. /usr/lib/stained-glass/sg-common.sh; sg_wine_env;
     wine reg delete "HKLM\Software\Microsoft\Cryptography" /v MachineGuid /f >/dev/null 2>&1 || true
-    for k in $(wine reg query "HKLM\Software\Microsoft\Windows NT\CurrentVersion\ProfileList" 2>/dev/null | tr -d "\r" | grep -i "ProfileList\\S-"); do
-        wine reg query "$k" /v ProfileImagePath 2>/dev/null | grep -qi "users\\root" && wine reg delete "$k" /f >/dev/null 2>&1
-    done
     wineserver -w; wineserver -k 2>/dev/null || true'
 rm -rf "$SG_ROOT/prefix/drive_c/users/root" "$SG_ROOT/prefix/user-0.reg"
 [ -e "$SG_ROOT/prefix/.sg-initialized" ] || { echo "[sg-image] ERROR: the prefix did not build" >&2; exit 1; }
+if grep -qiF 'users\\root' "$SG_ROOT/prefix/system.reg"; then
+    echo "[sg-image] ERROR: the prefix names C:\\users\\root (the machine account's profile is sgsystem's)" >&2; exit 1
+fi
 if grep -q MachineGuid "$SG_ROOT/prefix/system.reg"; then
     echo "[sg-image] ERROR: the prefix still carries a MachineGuid" >&2; exit 1
 fi
