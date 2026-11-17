@@ -4,13 +4,15 @@
 # decoder (D3D11VA); DXVK had none, so they all decoded on the CPU. The client here is an FFmpeg built
 # from source for the purpose (test/ffmpeg-d3d11va-build.sh): it decodes short H.264 clips made by
 # GStreamer's x264 -- High profile, B-frames, several references, a picture size that is cropped --
+# and x265 -- HEVC Main with B-frames, Main 10 (P010 output), scaling lists and two slices a picture --
 # through D3D11VA (frames kept on the GPU, so no quiet fall back to the CPU), and every frame must be
 # bit for bit the frame its own software decoder gives (framemd5).
 #
 #   test/videodecode-test.sh [DXVK_X64_DIR]   (FFMPEG_D3D11VA=ffmpeg.exe; default DXVK: the staged payload)
 #
 # Host test: wine-sg (/opt/wine-sg or $WINE), Xvfb, python3 GStreamer bindings with x264enc, and a GPU
-# whose Vulkan driver decodes H.264 (VK_KHR_video_decode_h264); skips (77) without them. Headless:
+# whose Vulkan driver decodes H.264 (VK_KHR_video_decode_h264); skips (77) without them. The HEVC
+# clips need x265enc and VK_KHR_video_decode_h265, and are skipped (said so) without them. Headless:
 # its own Xvfb, a private runtime directory, nothing on anybody's screen.
 # Then with d3d11.videoDecode = False (DXVK_CONFIG): no decoder offered. Auto (the default) offers them
 # only on NVIDIA's driver, where they were proven; True on any driver, for testing.
@@ -43,9 +45,13 @@ trap '"$WINESERVER" -k 2>/dev/null; [ -n "$XP" ] && kill "$XP" 2>/dev/null; rm -
 
 # a GPU that decodes H.264 with Vulkan; otherwise there is nothing to test here
 vulkaninfo 2>/dev/null | grep -q VK_KHR_video_decode_h264 || { echo "SKIP: no Vulkan H.264 video decode on this host"; exit 77; }
+HEVC=1
+vulkaninfo 2>/dev/null | grep -q VK_KHR_video_decode_h265 || { HEVC=; echo "      (no Vulkan HEVC video decode on this host: the HEVC clips are skipped)"; }
+python3 -c "import gi; gi.require_version('Gst', '1.0'); from gi.repository import Gst; Gst.init(None); assert Gst.ElementFactory.find('x265enc')" 2>/dev/null \
+    || { HEVC=; echo "      (no GStreamer x265enc: the HEVC clips are skipped)"; }
 
 # the clips: short, small
-python3 - "$T" <<'PY' || { echo "FAIL  the clips could not be made"; exit 1; }
+python3 - "$T" "${HEVC:-0}" <<'PY' || { echo "FAIL  the clips could not be made"; exit 1; }
 import sys, gi
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst
@@ -57,6 +63,15 @@ clips = {
     'cropped': 'videotestsrc pattern=smpte num-buffers=60 ! video/x-raw,width=640,height=360,framerate=30/1 ! timeoverlay '
                '! x264enc bframes=2 ref=3 key-int-max=25 speed-preset=fast ! video/x-h264,profile=high ! h264parse ! mp4mux',
 }
+if sys.argv[2] == '1':
+    clips.update({
+    'hevc': 'videotestsrc pattern=ball num-buffers=60 ! video/x-raw,width=320,height=240,framerate=30/1 '
+            '! x265enc option-string="bframes=3:ref=4:keyint=30" ! video/x-h265,profile=main ! h265parse ! mp4mux',
+    'hevc10': 'videotestsrc pattern=smpte num-buffers=40 ! video/x-raw,width=640,height=360,framerate=30/1 ! timeoverlay ! videoconvert '
+              '! video/x-raw,format=I420_10LE ! x265enc option-string="bframes=4:ref=3:keyint=20" ! video/x-h265,profile=main-10 ! h265parse ! mp4mux',
+    'hevcsl': 'videotestsrc pattern=ball num-buffers=40 ! video/x-raw,width=352,height=288,framerate=30/1 '
+              '! x265enc option-string="bframes=2:scaling-list=default:slices=2" ! video/x-h265,profile=main ! h265parse ! mp4mux',
+    })
 for name, desc in clips.items():
     p = Gst.parse_launch(desc + ' ! filesink location=%s/%s.mp4' % (t, name))
     p.set_state(Gst.State.PLAYING)
@@ -76,12 +91,14 @@ export WINEDLLOVERRIDES="mscoree,mshtml=;winemenubuilder.exe=d;dxgi,d3d11,d3d10c
 cp "$FF" "$WINEPREFIX/drive_c/ffmpeg.exe"
 cp "$T"/*.mp4 "$WINEPREFIX/drive_c/"
 
-for c in bframes cropped; do
+CLIPS="bframes cropped${HEVC:+ hevc hevc10 hevcsl}"
+for c in $CLIPS; do
+    fmt=nv12; [ "$c" = hevc10 ] && fmt=p010le   # Main 10: P010 surfaces
     (cd "$WINEPREFIX/drive_c" && DXVK_LOG_LEVEL=none timeout -s KILL 300 "$WINE" ffmpeg.exe -hide_banner -loglevel error \
-        -hwaccel d3d11va -hwaccel_output_format d3d11 -i "$c.mp4" -vf hwdownload,format=nv12 -f framemd5 - 2>"$T/$c.hw.err" </dev/null) \
+        -hwaccel d3d11va -hwaccel_output_format d3d11 -i "$c.mp4" -vf hwdownload,format=$fmt -f framemd5 - 2>"$T/$c.hw.err" </dev/null) \
         | tr -d '\r' | awk '/^0,/ {print $NF}' > "$T/$c.hw"
     (cd "$WINEPREFIX/drive_c" && timeout -s KILL 300 "$WINE" ffmpeg.exe -hide_banner -loglevel error \
-        -i "$c.mp4" -pix_fmt nv12 -f framemd5 - 2>/dev/null </dev/null) | tr -d '\r' | awk '/^0,/ {print $NF}' > "$T/$c.sw"
+        -i "$c.mp4" -pix_fmt $fmt -f framemd5 - 2>/dev/null </dev/null) | tr -d '\r' | awk '/^0,/ {print $NF}' > "$T/$c.sw"
     hw=$(wc -l < "$T/$c.hw"); sw=$(wc -l < "$T/$c.sw")
     diff=$(paste "$T/$c.hw" "$T/$c.sw" | awk '$1 != $2' | wc -l)
     if [ "$sw" -gt 0 ] && [ "$hw" = "$sw" ] && [ "$diff" = 0 ]; then
