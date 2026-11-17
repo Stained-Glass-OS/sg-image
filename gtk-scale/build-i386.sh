@@ -48,8 +48,13 @@ cleanup() {
 }
 trap cleanup EXIT
 $SUDO mount -t proc proc "$ROOT/proc"
+# the host's /dev and /dev/pts, as slaves: nothing mounted or unmounted under the chroot's copies
+# reaches the host's (a shared bind's lazy unmount propagated and took the host's /dev/pts,
+# /dev/shm and cgroup2 away on 2026-11-17)
 $SUDO mount --bind /dev "$ROOT/dev"
+$SUDO mount --make-rslave "$ROOT/dev"
 $SUDO mount --bind /dev/pts "$ROOT/dev/pts"
+$SUDO mount --make-rslave "$ROOT/dev/pts"
 $SUDO mount --bind "$HERE" "$M/gtk-scale"
 $SUDO mount --bind "$CACHE/i386" "$M/cache"
 W=$(mktemp -d "${TMPDIR:-/var/tmp}/sg-gtk-i386.XXXXXX")
