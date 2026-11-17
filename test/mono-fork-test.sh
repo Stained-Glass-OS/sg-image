@@ -58,6 +58,15 @@
 #     GetIDsOfNames with a NULL name is DISP_E_UNKNOWNNAME, not a crash;
 #     AppDomainSetup.TargetFrameworkName can be set (VsAppDomainManager).
 #   - (sg20) the debugger agent only over the user's own Unix socket (no TCP);
+#   - (sg21) Visual Studio 2022's IDE: an [Out] array of interfaces filled by
+#     managed code reaches native code; [ComEventInterface] events; a new COM
+#     object handed to managed code stays alive (the RCW takes its reference
+#     first); a CCW released once too often does not abort; NoPIA type
+#     equivalence; RCW casts through a proxy made for an interface; Marshal.
+#     CleanupUnusedObjectsInCurrentContext returns; a typed RCW for an
+#     interface is the object's own RCW (mono-0010..0017; 0016, a blocking
+#     thread whose preemptive suspend failed, is gated by wine-sg's
+#     test-agentgone);
 #   - (sg18) a thread that came into managed code from native code reports
 #     the COM apartment it is in (GetApartmentState, ApartmentState), not
 #     Unknown: Visual Studio's main thread is an STA, and WPF refused it
@@ -745,4 +754,353 @@ out=$(cd "$C" && timeout 180 "$WINE" sg20.exe 2>&1 | tr -d '\r')
     || fail "two out SAFEARRAYs: '$(v twoout)'"
 [ "$(v ignores)" = 42 ] && pass "a Reflection.Emit assembly with [IgnoresAccessChecksTo] calls the named assembly's private method (ServiceHub's proxies)" \
     || fail "IgnoresAccessChecksTo: '$(v ignores)'"
+# (sg21) a managed enumerator's Next(celt, [Out] IItem[] (LPArray of
+# interfaces), out fetched), called from native code through its CCW, hands
+# back interface pointers: Visual Studio's msenv enumerates window frames this
+# way and crashed on the NULL it got (the array was never marshaled back)
+cat > "$T/outarr.c" <<'C'
+#include <windows.h>
+#include <stdio.h>
+/* calls a managed enumerator's Next(1, IItem*[1], &fetched) as Visual Studio's msenv does with IEnumWindowFrames */
+typedef struct IItem IItem;
+typedef struct { HRESULT (WINAPI *QI)(IItem*, REFIID, void**); ULONG (WINAPI *AddRef)(IItem*); ULONG (WINAPI *Release)(IItem*); int (WINAPI *Answer)(IItem*); } IItemVtbl;
+struct IItem { const IItemVtbl *lpVtbl; };
+typedef struct IEnumItems IEnumItems;
+typedef struct { HRESULT (WINAPI *QI)(IEnumItems*, REFIID, void**); ULONG (WINAPI *AddRef)(IEnumItems*); ULONG (WINAPI *Release)(IEnumItems*);
+                 HRESULT (WINAPI *Next)(IEnumItems*, ULONG, IItem**, ULONG*); } IEnumItemsVtbl;
+struct IEnumItems { const IEnumItemsVtbl *lpVtbl; };
+__declspec(dllexport) int WINAPI call_next(IEnumItems *e)
+{
+    IItem *items[2] = { NULL, (IItem *)0x1 };
+    ULONG fetched = 99;
+    HRESULT hr = e->lpVtbl->Next(e, 1, items, &fetched);
+    int answer = items[0] ? items[0]->lpVtbl->Answer(items[0]) : -1;
+    printf("next=%08lx fetched=%lu item=%s answer=%d\n", hr, fetched, items[0] ? "set" : "null", answer);
+    fflush(stdout);
+    return answer;
+}
+C
+x86_64-w64-mingw32-gcc -shared -O1 -o "$C/outarr.dll" "$T/outarr.c" || { fail "outarr.dll did not build"; exit 1; }
+cat > "$C/sg21.cs" <<'CS'
+using System; using System.Runtime.InteropServices;
+[ComVisible(true), Guid("2A9C4E11-7B2D-4C1E-9F00-11223344A001"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IItem { [PreserveSig] int Answer(); }
+[ComVisible(true), Guid("2A9C4E11-7B2D-4C1E-9F00-11223344A002"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IEnumItems {
+  [PreserveSig] int Next(uint celt, [Out, MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.Interface, SizeParamIndex = 0)] IItem[] rgelt, out uint fetched);
+}
+[ComVisible(true), ClassInterface(ClassInterfaceType.None)] public class Item : IItem { public int Answer() { return 42; } }
+[ComVisible(true), ClassInterface(ClassInterfaceType.None)] public class Items : IEnumItems {
+  public int Next(uint celt, IItem[] rgelt, out uint fetched) { rgelt[0] = new Item(); fetched = 1; return 0; }
+}
+class P {
+  [DllImport("outarr.dll")] static extern int call_next(IntPtr e);
+  static void Main() {
+    IntPtr p = Marshal.GetComInterfaceForObject(new Items(), typeof(IEnumItems));
+    try { Console.WriteLine("outarr=" + call_next(p)); } catch (Exception e) { Console.WriteLine("outarr=EXC " + e.GetType().Name + " " + e.Message); }
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg21.exe sg21.cs >"$T/mcs21.out" 2>&1)
+[ -f "$C/sg21.exe" ] || { fail "the sg21 probe did not compile: $(cat "$T/mcs21.out")"; exit 1; }
+out=$(cd "$C" && timeout 180 "$WINE" sg21.exe 2>&1 | tr -d '\r')
+[ "$(v outarr)" = 42 ] && pass "an [Out] array of interfaces filled by managed code reaches native code as interface pointers (Visual Studio's window frames)" \
+    || fail "[Out] interface array from a CCW: '$(v outarr)' ($(printf '%s' "$out" | grep '^next=' | head -1))"
+# (sg21) a COM object's events through its [ComEventInterface]: the
+# interface's event provider is made once, with the object, and takes the
+# add and remove calls, as .NET does (Visual Studio's packages subscribe to
+# DTE CommandEvents this way; Mono threw InvalidCastException)
+cat > "$T/comev.c" <<'C'
+#include <windows.h>
+/* a COM object that answers IUnknown and ISrc (an event source, as DTE's CommandEvents) */
+static const GUID IID_ISrc = {0x2a9c4e11,0x7b2d,0x4c1e,{0x9f,0x00,0x11,0x22,0x33,0x44,0xa0,0x11}};
+typedef struct { const void *vtbl; LONG ref; } Obj;
+static HRESULT WINAPI qi(Obj *o, REFIID iid, void **out)
+{
+    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_ISrc)) { *out = o; o->ref++; return S_OK; }
+    *out = NULL; return E_NOINTERFACE;
+}
+static ULONG WINAPI addref(Obj *o) { return ++o->ref; }
+static ULONG WINAPI release(Obj *o) { return --o->ref; }
+static const void *vtbl[] = { qi, addref, release };
+static Obj obj = { vtbl, 1 };
+__declspec(dllexport) void * WINAPI create_src(void) { return &obj; }
+C
+x86_64-w64-mingw32-gcc -shared -O1 -o "$C/comev.dll" "$T/comev.c" -luuid || { fail "comev.dll did not build"; exit 1; }
+cat > "$C/sg21b.cs" <<'CS'
+using System; using System.Runtime.InteropServices;
+[ComImport, Guid("2A9C4E11-7B2D-4C1E-9F00-11223344A011"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface ISrc { }
+[ComEventInterface(typeof(ISrc), typeof(SrcEventProvider)), ComVisible(false)]
+public interface ISrc_Event { event EventHandler Fired; }
+[ComImport, Guid("2A9C4E11-7B2D-4C1E-9F00-11223344A011")]
+public interface Src : ISrc, ISrc_Event { }
+sealed class SrcEventProvider : ISrc_Event {
+  public static string log = "";
+  public SrcEventProvider(object source) { log += source != null ? "ctor;" : "ctor-null;"; }
+  public event EventHandler Fired { add { log += "add;"; } remove { log += "remove;"; } }
+}
+class P {
+  [DllImport("comev.dll")] static extern IntPtr create_src();
+  static void H(object s, EventArgs e) { }
+  static void Main() {
+    try {
+      Src s = (Src)Marshal.GetObjectForIUnknown(create_src());
+      s.Fired += H; s.Fired -= H; s.Fired += H;
+      Console.WriteLine("comevent=" + SrcEventProvider.log);
+    } catch (Exception e) { Console.WriteLine("comevent=EXC " + e.GetType().Name); }
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg21b.exe sg21b.cs >"$T/mcs21b.out" 2>&1)
+[ -f "$C/sg21b.exe" ] || { fail "the sg21b probe did not compile: $(cat "$T/mcs21b.out")"; exit 1; }
+out=$(cd "$C" && timeout 180 "$WINE" sg21b.exe 2>&1 | tr -d '\r')
+[ "$(v comevent)" = "ctor;add;remove;add;" ] && pass "a [ComEventInterface] add/remove on a COM object goes to its event provider, made once with the object (Visual Studio's DTE events)" \
+    || fail "COM event interface: '$(v comevent)'"
+
+# (sg21) System.Core's System.Diagnostics.Eventing.EventProvider and
+# EventDescriptor (no ETW session listening: not enabled, writes succeed);
+# Visual Studio's source control package holds one (TypeLoadException)
+cat > "$C/sg21c.cs" <<'CS'
+using System; using System.Reflection;
+class P {
+  static void Main() {
+    // by reflection, so the probe also builds where System.Core has no EventProvider
+    Type t = Type.GetType("System.Diagnostics.Eventing.EventProvider, System.Core, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089");
+    Type d = Type.GetType("System.Diagnostics.Eventing.EventDescriptor, System.Core, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089");
+    if (t == null || d == null) { Console.WriteLine("eventprovider=missing"); return; }
+    object p = Activator.CreateInstance(t, new object[] { Guid.NewGuid() });
+    bool enabled = (bool)t.GetMethod("IsEnabled", Type.EmptyTypes).Invoke(p, null);
+    bool wrote = (bool)t.GetMethod("WriteMessageEvent", new[] { typeof(string) }).Invoke(p, new object[] { "hello" });
+    object ed = Activator.CreateInstance(d, new object[] { 7, (byte)1, (byte)0, (byte)4, (byte)0, 3, 0x10L });
+    int id = (int)d.GetProperty("EventId").GetValue(ed, null);
+    ((IDisposable)p).Dispose();
+    Console.WriteLine("eventprovider=" + enabled + "|" + wrote + "|" + id + "|" + System.Runtime.InteropServices.Marshal.SizeOf(d));
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg21c.exe sg21c.cs >"$T/mcs21c.out" 2>&1)
+[ -f "$C/sg21c.exe" ] || { fail "the sg21c probe did not compile: $(cat "$T/mcs21c.out")"; exit 1; }
+out=$(cd "$C" && timeout 180 "$WINE" sg21c.exe 2>&1 | tr -d '\r')
+[ "$(v eventprovider)" = "False|True|7|16" ] && pass "System.Diagnostics.Eventing.EventProvider and EventDescriptor exist: not enabled, a write succeeds, a 16-byte descriptor (Visual Studio's TFS tracing)" \
+    || fail "EventProvider: '$(v eventprovider)'"
+# (sg21) a COM object handed to managed code that nobody holds yet
+# (reference count 0) stays alive: the wrapper takes its reference before
+# GetProxy drops its own (Visual Studio's msenv advises a new solution events
+# sink this way; the sink deleted itself and Mono crashed in QueryInterface)
+cat > "$T/rcwref.c" <<'C'
+#include <windows.h>
+#include <stdio.h>
+/* native code hands a managed method a new object that nobody holds yet (reference count 0),
+ * as Visual Studio's msenv does with its solution events sink; the object deletes itself
+ * (here: poisons its vtable) when its count drops back to 0 */
+static const GUID IID_IItem2 = {0x2a9c4e11,0x7b2d,0x4c1e,{0x9f,0x00,0x11,0x22,0x33,0x44,0xa0,0x21}};
+typedef struct Obj { const void *vtbl; LONG ref; } Obj;
+static const void *dead_vtbl = (void *)-1;
+static HRESULT WINAPI qi(Obj *o, REFIID iid, void **out)
+{
+    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IItem2)) { *out = o; o->ref++; return S_OK; }
+    *out = NULL; return E_NOINTERFACE;
+}
+static ULONG WINAPI addref(Obj *o) { return ++o->ref; }
+static ULONG WINAPI release(Obj *o) { ULONG r = --o->ref; if (!r) o->vtbl = dead_vtbl; return r; }
+static int WINAPI answer(Obj *o) { return 7; }
+static const void *vtbl[] = { qi, addref, release, answer };
+typedef struct ITaker ITaker;
+typedef struct { HRESULT (WINAPI *QI)(ITaker*, REFIID, void**); ULONG (WINAPI *AddRef)(ITaker*); ULONG (WINAPI *Release)(ITaker*);
+                 int (WINAPI *Take)(ITaker*, Obj*); } ITakerVtbl;
+struct ITaker { const ITakerVtbl *lpVtbl; };
+__declspec(dllexport) int WINAPI give_new_object(ITaker *t)
+{
+    static Obj o;
+    o.vtbl = vtbl; o.ref = 0;
+    return t->lpVtbl->Take(t, &o);
+}
+C
+x86_64-w64-mingw32-gcc -shared -O1 -o "$C/rcwref.dll" "$T/rcwref.c" -luuid || { fail "rcwref.dll did not build"; exit 1; }
+cat > "$C/sg21d.cs" <<'CS'
+using System; using System.Runtime.InteropServices;
+[ComImport, Guid("2A9C4E11-7B2D-4C1E-9F00-11223344A021"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IItem2 { [PreserveSig] int Answer(); }
+[ComVisible(true), Guid("2A9C4E11-7B2D-4C1E-9F00-11223344A022"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface ITaker { [PreserveSig] int Take([MarshalAs(UnmanagedType.Interface)] object item); }
+[ComVisible(true), ClassInterface(ClassInterfaceType.None)]
+public class Taker : ITaker { public int Take(object item) { IItem2 i = item as IItem2; return i == null ? -2 : i.Answer(); } }
+class P {
+  [DllImport("rcwref.dll")] static extern int give_new_object(IntPtr taker);
+  static void Main() {
+    IntPtr p = Marshal.GetComInterfaceForObject(new Taker(), typeof(ITaker));
+    try { Console.WriteLine("rcwref=" + give_new_object(p)); } catch (Exception e) { Console.WriteLine("rcwref=EXC " + e.GetType().Name); }
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg21d.exe sg21d.cs >"$T/mcs21d.out" 2>&1)
+[ -f "$C/sg21d.exe" ] || { fail "the sg21d probe did not compile: $(cat "$T/mcs21d.out")"; exit 1; }
+out=$(cd "$C" && timeout 180 "$WINE" sg21d.exe 2>&1 | tr -d '\r')
+[ "$(v rcwref)" = 7 ] && pass "an object handed over with no reference yet stays alive in its runtime callable wrapper (Visual Studio's solution events sink)" \
+    || fail "count-0 object to managed code: '$(v rcwref)' (sg20 crashes)"
+# (sg21) a COM callable wrapper released once too often: the process goes on
+# (sg20 asserted "ccw->ref_count > 0" and aborted; Visual Studio 2022 ended at
+# startup on its VSTelemetrySession wrapper)
+cat > "$C/sg21e.cs" <<'CS'
+using System; using System.Runtime.InteropServices;
+[ComVisible(true), Guid("2A9C4E11-7B2D-4C1E-9F00-11223344A031"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IThing { [PreserveSig] int Answer(); }
+[ComVisible(true), ClassInterface(ClassInterfaceType.None)]
+public class Thing : IThing { public int Answer() { return 7; } }
+class P {
+  static void Main() {
+    Thing t = new Thing();
+    IntPtr p = Marshal.GetComInterfaceForObject(t, typeof(IThing));
+    int first = Marshal.Release(p);
+    int extra = Marshal.Release(p);
+    IntPtr q = Marshal.GetComInterfaceForObject(t, typeof(IThing));
+    int again = Marshal.Release(q);
+    Console.WriteLine("ccwover=" + first + "," + extra + "," + again);
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg21e.exe sg21e.cs >"$T/mcs21e.out" 2>&1)
+[ -f "$C/sg21e.exe" ] || { fail "the sg21e probe did not compile: $(cat "$T/mcs21e.out")"; exit 1; }
+out=$(cd "$C" && timeout 180 "$WINE" sg21e.exe 2>&1 | tr -d '\r')
+[ "$(v ccwover)" = "0,0,0" ] && pass "an extra Release of a COM callable wrapper is let pass, and the wrapper still works after (Visual Studio's VSTelemetrySession)" \
+    || fail "extra CCW Release: '$(v ccwover)' (sg20 aborts)"
+# (sg21) type equivalence (NoPIA): a method whose signature names an embedded
+# interop interface ([TypeIdentifier], own copy in each assembly) is found from
+# another assembly that embeds its own copy (Visual Studio 2022's extension
+# manager: SetupEngineHelpers.GetApplicationName(ISetupInstance2, ...) was a
+# MissingMethodException, and with it the editor's component model)
+cat > "$C/sg21f_lib.cs" <<'CS'
+using System; using System.Runtime.InteropServices;
+namespace Setup.Interop {
+  [ComImport, Guid("B41463C3-8866-43B5-BC33-2B0676F7F42E"), TypeIdentifier, InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  public interface ISetupThing { }
+}
+public static class Helpers {
+  public static string Name(Setup.Interop.ISetupThing t, int lcid) { return "name" + lcid; }
+}
+CS
+cat > "$C/sg21f.il" <<'IL'
+.assembly extern mscorlib { .publickeytoken = (B7 7A 5C 56 19 34 E0 89) .ver 4:0:0:0 }
+.assembly extern sg21f_lib { }
+.assembly sg21f { }
+.module sg21f.exe
+.class interface public abstract auto ansi import Setup.Interop.ISetupThing
+{
+  .custom instance void [mscorlib]System.Runtime.InteropServices.TypeIdentifierAttribute::.ctor() = ( 01 00 00 00 )
+  .custom instance void [mscorlib]System.Runtime.InteropServices.GuidAttribute::.ctor(string) = ( 01 00 24 42 34 31 34 36 33 43 33 2D 38 38 36 36 2D 34 33 42 35 2D 42 43 33 33 2D 32 42 30 36 37 36 46 37 46 34 32 45 00 00 )
+}
+.class public auto ansi P extends [mscorlib]System.Object
+{
+  .method public static string Call() cil managed noinlining
+  {
+    ldnull
+    ldc.i4.7
+    call string [sg21f_lib]Helpers::Name(class Setup.Interop.ISetupThing, int32)
+    ret
+  }
+  .method public static void Main() cil managed
+  {
+    .entrypoint
+    .locals init (string V_0)
+    .try {
+      ldstr "nopia="
+      call string P::Call()
+      call string [mscorlib]System.String::Concat(string, string)
+      call void [mscorlib]System.Console::WriteLine(string)
+      leave.s done
+    } catch [mscorlib]System.Exception {
+      callvirt instance class [mscorlib]System.Type [mscorlib]System.Object::GetType()
+      callvirt instance string [mscorlib]System.Reflection.MemberInfo::get_Name()
+      stloc.0
+      ldstr "nopia=EXC "
+      ldloc.0
+      call string [mscorlib]System.String::Concat(string, string)
+      call void [mscorlib]System.Console::WriteLine(string)
+      leave.s done
+    }
+    done: ret
+  }
+}
+IL
+(cd "$C" && timeout 300 "$WINE" "$mcs" -t:library -out:sg21f_lib.dll sg21f_lib.cs >"$T/mcs21f.out" 2>&1)
+[ -f "$C/sg21f_lib.dll" ] || { fail "the sg21f library did not compile: $(cat "$T/mcs21f.out")"; exit 1; }
+ilasm=$("$WINE" winepath -w "$MONO/lib/mono/4.5/ilasm.exe" | tr -d '\r')
+(cd "$C" && timeout 300 "$WINE" "$ilasm" /exe /out:sg21f.exe sg21f.il >"$T/ilasm21f.out" 2>&1)
+[ -f "$C/sg21f.exe" ] || { fail "the sg21f probe did not assemble: $(cat "$T/ilasm21f.out")"; exit 1; }
+out=$(cd "$C" && timeout 180 "$WINE" sg21f.exe 2>&1 | tr -d '\r')
+[ "$(v nopia)" = name7 ] && pass "an embedded interop interface ([TypeIdentifier]) in two assemblies is one type in a call between them (Visual Studio's extension manager)" \
+    || fail "type equivalence: '$(v nopia)' (sg20: EXC MissingMethodException)"
+# (sg21) RCW casts through a proxy made for an interface (no stack overflow;
+# Visual Studio 2022's UI thread), and Marshal.CleanupUnusedObjectsInCurrentContext
+# returns (Visual Studio's idle loop)
+cat > "$T/sg21g_obj.c" <<'C'
+#include <windows.h>
+/* a COM object with IUnknown and one interface; QI for anything else fails */
+static const GUID IID_IItem3 = {0x2a9c4e11,0x7b2d,0x4c1e,{0x9f,0x00,0x11,0x22,0x33,0x44,0xa0,0x41}};
+typedef struct Obj { const void *vtbl; LONG ref; } Obj;
+static HRESULT WINAPI qi(Obj *o, REFIID iid, void **out)
+{
+    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IItem3)) { *out = o; o->ref++; return S_OK; }
+    *out = NULL; return E_NOINTERFACE;
+}
+static ULONG WINAPI addref(Obj *o) { return ++o->ref; }
+static ULONG WINAPI release(Obj *o) { return --o->ref; }
+static int WINAPI answer(Obj *o) { return 9; }
+static const void *vtbl[] = { qi, addref, release, answer };
+__declspec(dllexport) void * WINAPI new_object(void) { static Obj o; o.vtbl = vtbl; o.ref = 1; return &o; }
+C
+x86_64-w64-mingw32-gcc -shared -O1 -o "$C/cancast.dll" "$T/sg21g_obj.c" -luuid || { fail "cancast.dll did not build"; exit 1; }
+cat > "$C/sg21g.cs" <<'CS'
+using System; using System.Runtime.InteropServices;
+[ComImport, Guid("2A9C4E11-7B2D-4C1E-9F00-11223344A041"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IItem3 { [PreserveSig] int Answer(); }
+[ComImport, Guid("2A9C4E11-7B2D-4C1E-9F00-11223344A042"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface INotThere { [PreserveSig] int Nothing(); }
+[ComImport, Guid("2A9C4E11-7B2D-4C1E-9F00-11223344A043")]
+public class ThingClass { }
+class P {
+  [DllImport("cancast.dll")] static extern IntPtr new_object();
+  static string Try(Func<string> f) { try { return f(); } catch (Exception e) { return "EXC " + e.GetType().Name; } }
+  static void Main() {
+    Console.WriteLine("rcwclass=" + Try(() => { object o = Marshal.GetTypedObjectForIUnknown(new_object(), typeof(ThingClass)); return (o is IItem3) + "," + (o is INotThere) + "," + ((IItem3)o).Answer(); }));
+    Console.WriteLine("rcwitf=" + Try(() => { object o = Marshal.GetTypedObjectForIUnknown(new_object(), typeof(IItem3)); return (o is IItem3) + "," + (o is INotThere); }));
+    Console.WriteLine("cleanup=" + Try(() => { Marshal.CleanupUnusedObjectsInCurrentContext(); return "ok"; }));
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg21g.exe sg21g.cs >"$T/mcs21g.out" 2>&1)
+[ -f "$C/sg21g.exe" ] || { fail "the sg21g probe did not compile: $(cat "$T/mcs21g.out")"; exit 1; }
+out=$(cd "$C" && timeout 180 "$WINE" sg21g.exe 2>&1 | tr -d '\r')
+[ "$(v rcwclass)" = "True,False,9" ] && pass "an RCW made for a COM class casts and calls as before" || fail "RCW for a class: '$(v rcwclass)'"
+[ "$(v rcwitf)" = "True,False" ] && pass "an RCW made for an interface casts without overflowing the stack (Visual Studio's UI thread)" \
+    || fail "RCW for an interface: '$(v rcwitf)' (sg20: EXC StackOverflowException)"
+[ "$(v cleanup)" = ok ] && pass "Marshal.CleanupUnusedObjectsInCurrentContext returns (Visual Studio's idle loop)" \
+    || fail "CleanupUnusedObjectsInCurrentContext: '$(v cleanup)' (sg20: EXC PlatformNotSupportedException)"
+# (sg22) Marshal.GetTypedObjectForIUnknown for an interface gives the object's own
+# RCW: its methods are called through COM, not remoting (Visual Studio 2022's
+# licensing state; the IDE shut down after two minutes). Uses cancast.dll from sg21g.
+cat > "$C/sg21h.cs" <<'CS'
+using System; using System.Runtime.InteropServices;
+[ComImport, Guid("2A9C4E11-7B2D-4C1E-9F00-11223344A041"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IItem3 { [PreserveSig] int Answer(); }
+[ComImport, Guid("2A9C4E11-7B2D-4C1E-9F00-11223344A042"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface INotThere { [PreserveSig] int Nothing(); }
+class P {
+  [DllImport("cancast.dll")] static extern IntPtr new_object();
+  static string Try(Func<string> f) { try { return f(); } catch (Exception e) { return "EXC " + e.GetType().Name; } }
+  static void Main() {
+    Console.WriteLine("itfcall=" + Try(() => { object o = Marshal.GetTypedObjectForIUnknown(new_object(), typeof(IItem3)); return ((IItem3)o).Answer().ToString(); }));
+    Console.WriteLine("itfsame=" + Try(() => { IntPtr p = new_object(); return (Marshal.GetTypedObjectForIUnknown(p, typeof(IItem3)) == Marshal.GetObjectForIUnknown(p)).ToString(); }));
+    Console.WriteLine("itfnot=" + Try(() => { object o = Marshal.GetTypedObjectForIUnknown(new_object(), typeof(IItem3)); return (o is INotThere).ToString(); }));
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg21h.exe sg21h.cs >"$T/mcs21h.out" 2>&1)
+[ -f "$C/sg21h.exe" ] || { fail "the sg21h probe did not compile: $(cat "$T/mcs21h.out")"; exit 1; }
+out=$(cd "$C" && timeout 180 "$WINE" sg21h.exe 2>&1 | tr -d '\r')
+[ "$(v itfcall)" = 9 ] && pass "a method called through a typed RCW for an interface goes through COM (Visual Studio's licensing state)" \
+    || fail "call through a typed RCW for an interface: '$(v itfcall)' (sg21: EXC Exception, not implemented)"
+[ "$(v itfsame)" = True ] && pass "the typed RCW for an interface is the object's own wrapper" || fail "typed RCW identity: '$(v itfsame)'"
+[ "$(v itfnot)" = False ] && pass "and does not cast to an interface the object lacks" || fail "typed RCW cast to a missing interface: '$(v itfnot)'"
 exit $RC

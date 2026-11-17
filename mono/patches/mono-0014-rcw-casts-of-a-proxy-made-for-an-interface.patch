@@ -1,0 +1,58 @@
+--- a/mcs/class/corlib/Mono.Interop/ComInteropProxy.cs
++++ b/mcs/class/corlib/Mono.Interop/ComInteropProxy.cs
+@@ -49,6 +49,11 @@
+         #endregion
+ 		private string type_name;
+ 
++		/* Stained Glass OS: the RCW itself, for runtime code that holds the proxy */
++		internal __ComObject ComObject {
++			get { return com_object; }
++		}
++
+ 		[MethodImplAttribute (MethodImplOptions.InternalCall)]
+ 		private extern static void AddProxy (IntPtr pItf, ref ComInteropProxy proxy);
+ 
+@@ -183,10 +188,19 @@
+ 
+ 		public bool CanCastTo (Type fromType, object o)
+ 		{
+-            __ComObject co = o as __ComObject;
++            /* Stained Glass OS: the proxy's own object. "o as __ComObject" on the
++             * transparent proxy asked this method again (the isinst of a proxy
++             * made for an interface), until the stack overflowed: Visual
++             * Studio 2022's UI thread, and with it the IDE, at startup. */
++            __ComObject co = com_object;
+             if (co == null)
+                 throw new NotSupportedException ("Only RCWs are currently supported");
+ 
++            /* every RCW is a __ComObject, whatever type its proxy was made for (an
++             * interface, when native code hands managed code an interface pointer) */
++            if (fromType.IsAssignableFrom (typeof (__ComObject)))
++                return true;
++
+             if ((fromType.Attributes & (TypeAttributes.Import|TypeAttributes.Interface)) == 0)
+                 return false;
+ 
+--- a/mcs/class/corlib/System.Runtime.InteropServices/Marshal.cs
++++ b/mcs/class/corlib/System.Runtime.InteropServices/Marshal.cs
+@@ -728,14 +730,18 @@
+ 			throw new NotImplementedException ();
+ #else
+ 			ComInteropProxy proxy = new ComInteropProxy (pUnk, t);
+-			__ComObject co = (__ComObject)proxy.GetTransparentProxy ();
++			object tp = proxy.GetTransparentProxy ();
++			/* Stained Glass OS: ask the RCW, not the transparent proxy: made for an
++			 * interface, the proxy sent __ComObject's own methods to remoting, which
++			 * threw */
++			__ComObject co = proxy.ComObject;
+ 			foreach (Type itf in t.GetInterfaces ()) {
+ 				if ((itf.Attributes & TypeAttributes.Import) == TypeAttributes.Import) {
+ 					if (co.GetInterface (itf) == IntPtr.Zero)
+ 						return null;
+ 				}
+ 			}
+-			return co;
++			return tp;
+ #endif
+ 		}
+ 

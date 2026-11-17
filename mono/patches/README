@@ -274,3 +274,107 @@ mono-0009-safearray-array-out-ignoresaccesschecks.patch (sg20)
       module of the same assembly is visible to it.
     From gaps3. Gate: test/mono-fork-test.sh (sg20 section); sg18 fails
       its three checks.
+
+mono-0010-vs-ide-com-events-arrays-eventprovider.patch (sg21)
+    runtime cominterop.c/marshal-ilgen.c (+ jit-icall-reg.h,
+      icall-signatures.h): an array of COM interfaces
+      ([MarshalAs(LPArray, ArraySubType = Interface)] IFoo[]) in a call
+      from native code to managed code is marshaled both ways: interface
+      pointers become objects (Mono's own CCWs their object, others an RCW),
+      and an [Out] array's objects go back as owned interface pointers. An
+      interface counted as a blittable type of size 0, so nothing was
+      copied: Visual Studio's msenv called IEnumWindowFrames.Next on a
+      managed enumerator, got S_OK and a NULL frame, and crashed.
+    runtime cominterop.c + corlib ComInteropProxy/__ComObject: a call to a
+      [ComEventInterface] interface on a COM object goes to the interface's
+      event provider class, made once per object with the object, as .NET
+      does (connection points). Visual Studio's SolutionNavigatorPackage
+      subscribes to DTE CommandEvents.BeforeExecute and failed SetSite with
+      E_NOINTERFACE (an InvalidCastException).
+    System.Core: System.Diagnostics.Eventing.EventProvider and
+      EventDescriptor, with no ETW session listening (IsEnabled false,
+      writes succeed). Visual Studio's SccProviderPackage keeps one in Team
+      Foundation's trace settings; the class failed to load.
+    From gaps3. Gate: test/mono-fork-test.sh (sg21 sections: outarr, comevent,
+      eventprovider); sg18/sg20 fail all three.
+
+mono-0011-rcw-takes-its-reference-first.patch (sg21)
+    corlib ComInteropProxy.GetProxy: a new runtime callable wrapper takes its
+      own reference (QueryInterface in __ComObject's constructor) before
+      GetProxy releases the one it took to look the object up. A native
+      caller may hand over an object nobody holds yet (count 0): Visual
+      Studio's msenv advises a new solution events sink that way. Released
+      first, the sink deleted itself, the wrapper kept a dangling pointer,
+      and the cast to IVsSolutionEvents crashed in QueryInterface.
+    From gaps3. Gate: test/mono-fork-test.sh (sg21 rcwref section); sg18 and
+      sg20 crash in it.
+
+mono-0012-ccw-release-with-no-reference-left.patch (sg21)
+    metadata/cominterop.c cominterop_ccw_release: a Release of a COM callable
+      wrapper that has no reference left no longer asserts (process abort);
+      it warns which managed class it was (once; every time with
+      SG_DEBUG_COMQI), returns 0 and leaves the count at 0, as .NET's retail
+      runtime lets the caller's extra Release pass. Visual Studio 2022 ended
+      at startup on it (the wrapper of VSTelemetrySession).
+    From gaps3. Gate: test/mono-fork-test.sh (sg21 ccwover section); sg20
+      aborts in it.
+
+mono-0013-type-equivalence-of-embedded-interop-types.patch (sg21)
+    metadata/metadata.c: type equivalence (NoPIA) in signature comparison, as
+      .NET has it. Two interfaces or value types with the same namespace and
+      name are one type in a method signature when both are [TypeIdentifier]
+      or COM imports, at least one is [TypeIdentifier], and their [Guid]s, if
+      any, are equal. A program built with "embed interop types" carries its
+      own copy of such an interface; a call into another assembly that has
+      its own copy failed with MissingMethodException. Visual Studio 2022's
+      extension manager (SetupEngineHelpers.GetApplicationName taking
+      ISetupInstance2) failed this way, and with it the MEF component model:
+      the editor package and every MEF service were unavailable.
+    From gaps3. Gate: test/mono-fork-test.sh (sg21 nopia section, ilasm);
+      sg20 throws MissingMethodException. Mutant SG_MUTANT_NO_TYPE_EQUIVALENCE.
+
+mono-0014-rcw-casts-of-a-proxy-made-for-an-interface.patch (sg21)
+    corlib ComInteropProxy.CanCastTo: uses the proxy's own __ComObject.
+      "o as __ComObject" on the transparent proxy of an RCW made for an
+      interface asked CanCastTo again, until the stack overflowed (Visual
+      Studio 2022's UI thread, at startup). Every RCW casts to __ComObject
+      and its bases. Marshal.GetTypedObjectForIUnknown asks the RCW itself
+      for the type's interfaces (through a proxy made for an interface,
+      __ComObject's methods went to remoting, which threw).
+      ComInteropProxy.ComObject (internal) gives runtime code the RCW.
+    From gaps3. Gate: test/mono-fork-test.sh (sg21 rcwitf); sg20 overflows
+      the stack.
+
+mono-0015-cleanup-unused-objects-is-a-no-op.patch (sg21)
+    corlib Marshal.CleanupUnusedObjectsInCurrentContext: nothing to do (RCWs
+      are released when collected), instead of throwing
+      PlatformNotSupportedException on Windows. Visual Studio 2022 calls it
+      from its idle loop (IVsRCWCleanupPrivate), over a thousand times at
+      startup.
+    From gaps3. Gate: test/mono-fork-test.sh (sg21 cleanup); sg20 throws.
+
+mono-0016-blocking-thread-whose-preempt-failed-counts-as-suspended.patch (sg21)
+    mono/utils/mono-threads-windows.c: in hybrid suspend, when the preemptive
+      suspend of a thread in a blocking (GC-safe) region fails (SuspendThread
+      or GetThreadContext fails: in a shared prefix the machine's server
+      reaches a user's threads only through that user's sg-procagent, and with
+      the agent gone wine-sg 7843 fails the request), the request stays and the
+      thread counts as suspended at the state it saved entering the region (as
+      full cooperative suspend does); it is marked cooperative-suspend aware.
+      Before, the abort put a BLOCKING thread to RUNNING: "Cannot transition
+      thread ... from RUNNING with DONE_BLOCKING" and the program spun at 100%
+      CPU (MSBuild, any .NET program, at its next collection).
+    From gaps3. Gate: wine-sg test/agentgone-gate.sh (the .NET program with its
+      agent killed mid-run); mutant SG_MUTANT_PREEMPT_FAIL_ABORTS.
+
+mono-0017-typed-rcw-for-an-interface-is-the-objects-own-rcw.patch (sg22)
+    corlib Marshal.GetTypedObjectForIUnknown: for an interface type it returns
+      the object's own runtime callable wrapper (GetObjectForIUnknown: same
+      identity, cast to the interface by QueryInterface), not a proxy made for
+      that interface. Calls through such a proxy went to remoting and threw
+      "The method or operation is not implemented": Visual Studio 2022's
+      licensing state (IVsClientRightsTokenCacheManagerInitialize.Initialize)
+      failed, and the IDE shut down after two minutes with "The evaluation
+      period has expired" (devenv /Build: "Invalid license data").
+    From gaps3. Gate: test/mono-fork-test.sh (sg21h section); stock 9.4.0
+      overflows the stack, sg21 throws on the call.

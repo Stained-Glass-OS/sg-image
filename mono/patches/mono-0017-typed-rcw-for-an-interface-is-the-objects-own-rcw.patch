@@ -1,0 +1,19 @@
+--- a/mcs/class/corlib/System.Runtime.InteropServices/Marshal.cs
++++ b/mcs/class/corlib/System.Runtime.InteropServices/Marshal.cs
+@@ -729,6 +729,16 @@
+ #if DISABLE_REMOTING
+ 			throw new NotImplementedException ();
+ #else
++#if !SG_MUTANT_TYPED_RCW_FOR_INTERFACE
++			/* Stained Glass OS: for an interface the object's own runtime callable
++			 * wrapper (the one GetObjectForIUnknown gives: same identity, cast to the
++			 * interface by QueryInterface), not a proxy made for that interface: its
++			 * method calls went to remoting and threw "The method or operation is not
++			 * implemented" (Visual Studio 2022's licensing state, so the IDE shut down
++			 * after two minutes: "The evaluation period has expired") */
++			if (t != null && t.IsInterface)
++				return GetObjectForIUnknown (pUnk);
++#endif
+ 			ComInteropProxy proxy = new ComInteropProxy (pUnk, t);
+ 			object tp = proxy.GetTransparentProxy ();
+ 			/* Stained Glass OS: ask the RCW, not the transparent proxy: made for an

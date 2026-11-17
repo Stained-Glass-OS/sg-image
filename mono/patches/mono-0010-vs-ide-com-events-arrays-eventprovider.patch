@@ -1,0 +1,471 @@
+--- a/mcs/class/corlib/Mono.Interop/ComInteropProxy.cs
++++ b/mcs/class/corlib/Mono.Interop/ComInteropProxy.cs
+@@ -137,6 +137,38 @@
+ 			throw new Exception ("The method or operation is not implemented.");
+ 		}
+ 
++		// Stained Glass OS: a COM object's events through its [ComEventInterface]
++		// (EnvDTE._dispCommandEvents_Event.BeforeExecute += ...): the interface's
++		// event provider, made once per object with the object, as .NET does.
++		// Visual Studio's packages subscribe to DTE events this way, and the
++		// cast to the event interface was an InvalidCastException.
++		Hashtable event_providers;
++
++		internal static object GetEventProvider (object rcw, Type providerType)
++		{
++			ComInteropProxy proxy;
++			__ComObject co = rcw as __ComObject;
++			if (co != null)
++				proxy = co.Proxy;   /* the call came through the proxy's invoke wrapper */
++			else
++				proxy = RemotingServices.GetRealProxy (rcw) as ComInteropProxy;
++			if (proxy == null)
++				throw new InvalidCastException ();
++			rcw = proxy.GetTransparentProxy ();
++			lock (proxy) {
++				if (proxy.event_providers == null)
++					proxy.event_providers = new Hashtable ();
++				object provider = proxy.event_providers [providerType];
++				if (provider == null) {
++					provider = Activator.CreateInstance (providerType,
++						BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.CreateInstance,
++						null, new object [] { rcw }, null);
++					proxy.event_providers [providerType] = provider;
++				}
++				return provider;
++			}
++		}
++
+ 		public string TypeName
+ 		{
+ 			get { return type_name; }
+--- a/mcs/class/corlib/System/__ComObject.cs
++++ b/mcs/class/corlib/System/__ComObject.cs
+@@ -66,6 +66,8 @@
+ 		// keep a reference to the proxy so it doesn't get garbage collected before the RCW
+ 		ComInteropProxy proxy;
+ 
++		internal ComInteropProxy Proxy { get { return proxy; } }
++
+ 		[MethodImplAttribute (MethodImplOptions.InternalCall)]
+ 		internal static extern __ComObject CreateRCW (Type t);
+ 
+--- a/mcs/class/System.Core/win32_net_4_x_System.Core.dll.sources
++++ b/mcs/class/System.Core/win32_net_4_x_System.Core.dll.sources
+@@ -49,3 +49,4 @@
+ ../../../external/corefx/src/System.IO.Pipes/src/System/IO/Pipes/PipeStream.Windows.cs
+ ../../../external/corefx/src/System.IO.Pipes/src/System/IO/Pipes/ReadWriteCompletionSource.cs
+ System.Diagnostics.Eventing.Reader/SgEventLog.cs
++System.Diagnostics.Eventing/SgEventProvider.cs
+--- a/mono/metadata/cominterop.c
++++ b/mono/metadata/cominterop.c
+@@ -767,6 +767,8 @@
+ 	register_icall (mono_marshal_safearray_destroy, mono_icall_sig_void_ptr, FALSE);
+ 	register_icall (mono_marshal_safearray_from_array, mono_icall_sig_ptr_object_int32, FALSE);
+ 	register_icall (mono_marshal_safearray_to_array, mono_icall_sig_object_ptr_ptr_int32_object, FALSE);
++	register_icall (mono_cominterop_itf_array_from_native, mono_icall_sig_void_object_ptr, FALSE);
++	register_icall (mono_cominterop_itf_array_to_native, mono_icall_sig_void_object_ptr_ptr, FALSE);
+ #endif // DISABLE_COM
+ 	/*FIXME
+ 
+@@ -1150,6 +1152,42 @@
+  * \param method managed method
+  * \returns the generated method to call
+  */
++/* the event provider class of a [ComEventInterface] interface, or NULL */
++static MonoClass *
++cominterop_event_provider_class (MonoClass *itf)
++{
++	ERROR_DECL (error);
++	MonoCustomAttrInfo *cinfo;
++	MonoClass *attr_class, *result = NULL;
++	MonoObject *attr;
++	MonoClassField *field;
++	MonoReflectionType *rt = NULL;
++
++	if (!itf || !mono_class_is_interface (itf))
++		return NULL;
++	attr_class = mono_class_try_load_from_name (mono_defaults.corlib, "System.Runtime.InteropServices", "ComEventInterfaceAttribute");
++	if (!attr_class)
++		return NULL;
++	cinfo = mono_custom_attrs_from_class_checked (itf, error);
++	if (!is_ok (error) || !cinfo) {
++		mono_error_cleanup (error);
++		return NULL;
++	}
++	attr = mono_custom_attrs_get_attr_checked (cinfo, attr_class, error);
++	if (!cinfo->cached)
++		mono_custom_attrs_free (cinfo);
++	if (!is_ok (error) || !attr) {
++		mono_error_cleanup (error);
++		return NULL;
++	}
++	field = mono_class_get_field_from_name_full (attr_class, "_EventProvider", NULL);
++	if (field)
++		mono_field_get_value_internal (attr, field, &rt);
++	if (rt && rt->type)
++		result = mono_class_from_mono_type_internal (rt->type);
++	return result;
++}
++
+ MonoMethod *
+ mono_cominterop_get_native_wrapper (MonoMethod *method)
+ {
+@@ -1208,6 +1246,30 @@
+ 			mono_mb_emit_exception_for_error (mb, error);
+ 			mono_error_cleanup (error);
+ 		}
++		else if (cominterop_event_provider_class (method->klass)) {
++			/* Stained Glass OS: a [ComEventInterface] method goes to the
++			 * object's event provider (connection points), as on .NET */
++			MonoClass *provider = cominterop_event_provider_class (method->klass);
++			int i;
++
++			MONO_STATIC_POINTER_INIT (MonoMethod, get_provider)
++
++				ERROR_DECL (error);
++				get_provider = mono_class_get_method_from_name_checked (mono_class_get_interop_proxy_class (), "GetEventProvider", 2, 0, error);
++				mono_error_assert_ok (error);
++
++			MONO_STATIC_POINTER_INIT_END (MonoMethod, get_provider)
++
++			mono_mb_emit_ldarg (mb, 0);
++			mono_mb_emit_ptr (mb, m_class_get_byval_arg (provider));
++			mono_mb_emit_icall (mb, cominterop_type_from_handle);
++			mono_mb_emit_managed_call (mb, get_provider, NULL);
++			mono_mb_emit_op (mb, CEE_CASTCLASS, method->klass);
++			for (i = 1; i <= sig->param_count; i++)
++				mono_mb_emit_ldarg (mb, i);
++			mono_mb_emit_op (mb, CEE_CALLVIRT, method);
++			mono_mb_emit_byte (mb, CEE_RET);
++		}
+ 		else {
+ 			MonoMethod *adjusted_method;
+ 			int retval = 0;
+@@ -4206,6 +4268,87 @@
+ 	return variant_clear;
+ }
+ 
++/* Stained Glass OS: arrays of COM interfaces between native and managed code
++ * ([MarshalAs(LPArray, ArraySubType = Interface)] IFoo[]). A managed
++ * enumerator's Next(celt, [Out] IVsWindowFrame[] rgelt, out fetched), called
++ * from Visual Studio's msenv, returned S_OK with rgelt[0] still NULL (an
++ * interface counted as a blittable type of size 0), and msenv crashed on it. */
++gboolean
++mono_cominterop_is_itf_array_elem (MonoClass *eklass, MonoMarshalSpec *spec)
++{
++	if (!eklass)
++		return FALSE;
++	if (mono_class_is_interface (eklass))
++		return TRUE;
++	if (eklass == mono_defaults.object_class && spec && spec->native == MONO_NATIVE_LPARRAY) {
++		MonoMarshalNative e = spec->data.array_data.elem_type;
++		return e == MONO_NATIVE_INTERFACE || e == MONO_NATIVE_IUNKNOWN || e == MONO_NATIVE_IDISPATCH;
++	}
++	return FALSE;
++}
++
++/* native interface pointers into the managed array: our own CCWs give back
++ * their object, other pointers a runtime callable wrapper */
++void
++mono_cominterop_itf_array_from_native (MonoArray *arr, gpointer *src)
++{
++	ERROR_DECL (error);
++	static MonoMethod *get_object;
++	uintptr_t i, len;
++
++	if (!arr || !src)
++		return;
++	if (!get_object) {
++		get_object = mono_class_get_method_from_name_checked (mono_defaults.marshal_class, "GetObjectForIUnknown", 1, 0, error);
++		mono_error_assert_ok (error);
++	}
++	len = mono_array_length_internal (arr);
++	for (i = 0; i < len; i++) {
++		MonoObject *obj = NULL;
++		gpointer p = src [i];
++		if (p) {
++			obj = cominterop_get_ccw_object ((MonoCCWInterface *)p, TRUE);
++			if (!obj) {
++				gpointer args [1] = { &p };
++				obj = mono_runtime_invoke_checked (get_object, NULL, args, error);
++				if (!is_ok (error)) {
++					mono_error_set_pending_exception (error);
++					return;
++				}
++			}
++		}
++		mono_array_setref_internal (arr, i, obj);
++	}
++}
++
++/* the managed array's objects as interface pointers the caller owns (one
++ * reference each), as .NET hands them out */
++void
++mono_cominterop_itf_array_to_native (MonoArray *arr, gpointer *dest, MonoClass *eklass)
++{
++	ERROR_DECL (error);
++	uintptr_t i, len;
++	MonoClass *ic = (eklass && mono_class_is_interface (eklass)) ? eklass : mono_class_get_iunknown_class ();
++
++	if (!arr || !dest)
++		return;
++	len = mono_array_length_internal (arr);
++	for (i = 0; i < len; i++) {
++		MonoObject *obj = mono_array_get_internal (arr, MonoObject*, i);
++		gpointer p = NULL;
++		if (obj) {
++			p = mono_cominterop_get_com_interface (obj, ic, error);
++			if (!is_ok (error)) {
++				mono_error_set_pending_exception (error);
++				return;
++			}
++			if (p)
++				mono_IUnknown_AddRef ((MonoIUnknown *)p);
++		}
++		dest [i] = p;
++	}
++}
++
+ /* SAFEARRAY marshalling */
+ int
+ mono_cominterop_emit_marshal_safearray (EmitMarshalContext *m, int argnum, MonoType *t,
+--- a/mono/metadata/cominterop.h
++++ b/mono/metadata/cominterop.h
+@@ -74,6 +74,15 @@
+ mono_cominterop_is_interface (MonoClass* klass);
+ 
+ gboolean
++mono_cominterop_is_itf_array_elem (MonoClass *eklass, MonoMarshalSpec *spec);
++
++void
++mono_cominterop_itf_array_from_native (MonoArray *arr, gpointer *src);
++
++void
++mono_cominterop_itf_array_to_native (MonoArray *arr, gpointer *dest, MonoClass *eklass);
++
++gboolean
+ mono_cominterop_is_rcw_method (MonoMethod *method);
+ 
+ gboolean
+--- a/mono/metadata/icall-signatures.h
++++ b/mono/metadata/icall-signatures.h
+@@ -243,6 +243,7 @@
+ ICALL_SIG (4, (ptr, ptr, uint32, ptrref))	\
+ ICALL_SIG (4, (void, object, object, ptr))	\
+ ICALL_SIG (4, (void, object, ptr, int32))	\
++ICALL_SIG (4, (void, object, ptr, ptr))	\
+ ICALL_SIG (4, (void, ptr, int, object))		\
+ ICALL_SIG (4, (void, ptr, int, ptr))		\
+ ICALL_SIG (4, (void, ptr, object, int32))	\
+--- a/mono/metadata/jit-icall-reg.h
++++ b/mono/metadata/jit-icall-reg.h
+@@ -243,6 +243,8 @@
+ MONO_JIT_ICALL (mono_marshal_safearray_begin) \
+ MONO_JIT_ICALL (mono_marshal_safearray_create) \
+ MONO_JIT_ICALL (mono_marshal_safearray_destroy) \
++MONO_JIT_ICALL (mono_cominterop_itf_array_from_native) \
++MONO_JIT_ICALL (mono_cominterop_itf_array_to_native) \
+ MONO_JIT_ICALL (mono_marshal_safearray_end) \
+ MONO_JIT_ICALL (mono_marshal_safearray_free_indices) \
+ MONO_JIT_ICALL (mono_marshal_safearray_from_array) \
+--- a/mono/metadata/marshal-ilgen.c
++++ b/mono/metadata/marshal-ilgen.c
+@@ -2861,6 +2861,19 @@
+ 			break;
+ 		}
+ 
++#ifndef DISABLE_COM
++		if (mono_cominterop_is_itf_array_elem (eklass, spec)) {
++			/* Stained Glass OS: interface pointers to objects; an [Out] array starts empty */
++			if (!((t->attrs & PARAM_ATTRIBUTE_OUT) && !(t->attrs & PARAM_ATTRIBUTE_IN))) {
++				mono_mb_emit_ldloc (mb, conv_arg);
++				mono_mb_emit_ldarg (mb, argnum);
++				mono_mb_emit_icall (mb, mono_cominterop_itf_array_from_native);
++			}
++			mono_mb_patch_branch (mb, label1);
++			break;
++		}
++#endif
++
+ 		/* FIXME: Optimize blittable case */
+ 
+ #ifndef DISABLE_NONBLITTABLE
+@@ -3008,6 +3021,18 @@
+ 		mono_mb_emit_ldarg (mb, argnum);
+ 		mono_mb_emit_stloc (mb, dest_ptr);
+ 
++#ifndef DISABLE_COM
++		if (mono_cominterop_is_itf_array_elem (eklass, spec)) {
++			/* Stained Glass OS: objects to interface pointers the caller owns */
++			mono_mb_emit_ldloc (mb, conv_arg);
++			mono_mb_emit_ldarg (mb, argnum);
++			mono_mb_emit_ptr (mb, eklass);
++			mono_mb_emit_icall (mb, mono_cominterop_itf_array_to_native);
++			mono_mb_patch_branch (mb, label1);
++			break;
++		}
++#endif
++
+ 		if (m_class_is_blittable (eklass)) {
+ 			/* dest */
+ 			mono_mb_emit_ldarg (mb, argnum);
+--- /dev/null
++++ b/mcs/class/System.Core/System.Diagnostics.Eventing/SgEventProvider.cs
+@@ -0,0 +1,156 @@
++//
++// System.Diagnostics.Eventing.EventProvider and EventDescriptor (System.Core),
++// for Stained Glass OS's Wine Mono.
++//
++// Programs built for .NET Framework keep an EventProvider for their ETW tracing
++// (Visual Studio's Team Foundation trace settings, so its source control
++// package); Mono had no such type and the class holding one failed to load.
++// The provider is registered with no ETW session listening, as on a Windows
++// machine where nobody traces: IsEnabled is false and a write succeeds with
++// nothing to deliver.
++//
++// Copyright (C) 2026 Stained Glass OS contributors. MIT licence, as Wine Mono.
++//
++using System;
++using System.Runtime.InteropServices;
++
++namespace System.Diagnostics.Eventing
++{
++	[StructLayout (LayoutKind.Explicit, Size = 16)]
++	public struct EventDescriptor
++	{
++		[FieldOffset (0)] ushort id;
++		[FieldOffset (2)] byte version;
++		[FieldOffset (3)] byte channel;
++		[FieldOffset (4)] byte level;
++		[FieldOffset (5)] byte opcode;
++		[FieldOffset (6)] ushort task;
++		[FieldOffset (8)] long keywords;
++
++		public EventDescriptor (int id, byte version, byte channel, byte level, byte opcode, int task, long keywords)
++		{
++			if (id < 0)
++				throw new ArgumentOutOfRangeException ("id", "Non-negative number required.");
++			if (id > ushort.MaxValue)
++				throw new ArgumentOutOfRangeException ("id", "The ID parameter must be in the range 1 through 65535.");
++			if (task < 0)
++				throw new ArgumentOutOfRangeException ("task", "Non-negative number required.");
++			if (task > ushort.MaxValue)
++				throw new ArgumentOutOfRangeException ("task", "The ID parameter must be in the range 1 through 65535.");
++			this.id = (ushort) id;
++			this.version = version;
++			this.channel = channel;
++			this.level = level;
++			this.opcode = opcode;
++			this.task = (ushort) task;
++			this.keywords = keywords;
++		}
++
++		public int EventId { get { return id; } }
++		public byte Version { get { return version; } }
++		public byte Channel { get { return channel; } }
++		public byte Level { get { return level; } }
++		public byte Opcode { get { return opcode; } }
++		public int Task { get { return task; } }
++		public long Keywords { get { return keywords; } }
++	}
++
++	public class EventProvider : IDisposable
++	{
++		public enum WriteEventErrorCode : int
++		{
++			NoError = 0,
++			NoFreeBuffers = 1,
++			EventTooBig = 2
++		}
++
++		public EventProvider (Guid providerGuid)
++		{
++		}
++
++		public void Dispose ()
++		{
++			Dispose (true);
++			GC.SuppressFinalize (this);
++		}
++
++		protected virtual void Dispose (bool disposing)
++		{
++		}
++
++		public virtual void Close ()
++		{
++			Dispose ();
++		}
++
++		~EventProvider ()
++		{
++			Dispose (false);
++		}
++
++		/* no ETW session enables the provider */
++		public bool IsEnabled ()
++		{
++			return false;
++		}
++
++		public bool IsEnabled (byte level, long keywords)
++		{
++			return false;
++		}
++
++		public static WriteEventErrorCode GetLastWriteEventError ()
++		{
++			return WriteEventErrorCode.NoError;
++		}
++
++		public bool WriteMessageEvent (string eventMessage, byte eventLevel, long eventKeywords)
++		{
++			if (eventMessage == null)
++				throw new ArgumentNullException ("eventMessage");
++			return true;
++		}
++
++		public bool WriteMessageEvent (string eventMessage)
++		{
++			return WriteMessageEvent (eventMessage, 0, 0);
++		}
++
++		public bool WriteEvent (ref EventDescriptor eventDescriptor, params object[] eventPayload)
++		{
++			return true;
++		}
++
++		public bool WriteEvent (ref EventDescriptor eventDescriptor, string data)
++		{
++			if (data == null)
++				throw new ArgumentNullException ("dataString");
++			return true;
++		}
++
++		protected bool WriteEvent (ref EventDescriptor eventDescriptor, int dataCount, IntPtr data)
++		{
++			return true;
++		}
++
++		public bool WriteTransferEvent (ref EventDescriptor eventDescriptor, Guid relatedActivityId, params object[] eventPayload)
++		{
++			return true;
++		}
++
++		protected bool WriteTransferEvent (ref EventDescriptor eventDescriptor, Guid relatedActivityId, int dataCount, IntPtr data)
++		{
++			return true;
++		}
++
++		public static void SetActivityId (ref Guid id)
++		{
++			Trace.CorrelationManager.ActivityId = id;
++		}
++
++		public static Guid CreateActivityId ()
++		{
++			return Guid.NewGuid ();
++		}
++	}
++}

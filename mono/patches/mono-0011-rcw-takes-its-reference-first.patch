@@ -1,0 +1,18 @@
+--- a/mcs/class/corlib/Mono.Interop/ComInteropProxy.cs
++++ b/mcs/class/corlib/Mono.Interop/ComInteropProxy.cs
+@@ -99,8 +99,14 @@
+ 			ComInteropProxy obj = null;
+ 			FindProxy (ppv, ref obj);
+ 			if (obj == null) {
++				/* Stained Glass OS: the new wrapper takes its own reference
++				 * first. A caller may hand over an object nobody holds yet
++				 * (count 0, as Visual Studio's msenv does with a solution
++				 * events sink): released before the wrapper had one, it
++				 * deleted itself and the wrapper kept a dangling pointer. */
++				ComInteropProxy proxy = new ComInteropProxy (ppv);
+ 				Marshal.Release (ppv);
+-				return new ComInteropProxy (ppv);
++				return proxy;
+ 			}
+ 			else {
+ 				Marshal.Release (ppv);

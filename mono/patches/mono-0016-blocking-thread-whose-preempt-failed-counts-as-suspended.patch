@@ -1,0 +1,51 @@
+--- a/mono/utils/mono-threads-windows.c
++++ b/mono/utils/mono-threads-windows.c
+@@ -176,6 +176,30 @@
+ {
+ }
+ 
++/* Stained Glass OS: the preemptive suspend of a thread in a blocking (GC-safe) region failed --
++ * Wine could not reach the thread (in a shared prefix the machine's server stops a user's threads
++ * through that user's process agent; with the agent gone SuspendThread/GetThreadContext fail).
++ * Aborting the request put the thread back to RUNNING although it was BLOCKING: when it left its
++ * native call Mono found "Cannot transition ... from RUNNING with DONE_BLOCKING" and the program
++ * spun forever. Instead the request stays and the thread is treated as suspended at the state it
++ * saved on entering the blocking region, as full cooperative suspend does: it cannot leave that
++ * region without suspending itself. It is marked cooperative-suspend aware, so later collections
++ * do the same rather than preempt it again. */
++static gboolean
++sg_blocking_preempt_failed (MonoThreadInfo *info)
++{
++#ifndef SG_MUTANT_PREEMPT_FAIL_ABORTS
++	if (mono_threads_is_hybrid_suspension_enabled () &&
++	    mono_thread_info_current_state (info) == STATE_BLOCKING_SUSPEND_REQUESTED) {
++		mono_atomic_store_i32 (&info->coop_aware_thread, TRUE);
++		info->suspend_can_continue = TRUE;
++		THREADS_SUSPEND_DEBUG ("\tpreempt failed, blocking thread %p counts as suspended\n", mono_thread_info_get_tid (info));
++		return TRUE;
++	}
++#endif
++	return FALSE;
++}
++
+ gboolean
+ mono_threads_suspend_begin_async_suspend (MonoThreadInfo *info, gboolean interrupt_kernel)
+ {
+@@ -189,6 +213,8 @@
+ 	result = SuspendThread (handle);
+ 	THREADS_SUSPEND_DEBUG ("SUSPEND %p -> %u\n", GUINT_TO_POINTER (id), result);
+ 	if (result == (DWORD)-1) {
++		if (sg_blocking_preempt_failed (info))
++			return TRUE;
+ 		if (!mono_threads_transition_abort_async_suspend (info)) {
+ 			/* We raced with self suspend and lost so suspend can continue. */
+ 			g_assert (mono_threads_is_hybrid_suspension_enabled ());
+@@ -221,6 +247,8 @@
+ 	if (!GetThreadContext (handle, context)) {
+ 		result = ResumeThread (handle);
+ 		g_assert (result == 1);
++		if (sg_blocking_preempt_failed (info))
++			return TRUE;
+ 		if (!mono_threads_transition_abort_async_suspend (info)) {
+ 			/* We raced with self suspend and lost so suspend can continue. */
+ 			g_assert (mono_threads_is_hybrid_suspension_enabled ());

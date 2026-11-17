@@ -1,0 +1,95 @@
+--- a/mono/metadata/metadata.c
++++ b/mono/metadata/metadata.c
+@@ -6000,6 +6000,83 @@
+ 	return mono_metadata_generic_param_equal_internal (p1, p2, TRUE);
+ }
+ 
++/* Stained Glass OS: type equivalence (NoPIA), as .NET has it. A program built with
++ * "embed interop types" carries its own copy of a COM interface, marked
++ * [TypeIdentifier]; another assembly carries its own copy of the same interface,
++ * and a method of one called from the other names it in its signature. Mono
++ * compared the two copies as different types: the call failed with
++ * MissingMethodException (Visual Studio 2022's extension manager,
++ * SetupEngineHelpers.GetApplicationName(ISetupInstance2, ...), and with it the
++ * editor's MEF component model). Two interfaces or value types with the same
++ * namespace and name are one type in a signature when both are marked
++ * [TypeIdentifier] or are COM imports, at least one carries [TypeIdentifier],
++ * and their [Guid]s (if any) are equal. */
++static GENERATE_TRY_GET_CLASS_WITH_CACHE (type_identifier_attribute, "System.Runtime.InteropServices", "TypeIdentifierAttribute")
++static GENERATE_TRY_GET_CLASS_WITH_CACHE (guid_attribute_raw, "System.Runtime.InteropServices", "GuidAttribute")
++
++/* 1 = [TypeIdentifier], 2 = COM import, 0 = neither; the [Guid] attribute's blob into guid
++ * (*guid_len 0 without one) */
++static int
++sg_type_equivalence_kind (MonoClass *klass, guint8 *guid, guint32 *guid_len)
++{
++	ERROR_DECL (error);
++	MonoCustomAttrInfo *cinfo;
++	MonoClass *tid = mono_class_try_get_type_identifier_attribute_class ();
++	MonoClass *gid = mono_class_try_get_guid_attribute_raw_class ();
++	int kind = (mono_class_get_flags (klass) & TYPE_ATTRIBUTE_IMPORT) ? 2 : 0;
++	int i;
++
++	*guid_len = 0;
++	cinfo = mono_custom_attrs_from_class_checked (klass, error);
++	if (!is_ok (error)) {
++		mono_error_cleanup (error);
++		return kind;
++	}
++	if (!cinfo)
++		return kind;
++	for (i = 0; i < cinfo->num_attrs; ++i) {
++		MonoClass *ac = cinfo->attrs [i].ctor ? cinfo->attrs [i].ctor->klass : NULL;
++		if (!ac)
++			continue;
++		if (tid && ac == tid)
++			kind = 1;
++		else if (gid && ac == gid && cinfo->attrs [i].data) {
++			*guid_len = MIN (cinfo->attrs [i].data_size, 64);
++			memcpy (guid, cinfo->attrs [i].data, *guid_len);
++		}
++	}
++	if (!cinfo->cached)
++		mono_custom_attrs_free (cinfo);
++	return kind;
++}
++
++static gboolean
++sg_types_equivalent (MonoClass *c1, MonoClass *c2)
++{
++	guint8 g1 [64], g2 [64];
++	guint32 l1, l2;
++	int k1, k2;
++
++#ifdef SG_MUTANT_NO_TYPE_EQUIVALENCE
++	return FALSE;
++#endif
++	if (mono_class_is_ginst (c1) || mono_class_is_ginst (c2) || mono_class_is_gtd (c1) || mono_class_is_gtd (c2))
++		return FALSE;
++	if (mono_class_is_interface (c1) != mono_class_is_interface (c2))
++		return FALSE;
++	if (!mono_class_is_interface (c1) && !(m_class_is_valuetype (c1) && m_class_is_valuetype (c2)))
++		return FALSE;
++	if (strcmp (m_class_get_name (c1), m_class_get_name (c2)) || strcmp (m_class_get_name_space (c1), m_class_get_name_space (c2)))
++		return FALSE;
++	if (!(k1 = sg_type_equivalence_kind (c1, g1, &l1)) || !(k2 = sg_type_equivalence_kind (c2, g2, &l2)))
++		return FALSE;
++	if (k1 != 1 && k2 != 1)
++		return FALSE;
++	if (l1 && l2 && (l1 != l2 || memcmp (g1, g2, l1)))
++		return FALSE;
++	return TRUE;
++}
++
+ static gboolean
+ mono_metadata_class_equal (MonoClass *c1, MonoClass *c2, gboolean signature_only)
+ {
+@@ -6025,6 +6102,8 @@
+ 	if (signature_only &&
+ 	    (c1_type->type == MONO_TYPE_ARRAY) && (c2_type->type == MONO_TYPE_ARRAY))
+ 		return do_mono_metadata_type_equal (c1_type, c2_type, signature_only);
++	if (signature_only && sg_types_equivalent (c1, c2))
++		return TRUE;
+ 	return FALSE;
+ }
+ 

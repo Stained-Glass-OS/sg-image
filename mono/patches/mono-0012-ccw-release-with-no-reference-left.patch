@@ -1,0 +1,24 @@
+--- a/mono/metadata/cominterop.c
++++ b/mono/metadata/cominterop.c
+@@ -3454,7 +3454,20 @@
+ 	MONO_REQ_GC_UNSAFE_MODE;
+ 	MonoCCW* ccw = ccwe->ccw;
+ 	g_assert (ccw);
+-	g_assert (ccw->ref_count > 0);
++	/* Stained Glass OS: a Release with no reference left is the caller's
++	 * bug; .NET's retail runtime lets it pass. It ended Visual Studio at
++	 * startup (an assertion). Say which object (once; every time with
++	 * SG_DEBUG_COMQI), and keep the count at 0 (still collectable). */
++	if (ccw->ref_count <= 0) {
++		static gboolean said;
++		if (!said || g_getenv ("SG_DEBUG_COMQI")) {
++			MonoObject *obj = ccw->gc_handle ? mono_gchandle_get_target_internal (ccw->gc_handle) : NULL;
++			g_warning ("COM callable wrapper of %s released with no reference left",
++				obj ? m_class_get_name (mono_object_class (obj)) : "(collected object)");
++			said = TRUE;
++		}
++		return 0;
++	}
+ 	gint32 const ref_count = mono_atomic_dec_i32 ((gint32*)&ccw->ref_count);
+ 	if (ref_count == 0) {
+ 		/* allow gc of object */
