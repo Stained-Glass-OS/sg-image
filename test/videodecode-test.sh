@@ -9,7 +9,8 @@
 # with hidden frames shown later), its reference decoded by the host's dav1d -- and VP9 profile 0 and
 # profile 2 (10-bit) from the host's libvpx (hidden alt-ref frames, two tile columns, segmentation) --
 # through D3D11VA (frames kept on the GPU, so no quiet fall back to the CPU), and every frame must be
-# bit for bit the frame its own software decoder gives (framemd5).
+# bit for bit the frame its own software decoder gives (framemd5). Then the same decoders through DXVA2
+# (Direct3D 9: MPC-HC, VLC's dxva2 mode), the 8-bit clips, NV12 surfaces read back with LockRect.
 #
 #   test/videodecode-test.sh [DXVK_X64_DIR]   (FFMPEG_D3D11VA=ffmpeg.exe; default DXVK: the staged payload)
 #
@@ -21,9 +22,10 @@
 # its own Xvfb, a private runtime directory, nothing on anybody's screen.
 # Then with d3d11.videoDecode = False (DXVK_CONFIG): no decoder offered. Auto (the default) offers them
 # only on NVIDIA's driver, where they were proven; True on any driver, for testing.
-# Mutants (d3d11_video_decoder.cpp): SG_MUTANT_NO_VIDEO_DECODE (dxvk/patches/0006: no decoder),
+# Mutants (dxvk_video_decoder.cpp since 0010): SG_MUTANT_NO_VIDEO_DECODE (dxvk/patches/0006: no decoder),
 # SG_MUTANT_AV1_REF_NAMES_SWAPPED (0008: AV1's LAST and GOLDEN references swapped),
-# SG_MUTANT_VP9_NO_COMPRESSED_HEADER_OFFSET (0009: the compressed header taken from the frame's start).
+# SG_MUTANT_VP9_NO_COMPRESSED_HEADER_OFFSET (0009: the compressed header taken from the frame's start),
+# SG_MUTANT_DXVA2_NO_CHROMA (0010, d3d9_device.cpp: a DXVA2 surface gets no chroma).
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -u
 HERE=$(cd "$(dirname "$0")/.." && pwd)
@@ -126,14 +128,14 @@ i=0; while [ ! -s "$T/display" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); d
 export DISPLAY=":$(cat "$T/display")"
 timeout -s KILL 300 "$WINE" wineboot -i >/dev/null 2>&1; "$WINESERVER" -w
 cp "$DXVK"/*.dll "$WINEPREFIX/drive_c/windows/system32/"
-export WINEDLLOVERRIDES="mscoree,mshtml=;winemenubuilder.exe=d;dxgi,d3d11,d3d10core=n"
+export WINEDLLOVERRIDES="mscoree,mshtml=;winemenubuilder.exe=d;dxgi,d3d11,d3d10core,d3d9=n"
 cp "$FF" "$WINEPREFIX/drive_c/ffmpeg.exe"
 cp "$T"/*.mp4 "$WINEPREFIX/drive_c/"
 [ -n "$VP9" ] && cp "$T"/*.webm "$WINEPREFIX/drive_c/"
 # a Wine that does not offer programs VK_KHR_video_decode_vp9 (before wine-sg 7848) gets no VP9 decoder
 if [ -n "$VP9" ]; then
     (cd "$WINEPREFIX/drive_c" && DXVK_LOG_LEVEL=info DXVK_LOG_PATH=none timeout -s KILL 300 "$WINE" ffmpeg.exe -hide_banner -loglevel error \
-        -hwaccel d3d11va -i vp9.webm -frames:v 1 -f framemd5 - </dev/null 2>&1) | grep -q "video decode VP9 profile 0" \
+        -hwaccel d3d11va -i vp9.webm -frames:v 1 -f framemd5 - </dev/null 2>&1) | grep -q "ideo decode VP9 profile 0" \
         || { VP9=; echo "      (this Wine does not offer VK_KHR_video_decode_vp9 to programs -- wine-sg 7848: the VP9 clips are skipped)"; }
 fi
 
@@ -156,6 +158,31 @@ for c in $CLIPS; do
         fail "$c: D3D11VA gave $hw frames ($diff different) of $sw; $(tr -d '\r' < "$T/$c.hw.err" | grep -v '^$' | sort -u | head -2 | tr '\n' ' ')"
     fi
 done
+
+# DXVA2 (Direct3D 9, through Wine's dxva2.dll, which asks the device for its decoders -- wine-sg
+# 7849): the same decoders, 8-bit clips (this D3D9 makes no P010 surfaces)
+(cd "$WINEPREFIX/drive_c" && DXVK_LOG_LEVEL=info DXVK_LOG_PATH=none timeout -s KILL 300 "$WINE" ffmpeg.exe -hide_banner -loglevel error \
+    -hwaccel dxva2 -hwaccel_output_format dxva2_vld -i bframes.mp4 -frames:v 1 -vf hwdownload,format=nv12 -f framemd5 - </dev/null 2>&1) \
+    | grep -q "ideo decode H.264" && DXVA2=1 || { DXVA2=; echo "      (this Wine's dxva2.dll does not ask the device for decoders -- wine-sg 7849: the DXVA2 clips are skipped)"; }
+if [ -n "$DXVA2" ]; then
+    for c in bframes cropped ${HEVC:+hevc} ${AV1:+av1 av1tiles} ${VP9:+vp9 vp9tiles}; do
+        f=$c.mp4; case $c in vp9*) f=$c.webm ;; esac
+        (cd "$WINEPREFIX/drive_c" && DXVK_LOG_LEVEL=none timeout -s KILL 300 "$WINE" ffmpeg.exe -hide_banner -loglevel error \
+            -hwaccel dxva2 -hwaccel_output_format dxva2_vld -i "$f" -vf hwdownload,format=nv12 -f framemd5 - 2>"$T/$c.dx.err" </dev/null) \
+            | tr -d '\r' | awk '/^0,/ {print $NF}' > "$T/$c.dx"
+        hw=$(wc -l < "$T/$c.dx"); sw=$(wc -l < "$T/$c.sw")
+        diff=$(paste "$T/$c.dx" "$T/$c.sw" | awk '$1 != $2' | wc -l)
+        if [ "$sw" -gt 0 ] && [ "$hw" = "$sw" ] && [ "$diff" = 0 ]; then
+            pass "$c through DXVA2: $hw frames decoded by the GPU, each the same as the software decoder's"
+        else
+            fail "$c through DXVA2: $hw frames ($diff different) of $sw; $(tr -d '\r' < "$T/$c.dx.err" | grep -v '^$' | sort -u | head -2 | tr '\n' ' ')"
+        fi
+    done
+    (cd "$WINEPREFIX/drive_c" && DXVK_LOG_LEVEL=none DXVK_CONFIG="d3d9.videoDecode = False" timeout -s KILL 300 "$WINE" ffmpeg.exe -hide_banner \
+        -loglevel error -hwaccel dxva2 -hwaccel_output_format dxva2_vld -i bframes.mp4 -vf hwdownload,format=nv12 -f framemd5 - 2>"$T/dxoff.err" </dev/null) \
+        | tr -d '\r' | awk '/^0,/ {print $NF}' > "$T/dxoff"
+    [ ! -s "$T/dxoff" ] && pass "d3d9.videoDecode = False: no DXVA2 decoder is offered" || fail "d3d9.videoDecode = False: $(wc -l < "$T/dxoff") frames came from a DXVA2 decoder"
+fi
 
 # d3d11.videoDecode = False (dxvk.conf; Auto offers decoders only on drivers they were proven on):
 # no decoder is offered, the program decodes on the CPU

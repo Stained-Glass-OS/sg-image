@@ -19,7 +19,7 @@ SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 SG_MAIL     ?= ../sg-mail
 
-.PHONY: desktop-deb desktop-test keyring-test keyring-reset-test netlock-test firewall-test gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-deb apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test videodecode-test surface-handle-test d3d-patchrev upgrade-order-test clean distclean
+.PHONY: desktop-deb desktop-test keyring-test keyring-reset-test netlock-test firewall-test gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-deb apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test videodecode-test d3d9-test surface-handle-test d3d-patchrev upgrade-order-test clean distclean
 
 all: image
 
@@ -297,6 +297,11 @@ dcomp-refresh-test: d3d
 # Context states Chromium's WebGPU asks for (dxvk/patches/0002).
 ctxstate-test: d3d
 	@test/ctxstate-test.sh
+
+# Direct3D 9 through the DXVK built here (sg-d3d builds d3d9.dll from source since dxvk/patches/0010,
+# DXVA2 video decoders): clear, draw, an NV12 surface, present, 64- and 32-bit. Host test.
+d3d9-test: d3d
+	@test/d3d9-test.sh
 
 # Direct3D 11 video decoders on Vulkan Video (dxvk/patches/0006): H.264 clips
 # decoded through D3D11VA by an FFmpeg built here for the test (never shipped),
