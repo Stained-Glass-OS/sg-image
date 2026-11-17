@@ -19,27 +19,57 @@ The profile offered is H.264 VLD without film grain, 8-bit 4:2:0,
 progressive; interlaced pictures are refused (E_NOTIMPL). Written from the
 DXVA and Vulkan specifications.
 
+Offered only where proven: d3d11.videoDecode (dxvk.conf) is Auto by
+default, which offers decoders on NVIDIA's proprietary driver only (bit-exact
+against software decode there); True offers them on any driver with H.264
+decode, for testing; False never.
+
 Notes: the session's largest picture must be the device's (NVIDIA's driver
 refused every picture of a session made for the stream's own size with
 VK_ERROR_INVALID_VIDEO_STD_PARAMETERS_KHR at vkEndCommandBuffer); slices
 name their picture parameter set, so its id is read from the first slice
 header.
 ---
+ dxvk.conf                         |   11 +
  src/d3d11/d3d11_context_imm.h     |    1 +
  src/d3d11/d3d11_device.cpp        |  110 ++-
+ src/d3d11/d3d11_options.cpp       |    1 +
+ src/d3d11/d3d11_options.h         |    4 +
  src/d3d11/d3d11_video.cpp         |   51 +-
- src/d3d11/d3d11_video_decoder.cpp | 1059 +++++++++++++++++++++++++++++
- src/d3d11/d3d11_video_decoder.h   |  229 +++++++
+ src/d3d11/d3d11_video_decoder.cpp | 1067 +++++++++++++++++++++++++++++
+ src/d3d11/d3d11_video_decoder.h   |  230 +++++++
  src/d3d11/meson.build             |    1 +
  src/dxvk/dxvk_adapter.cpp         |    1 +
  src/dxvk/dxvk_device.h            |    1 +
  src/dxvk/dxvk_device_info.cpp     |   16 +
  src/dxvk/dxvk_device_info.h       |    7 +
  src/vulkan/vulkan_loader.h        |   22 +
- 11 files changed, 1437 insertions(+), 61 deletions(-)
+ 14 files changed, 1462 insertions(+), 61 deletions(-)
  create mode 100644 src/d3d11/d3d11_video_decoder.cpp
  create mode 100644 src/d3d11/d3d11_video_decoder.h
 
+diff --git a/dxvk.conf b/dxvk.conf
+index 1c58703..5ecd4b0 100644
+--- a/dxvk.conf
++++ b/dxvk.conf
+@@ -262,6 +262,17 @@
+ # d3d11.maxTessFactor = 0
+ 
+ 
++# Direct3D 11 video decoders (D3D11VA) on Vulkan Video, H.264 (Stained Glass OS).
++# Auto offers them only on drivers they were proven bit-exact on (NVIDIA's
++# proprietary driver); True offers them on any driver whose Vulkan decodes
++# H.264 (for testing radv, anv); False never offers them, so programs decode
++# on the CPU.
++#
++# Supported values: Auto, True, False
++
++# d3d11.videoDecode = Auto
++
++
+ # Enables relaxed pipeline barriers around UAV writes.
+ #
+ # Ignores write-after-write hazards in compute shaders, and all UAV
 diff --git a/src/d3d11/d3d11_context_imm.h b/src/d3d11/d3d11_context_imm.h
 index e5beec2..41d89d1 100644
 --- a/src/d3d11/d3d11_context_imm.h
@@ -53,7 +83,7 @@ index e5beec2..41d89d1 100644
    public:
      
 diff --git a/src/d3d11/d3d11_device.cpp b/src/d3d11/d3d11_device.cpp
-index a4b8b66..0739c7c 100644
+index a4b8b66..0bac7da 100644
 --- a/src/d3d11/d3d11_device.cpp
 +++ b/src/d3d11/d3d11_device.cpp
 @@ -28,6 +28,7 @@
@@ -137,7 +167,7 @@ index a4b8b66..0739c7c 100644
 -      Logger::warn("D3D11VideoDevice::GetVideoDecoderProfileCount: Stub");
 -
 -    return 0;
-+    D3D11VideoDecodeSupport support(m_device->GetDXVKDevice());
++    D3D11VideoDecodeSupport support(m_device->GetDXVKDevice(), m_device->GetOptions()->videoDecode);
 +    return support.SupportsH264() ? 1u : 0u;
    }
  
@@ -151,7 +181,7 @@ index a4b8b66..0739c7c 100644
  
 -    if (!std::exchange(s_errorShown, true))
 -      Logger::warn("D3D11VideoDevice::GetVideoDecoderProfile: Stub");
-+    D3D11VideoDecodeSupport support(m_device->GetDXVKDevice());
++    D3D11VideoDecodeSupport support(m_device->GetDXVKDevice(), m_device->GetOptions()->videoDecode);
  
 -    return E_NOTIMPL;
 +    if (Index != 0u || !support.SupportsH264())
@@ -172,7 +202,7 @@ index a4b8b66..0739c7c 100644
  
 -    if (!std::exchange(s_errorShown, true))
 -      Logger::warn("D3D11VideoDevice::CheckVideoDecoderFormat: Stub");
-+    D3D11VideoDecodeSupport support(m_device->GetDXVKDevice());
++    D3D11VideoDecodeSupport support(m_device->GetDXVKDevice(), m_device->GetOptions()->videoDecode);
  
 -    return E_NOTIMPL;
 +    if (*pDecoderProfile != D3D11_DECODER_PROFILE_H264_VLD_NOFGT || !support.SupportsH264())
@@ -195,7 +225,7 @@ index a4b8b66..0739c7c 100644
 +    *pCount = 0u;
  
 -    if (!pCount)
-+    D3D11VideoDecodeSupport support(m_device->GetDXVKDevice());
++    D3D11VideoDecodeSupport support(m_device->GetDXVKDevice(), m_device->GetOptions()->videoDecode);
 +
 +    if (pDesc->Guid != D3D11_DECODER_PROFILE_H264_VLD_NOFGT || pDesc->OutputFormat != DXGI_FORMAT_NV12 || !support.SupportsH264())
        return E_INVALIDARG;
@@ -235,6 +265,33 @@ index a4b8b66..0739c7c 100644
    }
  
  
+diff --git a/src/d3d11/d3d11_options.cpp b/src/d3d11/d3d11_options.cpp
+index adf426d..5fa684a 100644
+--- a/src/d3d11/d3d11_options.cpp
++++ b/src/d3d11/d3d11_options.cpp
+@@ -18,6 +18,7 @@ namespace dxvk {
+     this->relaxedBarriers       = config.getOption<bool>("d3d11.relaxedBarriers", false);
+     this->relaxedGraphicsBarriers = config.getOption<bool>("d3d11.relaxedGraphicsBarriers", false);
+     this->maxTessFactor         = config.getOption<int32_t>("d3d11.maxTessFactor", 0);
++    this->videoDecode           = config.getOption<Tristate>("d3d11.videoDecode", Tristate::Auto);
+     this->samplerAnisotropy     = config.getOption<int32_t>("d3d11.samplerAnisotropy", -1);
+     this->samplerLodBias        = config.getOption<float>("d3d11.samplerLodBias", 0.0f);
+     this->clampNegativeLodBias  = config.getOption<bool>("d3d11.clampNegativeLodBias", false);
+diff --git a/src/d3d11/d3d11_options.h b/src/d3d11/d3d11_options.h
+index 3bf1e5e..d87a286 100644
+--- a/src/d3d11/d3d11_options.h
++++ b/src/d3d11/d3d11_options.h
+@@ -46,6 +46,10 @@ namespace dxvk {
+     /// supported, other values will be ignored.
+     int32_t maxTessFactor = 0;
+ 
++    /// Stained Glass OS: D3D11 video decoders on Vulkan Video. Auto: only on drivers they were
++    /// proven on (NVIDIA's); True: any driver with H.264 decode (for testing); False: none
++    Tristate videoDecode = Tristate::Auto;
++
+     /// Anisotropic filter override
+     ///
+     /// Enforces anisotropic filtering with the
 diff --git a/src/d3d11/d3d11_video.cpp b/src/d3d11/d3d11_video.cpp
 index 708c1fe..e50c85b 100644
 --- a/src/d3d11/d3d11_video.cpp
@@ -331,10 +388,10 @@ index 708c1fe..e50c85b 100644
  
 diff --git a/src/d3d11/d3d11_video_decoder.cpp b/src/d3d11/d3d11_video_decoder.cpp
 new file mode 100644
-index 0000000..da3bdcb
+index 0000000..54f6b71
 --- /dev/null
 +++ b/src/d3d11/d3d11_video_decoder.cpp
-@@ -0,0 +1,1059 @@
+@@ -0,0 +1,1067 @@
 +#include <algorithm>
 +#include <cstring>
 +#include <iomanip>
@@ -425,11 +482,19 @@ index 0000000..da3bdcb
 +  }
 +
 +
-+  D3D11VideoDecodeSupport::D3D11VideoDecodeSupport(const Rc<DxvkDevice>& Device) {
++  D3D11VideoDecodeSupport::D3D11VideoDecodeSupport(const Rc<DxvkDevice>& Device, Tristate Policy) {
 +#ifdef SG_MUTANT_NO_VIDEO_DECODE
 +    return;
 +#endif
 +    if (!Device->features().khrVideoDecodeH264 || !Device->queues().decode.queueHandle)
++      return;
++
++    /* only where it was proven (bit-exact against software decode): a program that is offered a
++     * decoder trusts it, and garbled pictures are worse than decoding on the CPU. d3d11.videoDecode
++     * = True offers it on any driver, for testing. */
++    if (Policy == Tristate::False)
++      return;
++    if (Policy == Tristate::Auto && !Device->adapter()->matchesDriver(VK_DRIVER_ID_NVIDIA_PROPRIETARY))
 +      return;
 +
 +    auto vki = Device->vki();
@@ -540,7 +605,7 @@ index 0000000..da3bdcb
 +    const D3D11_VIDEO_DECODER_DESC&       Desc,
 +    const D3D11_VIDEO_DECODER_CONFIG&     Config)
 +  : D3D11DeviceChild<ID3D11VideoDecoder>(pDevice),
-+    m_device(pDevice->GetDXVKDevice()), m_desc(Desc), m_config(Config) {
++    m_device(pDevice->GetDXVKDevice()), m_policy(pDevice->GetOptions()->videoDecode), m_desc(Desc), m_config(Config) {
 +    D3D11VideoDecodeSupport::FillH264Profile(&m_profile, &m_h264Profile);
 +    m_profileList.profileCount = 1u;
 +    m_profileList.pProfiles = &m_profile;
@@ -613,7 +678,7 @@ index 0000000..da3bdcb
 +
 +  bool D3D11VideoDecoder::CreateSession() {
 +    auto vkd = m_device->vkd();
-+    D3D11VideoDecodeSupport support(m_device);
++    D3D11VideoDecodeSupport support(m_device, m_policy);
 +
 +    if (!support.SupportsH264())
 +      return false;
@@ -1396,10 +1461,10 @@ index 0000000..da3bdcb
 +}
 diff --git a/src/d3d11/d3d11_video_decoder.h b/src/d3d11/d3d11_video_decoder.h
 new file mode 100644
-index 0000000..b33e1ff
+index 0000000..c99fbfe
 --- /dev/null
 +++ b/src/d3d11/d3d11_video_decoder.h
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,230 @@
 +#pragma once
 +
 +/* Stained Glass OS: D3D11 video decoders (D3D11VA) on Vulkan Video.
@@ -1433,7 +1498,7 @@ index 0000000..b33e1ff
 +
 +  public:
 +
-+    explicit D3D11VideoDecodeSupport(const Rc<DxvkDevice>& Device);
++    D3D11VideoDecodeSupport(const Rc<DxvkDevice>& Device, Tristate Policy);
 +
 +    bool SupportsH264() const {
 +      return m_h264;
@@ -1566,6 +1631,7 @@ index 0000000..b33e1ff
 +    };
 +
 +    Rc<DxvkDevice>              m_device;
++    Tristate                    m_policy;
 +    D3D11_VIDEO_DECODER_DESC    m_desc;
 +    D3D11_VIDEO_DECODER_CONFIG  m_config;
 +

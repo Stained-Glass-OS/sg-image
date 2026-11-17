@@ -12,6 +12,8 @@
 # Host test: wine-sg (/opt/wine-sg or $WINE), Xvfb, python3 GStreamer bindings with x264enc, and a GPU
 # whose Vulkan driver decodes H.264 (VK_KHR_video_decode_h264); skips (77) without them. Headless:
 # its own Xvfb, a private runtime directory, nothing on anybody's screen.
+# Then with d3d11.videoDecode = False (DXVK_CONFIG): no decoder offered. Auto (the default) offers them
+# only on NVIDIA's driver, where they were proven; True on any driver, for testing.
 # Mutant (dxvk/patches/0006, d3d11_video_decoder.cpp): SG_MUTANT_NO_VIDEO_DECODE.
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -u
@@ -88,6 +90,17 @@ for c in bframes cropped; do
         fail "$c: D3D11VA gave $hw frames ($diff different) of $sw; $(tr -d '\r' < "$T/$c.hw.err" | grep -v '^$' | sort -u | head -2 | tr '\n' ' ')"
     fi
 done
+
+# d3d11.videoDecode = False (dxvk.conf; Auto offers decoders only on drivers they were proven on):
+# no decoder is offered, the program decodes on the CPU
+(cd "$WINEPREFIX/drive_c" && DXVK_LOG_LEVEL=none DXVK_CONFIG="d3d11.videoDecode = False" timeout -s KILL 300 "$WINE" ffmpeg.exe -hide_banner \
+    -loglevel error -hwaccel d3d11va -hwaccel_output_format d3d11 -i bframes.mp4 -vf hwdownload,format=nv12 -f framemd5 - 2>"$T/off.err" </dev/null) \
+    | tr -d '\r' | awk '/^0,/ {print $NF}' > "$T/off.hw"
+if [ ! -s "$T/off.hw" ] && grep -q "hwaccel initialisation returned error\|Failed to get the decoder" "$T/off.err"; then
+    pass "d3d11.videoDecode = False: no decoder is offered (the program would decode on the CPU)"
+else
+    fail "d3d11.videoDecode = False: $(wc -l < "$T/off.hw") frames came from a decoder"
+fi
 
 [ $RC = 0 ] && echo "RESULT: PASS" || echo "RESULT: FAIL"
 exit $RC
