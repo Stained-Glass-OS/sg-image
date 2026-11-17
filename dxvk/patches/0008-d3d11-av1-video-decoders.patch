@@ -1,0 +1,739 @@
+From: Stained Glass OS <ke7oxh@gmail.com>
+Subject: [PATCH] d3d11: AV1 video decoders (Main, 8- and 10-bit)
+
+D3D11VA AV1 profile 0 decoders on Vulkan Video (VK_KHR_video_decode_av1),
+NV12 and P010 output from one decoder profile (a profile may now have
+more than one output format). DXVA_PicParams_AV1 gives the frame header
+and what of the sequence header the decoder needs; what DXVA does not
+repeat -- each reference's order hint, its own references' order hints,
+its frame type, sign bias and CDF/segmentation flags -- is kept per DPB
+slot from that reference's own decode, and skip mode's references are
+worked out from the order hints as the AV1 specification does. Tiles come
+from DXVA_Tile_AV1, their offsets into the bitstream buffer as Vulkan
+takes them. Film grain is not applied (the DPB and the output are one
+picture); a stream asking for it is decoded without it, with one warning.
+
+Offered only where proven (d3d11.videoDecode): bit-exact against dav1d
+on NVIDIA's driver (libaom 8/10-bit, tiles, loop restoration; SVT-AV1
+10-bit with hidden frames).
+---
+ src/d3d11/d3d11_device.cpp        |  26 +-
+ src/d3d11/d3d11_video_decoder.cpp | 419 +++++++++++++++++++++++++++++-
+ src/d3d11/d3d11_video_decoder.h   |  30 ++-
+ src/dxvk/dxvk_device_info.cpp     |   2 +
+ src/dxvk/dxvk_device_info.h       |   2 +
+ 5 files changed, 455 insertions(+), 24 deletions(-)
+
+diff --git a/src/d3d11/d3d11_device.cpp b/src/d3d11/d3d11_device.cpp
+index 3ef4436..07e8783 100644
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -3298,7 +3298,7 @@ namespace dxvk {
+     *ppDecoder = nullptr;
+ 
+     D3D11VideoDecodeSupport support(m_device->GetDXVKDevice(), m_device->GetOptions()->videoDecode);
+-    const D3D11VideoDecodeProfile* profile = support.Find(pVideoDesc->Guid);
++    const D3D11VideoDecodeProfile* profile = support.Find(pVideoDesc->Guid, pVideoDesc->OutputFormat);
+ 
+     /* H.264's short slices are ConfigBitstreamRaw 2 (1 is the long form), HEVC's are 1 */
+     bool h264 = profile && profile->codec == D3D11VideoCodec::H264;
+@@ -3362,15 +3362,13 @@ namespace dxvk {
+     *ppVDOVView = nullptr;
+ 
+     D3D11VideoDecodeSupport support(m_device->GetDXVKDevice(), m_device->GetOptions()->videoDecode);
+-    const D3D11VideoDecodeProfile* profile = support.Find(pDesc->DecodeProfile);
+-
+-    if (!profile || pDesc->ViewDimension != D3D11_VDOV_DIMENSION_TEXTURE2D)
++    if (!support.Find(pDesc->DecodeProfile) || pDesc->ViewDimension != D3D11_VDOV_DIMENSION_TEXTURE2D)
+       return E_INVALIDARG;
+ 
+     D3D11_COMMON_RESOURCE_DESC resourceDesc = { };
+     GetCommonResourceDesc(pResource, &resourceDesc);
+ 
+-    if (resourceDesc.Dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D || resourceDesc.Format != profile->dxgiFormat)
++    if (resourceDesc.Dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D || !support.Find(pDesc->DecodeProfile, resourceDesc.Format))
+       return E_INVALIDARG;
+ 
+     try {
+@@ -3428,7 +3426,7 @@ namespace dxvk {
+ 
+   UINT STDMETHODCALLTYPE D3D11VideoDevice::GetVideoDecoderProfileCount() {
+     D3D11VideoDecodeSupport support(m_device->GetDXVKDevice(), m_device->GetOptions()->videoDecode);
+-    return UINT(support.Profiles().size());
++    return UINT(support.Guids().size());
+   }
+ 
+ 
+@@ -3440,10 +3438,12 @@ namespace dxvk {
+ 
+     D3D11VideoDecodeSupport support(m_device->GetDXVKDevice(), m_device->GetOptions()->videoDecode);
+ 
+-    if (Index >= support.Profiles().size())
++    std::vector<GUID> guids = support.Guids();
++
++    if (Index >= guids.size())
+       return E_INVALIDARG;
+ 
+-    *pDecoderProfile = support.Profiles()[Index].guid;
++    *pDecoderProfile = guids[Index];
+     return S_OK;
+   }
+ 
+@@ -3457,12 +3457,10 @@ namespace dxvk {
+ 
+     D3D11VideoDecodeSupport support(m_device->GetDXVKDevice(), m_device->GetOptions()->videoDecode);
+ 
+-    const D3D11VideoDecodeProfile* profile = support.Find(*pDecoderProfile);
+-
+-    if (!profile)
++    if (!support.Find(*pDecoderProfile))
+       return E_INVALIDARG;
+ 
+-    *pSupported = Format == profile->dxgiFormat;
++    *pSupported = support.Find(*pDecoderProfile, Format) != nullptr;
+     return S_OK;
+   }
+ 
+@@ -3477,9 +3475,9 @@ namespace dxvk {
+ 
+     D3D11VideoDecodeSupport support(m_device->GetDXVKDevice(), m_device->GetOptions()->videoDecode);
+ 
+-    const D3D11VideoDecodeProfile* profile = support.Find(pDesc->Guid);
++    const D3D11VideoDecodeProfile* profile = support.Find(pDesc->Guid, pDesc->OutputFormat);
+ 
+-    if (!profile || pDesc->OutputFormat != profile->dxgiFormat)
++    if (!profile)
+       return E_INVALIDARG;
+ 
+     if (pDesc->SampleWidth > profile->caps.maxCodedExtent.width || pDesc->SampleHeight > profile->caps.maxCodedExtent.height)
+diff --git a/src/d3d11/d3d11_video_decoder.cpp b/src/d3d11/d3d11_video_decoder.cpp
+index dda6378..a41f984 100644
+--- a/src/d3d11/d3d11_video_decoder.cpp
++++ b/src/d3d11/d3d11_video_decoder.cpp
+@@ -108,6 +108,19 @@ namespace dxvk {
+           profile.chromaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR;
+         }
+         break;
++
++      case D3D11VideoCodec::Av1Main8:
++      case D3D11VideoCodec::Av1Main10:
++        av1.stdProfile = STD_VIDEO_AV1_PROFILE_MAIN;
++        /* film grain is not applied (the DPB and the output are one picture) */
++        av1.filmGrainSupport = VK_FALSE;
++        profile.pNext = &av1;
++        profile.videoCodecOperation = VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR;
++        if (Codec == D3D11VideoCodec::Av1Main10) {
++          profile.lumaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR;
++          profile.chromaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR;
++        }
++        break;
+     }
+ 
+     list.profileCount = 1u;
+@@ -137,12 +150,18 @@ namespace dxvk {
+       { D3D11VideoCodec::H264,       D3D11_DECODER_PROFILE_H264_VLD_NOFGT,  DXGI_FORMAT_NV12, VK_FORMAT_G8_B8R8_2PLANE_420_UNORM },
+       { D3D11VideoCodec::HevcMain,   D3D11_DECODER_PROFILE_HEVC_VLD_MAIN,   DXGI_FORMAT_NV12, VK_FORMAT_G8_B8R8_2PLANE_420_UNORM },
+       { D3D11VideoCodec::HevcMain10, D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10, DXGI_FORMAT_P010, VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16 },
++      { D3D11VideoCodec::Av1Main8,   D3D11_SG_DECODER_PROFILE_AV1_VLD_PROFILE0, DXGI_FORMAT_NV12, VK_FORMAT_G8_B8R8_2PLANE_420_UNORM },
++      { D3D11VideoCodec::Av1Main10,  D3D11_SG_DECODER_PROFILE_AV1_VLD_PROFILE0, DXGI_FORMAT_P010, VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16 },
+     };
+ 
+     for (const auto& c : candidates) {
+       if (c.codec == D3D11VideoCodec::H264 && !Device->features().khrVideoDecodeH264)
+         continue;
+-      if (c.codec != D3D11VideoCodec::H264 && !Device->features().khrVideoDecodeH265)
++      bool hevc = c.codec == D3D11VideoCodec::HevcMain || c.codec == D3D11VideoCodec::HevcMain10;
++      bool av1 = c.codec == D3D11VideoCodec::Av1Main8 || c.codec == D3D11VideoCodec::Av1Main10;
++      if (hevc && !Device->features().khrVideoDecodeH265)
++        continue;
++      if (av1 && !Device->features().khrVideoDecodeAV1)
+         continue;
+ 
+       D3D11VideoDecodeProfile p = c;
+@@ -150,7 +169,8 @@ namespace dxvk {
+       info.Fill(p.codec);
+ 
+       p.caps.pNext = &p.decodeCaps;
+-      p.decodeCaps.pNext = p.codec == D3D11VideoCodec::H264 ? static_cast<void*>(&p.h264Caps) : static_cast<void*>(&p.h265Caps);
++      p.decodeCaps.pNext = p.codec == D3D11VideoCodec::H264 ? static_cast<void*>(&p.h264Caps)
++                         : hevc ? static_cast<void*>(&p.h265Caps) : static_cast<void*>(&p.av1Caps);
+ 
+       if (vki->vkGetPhysicalDeviceVideoCapabilitiesKHR(adapter, &info.profile, &p.caps))
+         continue;
+@@ -189,7 +209,8 @@ namespace dxvk {
+     if (!m_profiles.empty() && !std::exchange(s_logged, true)) {
+       for (const auto& p : m_profiles) {
+         Logger::info(str::format("D3D11: video decode ",
+-          p.codec == D3D11VideoCodec::H264 ? "H.264" : p.codec == D3D11VideoCodec::HevcMain ? "HEVC Main" : "HEVC Main10",
++          p.codec == D3D11VideoCodec::H264 ? "H.264" : p.codec == D3D11VideoCodec::HevcMain ? "HEVC Main"
++          : p.codec == D3D11VideoCodec::HevcMain10 ? "HEVC Main10" : p.codec == D3D11VideoCodec::Av1Main8 ? "AV1 Main 8-bit" : "AV1 Main 10-bit",
+           ": up to ", p.caps.maxCodedExtent.width, "x", p.caps.maxCodedExtent.height,
+           ", ", p.caps.maxDpbSlots, " DPB slots"));
+       }
+@@ -197,15 +218,25 @@ namespace dxvk {
+   }
+ 
+ 
+-  const D3D11VideoDecodeProfile* D3D11VideoDecodeSupport::Find(const GUID& Guid) const {
++  const D3D11VideoDecodeProfile* D3D11VideoDecodeSupport::Find(const GUID& Guid, DXGI_FORMAT Format) const {
+     for (const auto& p : m_profiles) {
+-      if (p.guid == Guid)
++      if (p.guid == Guid && (Format == DXGI_FORMAT_UNKNOWN || p.dxgiFormat == Format))
+         return &p;
+     }
+     return nullptr;
+   }
+ 
+ 
++  std::vector<GUID> D3D11VideoDecodeSupport::Guids() const {
++    std::vector<GUID> guids;
++    for (const auto& p : m_profiles) {
++      if (std::find(guids.begin(), guids.end(), p.guid) == guids.end())
++        guids.push_back(p.guid);
++    }
++    return guids;
++  }
++
++
+   /* ---- output view ------------------------------------------------------------------------------- */
+ 
+   D3D11VideoDecoderOutputView::D3D11VideoDecoderOutputView(
+@@ -266,7 +297,7 @@ namespace dxvk {
+     m_device(pDevice->GetDXVKDevice()), m_policy(pDevice->GetOptions()->videoDecode),
+     m_desc(Desc), m_config(Config) {
+     D3D11VideoDecodeSupport support(m_device, m_policy);
+-    const D3D11VideoDecodeProfile* profile = support.Find(Desc.Guid);
++    const D3D11VideoDecodeProfile* profile = support.Find(Desc.Guid, Desc.OutputFormat);
+ 
+     if (!profile)
+       return;
+@@ -361,6 +392,8 @@ namespace dxvk {
+       VK_STD_VULKAN_VIDEO_CODEC_H264_DECODE_SPEC_VERSION };
+     static const VkExtensionProperties h265Header = { VK_STD_VULKAN_VIDEO_CODEC_H265_DECODE_EXTENSION_NAME,
+       VK_STD_VULKAN_VIDEO_CODEC_H265_DECODE_SPEC_VERSION };
++    static const VkExtensionProperties av1Header = { VK_STD_VULKAN_VIDEO_CODEC_AV1_DECODE_EXTENSION_NAME,
++      VK_STD_VULKAN_VIDEO_CODEC_AV1_DECODE_SPEC_VERSION };
+ 
+     VkVideoSessionCreateInfoKHR info = { VK_STRUCTURE_TYPE_VIDEO_SESSION_CREATE_INFO_KHR };
+     info.queueFamilyIndex = m_device->queues().decode.queueFamily;
+@@ -372,7 +405,12 @@ namespace dxvk {
+     info.referencePictureFormat = m_support.vkFormat;
+     info.maxDpbSlots = m_slotCount;
+     info.maxActiveReferencePictures = std::min(caps.maxActiveReferencePictures, 16u);
+-    info.pStdHeaderVersion = m_support.codec == D3D11VideoCodec::H264 ? &h264Header : &h265Header;
++    switch (m_support.codec) {
++      case D3D11VideoCodec::H264:      info.pStdHeaderVersion = &h264Header; break;
++      case D3D11VideoCodec::Av1Main8:
++      case D3D11VideoCodec::Av1Main10: info.pStdHeaderVersion = &av1Header; break;
++      default:                         info.pStdHeaderVersion = &h265Header; break;
++    }
+ 
+     if (vkd->vkCreateVideoSessionKHR(vkd->device(), &info, nullptr, &m_session)) {
+       m_session = VK_NULL_HANDLE;
+@@ -666,7 +704,12 @@ namespace dxvk {
+     HRESULT hr;
+     {
+       std::lock_guard<std::mutex> lock(m_mutex);
+-      hr = m_support.codec == D3D11VideoCodec::H264 ? DecodeH264(pContext) : DecodeHevc(pContext);
++      switch (m_support.codec) {
++        case D3D11VideoCodec::H264:      hr = DecodeH264(pContext); break;
++        case D3D11VideoCodec::Av1Main8:
++        case D3D11VideoCodec::Av1Main10: hr = DecodeAv1(pContext); break;
++        default:                         hr = DecodeHevc(pContext); break;
++      }
+     }
+ 
+     m_target = nullptr;
+@@ -1407,4 +1450,364 @@ namespace dxvk {
+     return Record(f, pic, pContext);
+   }
+ 
++  /* ---- AV1 ----------------------------------------------------------------------------------------- */
++
++  /* the AV1 specification's get_relative_dist */
++  static int av1RelativeDist(uint32_t bits, int a, int b) {
++    if (!bits)
++      return 0;
++    int diff = a - b;
++    int m = 1 << (bits - 1);
++    return (diff & (m - 1)) - (diff & m);
++  }
++
++
++  HRESULT D3D11VideoDecoder::DecodeAv1(D3D11ImmediateContext* pContext) {
++    const auto& ppBuf = m_buffers[D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS];
++    const auto& tlBuf = m_buffers[D3D11_VIDEO_DECODER_BUFFER_SLICE_CONTROL];
++    const auto& bsBuf = m_buffers[D3D11_VIDEO_DECODER_BUFFER_BITSTREAM];
++
++    if (!ppBuf.submitted || ppBuf.size < sizeof(DXVA_PicParams_AV1)
++     || !tlBuf.submitted || tlBuf.size < sizeof(DXVA_Tile_AV1) || !bsBuf.submitted || !bsBuf.size)
++      return E_INVALIDARG;
++
++    const auto& pp = *reinterpret_cast<const DXVA_PicParams_AV1*>(ppBuf.data.data());
++    const auto* tiles = reinterpret_cast<const DXVA_Tile_AV1*>(tlBuf.data.data());
++    uint32_t tileCount = tlBuf.size / sizeof(DXVA_Tile_AV1);
++
++    uint32_t bitDepth = m_support.codec == D3D11VideoCodec::Av1Main10 ? 10u : 8u;
++    if (pp.seq_profile != 0 || pp.format.mono_chrome || !pp.format.subsampling_x || !pp.format.subsampling_y
++     || pp.bitdepth > bitDepth) {
++      Logger::warn("D3D11VideoDecoder: this AV1 format is not decoded");
++      return E_NOTIMPL;
++    }
++
++    static bool s_grainWarned = false;
++    if (pp.film_grain.apply_grain && !std::exchange(s_grainWarned, true))
++      Logger::warn("D3D11VideoDecoder: AV1 film grain is not applied");
++
++    /* the DPB: every surface the reference map holds stays */
++    std::vector<uint32_t> referenced;
++    for (uint32_t i = 0; i < 8u; i++) {
++      if (pp.RefFrameMapTextureIndex[i] != 0xff)
++        referenced.push_back(pp.RefFrameMapTextureIndex[i]);
++    }
++
++    int32_t currentSlot = AcquireSlot(pp.CurrPicTextureIndex, referenced);
++    if (currentSlot < 0) {
++      Logger::err("D3D11VideoDecoder: no free DPB slot");
++      return E_FAIL;
++    }
++
++    Frame& f = NextFrame();
++
++    uint32_t orderHintBits = pp.order_hint_bits;
++    auto bits = [] (uint32_t v) { uint32_t n = 1; while (n < 16 && (1u << n) <= v) n++; return n; };
++
++    /* the sequence header, from what the picture parameters say of it */
++    StdVideoAV1ColorConfig color = { };
++    color.flags.mono_chrome = 0;
++    color.flags.separate_uv_delta_q = pp.quantization.u_dc_delta_q != pp.quantization.v_dc_delta_q
++                                   || pp.quantization.u_ac_delta_q != pp.quantization.v_ac_delta_q;
++    color.BitDepth = pp.bitdepth;
++    color.subsampling_x = 1;
++    color.subsampling_y = 1;
++    color.color_primaries = STD_VIDEO_AV1_COLOR_PRIMARIES_UNSPECIFIED;
++    color.transfer_characteristics = STD_VIDEO_AV1_TRANSFER_CHARACTERISTICS_UNSPECIFIED;
++    color.matrix_coefficients = STD_VIDEO_AV1_MATRIX_COEFFICIENTS_UNSPECIFIED;
++
++    StdVideoAV1SequenceHeader seq = { };
++    seq.flags.use_128x128_superblock = pp.coding.use_128x128_superblock;
++    seq.flags.enable_filter_intra = pp.coding.filter_intra;
++    seq.flags.enable_intra_edge_filter = pp.coding.intra_edge_filter;
++    seq.flags.enable_interintra_compound = pp.coding.interintra_compound;
++    seq.flags.enable_masked_compound = pp.coding.masked_compound;
++    seq.flags.enable_warped_motion = 1;
++    seq.flags.enable_dual_filter = pp.coding.dual_filter;
++    seq.flags.enable_order_hint = orderHintBits != 0;
++    seq.flags.enable_jnt_comp = pp.coding.jnt_comp;
++    seq.flags.enable_ref_frame_mvs = pp.coding.enable_ref_frame_mvs;
++    seq.flags.enable_superres = pp.coding.superres;
++    seq.flags.enable_cdef = pp.coding.cdef;
++    seq.flags.enable_restoration = pp.coding.restoration;
++    seq.flags.film_grain_params_present = pp.coding.film_grain;
++    seq.seq_profile = STD_VIDEO_AV1_PROFILE_MAIN;
++    seq.max_frame_width_minus_1 = uint16_t(std::max(pp.max_width, pp.width) - 1u);
++    seq.max_frame_height_minus_1 = uint16_t(std::max(pp.max_height, pp.height) - 1u);
++    seq.frame_width_bits_minus_1 = uint8_t(bits(seq.max_frame_width_minus_1) - 1u);
++    seq.frame_height_bits_minus_1 = uint8_t(bits(seq.max_frame_height_minus_1) - 1u);
++    seq.order_hint_bits_minus_1 = orderHintBits ? uint8_t(orderHintBits - 1u) : 0u;
++    seq.seq_force_integer_mv = 2;            /* SELECT_INTEGER_MV: the frame says */
++    seq.seq_force_screen_content_tools = 2;  /* SELECT_SCREEN_CONTENT_TOOLS */
++    seq.pColorConfig = &color;
++
++    VkVideoDecodeAV1SessionParametersCreateInfoKHR paramsInfo = { VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_SESSION_PARAMETERS_CREATE_INFO_KHR };
++    paramsInfo.pStdSequenceHeader = &seq;
++
++    if (!CreateParams(f, &paramsInfo))
++      return E_FAIL;
++
++    /* the references: each reference name's surface, its DPB slot and what its own decode was */
++    int32_t nameSlot[7];
++    uint8_t refHint[7] = { };
++    bool    refValid[7] = { };
++    std::array<StdVideoDecodeAV1ReferenceInfo, 8> stdRefs = { };
++    std::array<VkVideoDecodeAV1DpbSlotInfoKHR, 8> dpbInfos;
++    Picture pic;
++
++    for (uint32_t i = 0; i < 7u; i++) {
++      nameSlot[i] = -1;
++      uint32_t idx = pp.frame_refs[i].Index;
++      if (idx >= 8u || pp.RefFrameMapTextureIndex[idx] == 0xff)
++        continue;
++      uint32_t surface = pp.RefFrameMapTextureIndex[idx];
++      int32_t slot = surface < m_surfaceSlot.size() ? m_surfaceSlot[surface] : -1;
++      if (slot < 0 || slot == currentSlot) {
++        Logger::warn(str::format("D3D11VideoDecoder: reference surface ", surface, " was never decoded"));
++        continue;
++      }
++      nameSlot[i] = slot;
++      refHint[i] = m_av1Slots[slot].orderHint;
++      refValid[i] = true;
++
++      bool listed = false;
++      for (uint32_t j = 0; j < pic.refCount; j++)
++        listed |= pic.refSlots[j] == slot;
++      if (listed)
++        continue;
++
++      const auto& info = m_av1Slots[slot];
++      auto& r = stdRefs[pic.refCount];
++      r.flags.disable_frame_end_update_cdf = info.disableFrameEndUpdateCdf;
++      r.flags.segmentation_enabled = info.segmentationEnabled;
++      r.frame_type = info.frameType;
++      r.RefFrameSignBias = info.signBias;
++      r.OrderHint = info.orderHint;
++      std::memcpy(r.SavedOrderHints, info.orderHints, 8u);
++
++      dpbInfos[pic.refCount] = { VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_DPB_SLOT_INFO_KHR };
++      dpbInfos[pic.refCount].pStdReferenceInfo = &r;
++      pic.refInfos[pic.refCount] = &dpbInfos[pic.refCount];
++      pic.refSlots[pic.refCount] = slot;
++      pic.refCount++;
++    }
++
++    /* the order hints of the references (by reference name, 0 being the frame itself's intra), and
++     * which lie after this picture */
++    Av1SlotInfo cur;
++    cur.frameType = pp.format.frame_type;
++    cur.orderHint = pp.order_hint;
++    cur.disableFrameEndUpdateCdf = pp.coding.disable_frame_end_update_cdf;
++    cur.segmentationEnabled = pp.segmentation.enabled;
++    for (uint32_t i = 0; i < 7u; i++) {
++      cur.orderHints[i + 1] = refHint[i];
++      if (refValid[i] && orderHintBits && av1RelativeDist(orderHintBits, refHint[i], pp.order_hint) > 0)
++        cur.signBias |= 1u << (i + 1);
++    }
++
++    /* skip mode's two references (the specification's, from the order hints) */
++    uint8_t skipModeFrame[2] = { 0, 0 };
++    bool intra = pp.format.frame_type == 0 || pp.format.frame_type == 2;
++    if (pp.coding.skip_mode && !intra && pp.coding.reference_mode && orderHintBits) {
++      int fwd = -1, bwd = -1, fwdHint = 0, bwdHint = 0;
++      for (int i = 0; i < 7; i++) {
++        if (!refValid[i]) continue;
++        int dist = av1RelativeDist(orderHintBits, refHint[i], pp.order_hint);
++        if (dist < 0) {
++          if (fwd < 0 || av1RelativeDist(orderHintBits, refHint[i], fwdHint) > 0) { fwd = i; fwdHint = refHint[i]; }
++        } else if (dist > 0) {
++          if (bwd < 0 || av1RelativeDist(orderHintBits, refHint[i], bwdHint) < 0) { bwd = i; bwdHint = refHint[i]; }
++        }
++      }
++      if (fwd >= 0 && bwd >= 0) {
++        skipModeFrame[0] = uint8_t(1 + std::min(fwd, bwd));
++        skipModeFrame[1] = uint8_t(1 + std::max(fwd, bwd));
++      } else if (fwd >= 0) {
++        int fwd2 = -1, fwd2Hint = 0;
++        for (int i = 0; i < 7; i++) {
++          if (!refValid[i]) continue;
++          if (av1RelativeDist(orderHintBits, refHint[i], fwdHint) < 0) {
++            if (fwd2 < 0 || av1RelativeDist(orderHintBits, refHint[i], fwd2Hint) > 0) { fwd2 = i; fwd2Hint = refHint[i]; }
++          }
++        }
++        if (fwd2 >= 0) {
++          skipModeFrame[0] = uint8_t(1 + std::min(fwd, fwd2));
++          skipModeFrame[1] = uint8_t(1 + std::max(fwd, fwd2));
++        }
++      }
++    }
++
++    /* tiles: sizes in superblocks, and where each starts */
++    uint16_t widthSbsM1[64] = { }, heightSbsM1[64] = { }, colStarts[65] = { }, rowStarts[65] = { };
++    uint32_t cols = std::min<uint32_t>(pp.tiles.cols, 64u), rows = std::min<uint32_t>(pp.tiles.rows, 64u);
++    for (uint32_t i = 0; i < cols; i++) {
++      widthSbsM1[i] = uint16_t(pp.tiles.widths[i] - 1u);
++      colStarts[i + 1] = uint16_t(colStarts[i] + pp.tiles.widths[i]);
++    }
++    for (uint32_t i = 0; i < rows; i++) {
++      heightSbsM1[i] = uint16_t(pp.tiles.heights[i] - 1u);
++      rowStarts[i + 1] = uint16_t(rowStarts[i] + pp.tiles.heights[i]);
++    }
++
++    StdVideoAV1TileInfo tileInfo = { };
++    tileInfo.TileCols = uint8_t(cols);
++    tileInfo.TileRows = uint8_t(rows);
++    tileInfo.context_update_tile_id = pp.tiles.context_update_id;
++    tileInfo.tile_size_bytes_minus_1 = 3;
++    tileInfo.pMiColStarts = colStarts;
++    tileInfo.pMiRowStarts = rowStarts;
++    tileInfo.pWidthInSbsMinus1 = widthSbsM1;
++    tileInfo.pHeightInSbsMinus1 = heightSbsM1;
++
++    StdVideoAV1Quantization quant = { };
++    quant.flags.using_qmatrix = pp.quantization.qm_y != 0xff;
++    quant.flags.diff_uv_delta = color.flags.separate_uv_delta_q;
++    quant.base_q_idx = pp.quantization.base_qindex;
++    quant.DeltaQYDc = pp.quantization.y_dc_delta_q;
++    quant.DeltaQUDc = pp.quantization.u_dc_delta_q;
++    quant.DeltaQUAc = pp.quantization.u_ac_delta_q;
++    quant.DeltaQVDc = pp.quantization.v_dc_delta_q;
++    quant.DeltaQVAc = pp.quantization.v_ac_delta_q;
++    quant.qm_y = quant.flags.using_qmatrix ? pp.quantization.qm_y : 0;
++    quant.qm_u = quant.flags.using_qmatrix ? pp.quantization.qm_u : 0;
++    quant.qm_v = quant.flags.using_qmatrix ? pp.quantization.qm_v : 0;
++
++    StdVideoAV1Segmentation seg = { };
++    for (uint32_t i = 0; i < 8u; i++) {
++      seg.FeatureEnabled[i] = pp.segmentation.feature_mask[i].mask;
++      for (uint32_t j = 0; j < 8u; j++)
++        seg.FeatureData[i][j] = pp.segmentation.feature_data[i][j];
++    }
++
++    StdVideoAV1LoopFilter lf = { };
++    lf.flags.loop_filter_delta_enabled = pp.loop_filter.mode_ref_delta_enabled;
++    lf.flags.loop_filter_delta_update = pp.loop_filter.mode_ref_delta_update;
++    lf.loop_filter_level[0] = pp.loop_filter.filter_level[0];
++    lf.loop_filter_level[1] = pp.loop_filter.filter_level[1];
++    lf.loop_filter_level[2] = pp.loop_filter.filter_level_u;
++    lf.loop_filter_level[3] = pp.loop_filter.filter_level_v;
++    lf.loop_filter_sharpness = pp.loop_filter.sharpness_level;
++    for (uint32_t i = 0; i < 8u; i++)
++      lf.loop_filter_ref_deltas[i] = pp.loop_filter.ref_deltas[i];
++    lf.loop_filter_mode_deltas[0] = pp.loop_filter.mode_deltas[0];
++    lf.loop_filter_mode_deltas[1] = pp.loop_filter.mode_deltas[1];
++
++    StdVideoAV1CDEF cdef = { };
++    cdef.cdef_damping_minus_3 = pp.cdef.damping;
++    cdef.cdef_bits = pp.cdef.bits;
++    for (uint32_t i = 0; i < 8u; i++) {
++      cdef.cdef_y_pri_strength[i] = pp.cdef.y_strengths[i].primary;
++      cdef.cdef_y_sec_strength[i] = pp.cdef.y_strengths[i].secondary;
++      cdef.cdef_uv_pri_strength[i] = pp.cdef.uv_strengths[i].primary;
++      cdef.cdef_uv_sec_strength[i] = pp.cdef.uv_strengths[i].secondary;
++    }
++
++    /* DXVA gives the restoration unit sizes as log2 (6 + lr_unit_shift); Vulkan as 1 + lr_unit_shift */
++    StdVideoAV1LoopRestoration lr = { };
++    bool usesLr = false, usesChromaLr = false;
++    for (uint32_t i = 0; i < 3u; i++) {
++      lr.FrameRestorationType[i] = StdVideoAV1FrameRestorationType(pp.loop_filter.frame_restoration_type[i]);
++      usesLr |= pp.loop_filter.frame_restoration_type[i] != 0;
++      usesChromaLr |= i && pp.loop_filter.frame_restoration_type[i] != 0;
++    }
++    for (uint32_t i = 0; i < 3u; i++)
++      lr.LoopRestorationSize[i] = usesLr ? uint16_t(std::max<int>(1, int(pp.loop_filter.log2_restoration_unit_size[i]) - 5)) : 1u;
++
++    StdVideoAV1GlobalMotion gm = { };
++    for (uint32_t i = 0; i < 7u; i++) {
++      gm.GmType[i + 1] = pp.frame_refs[i].wmtype;
++      for (uint32_t j = 0; j < 6u; j++)
++        gm.gm_params[i + 1][j] = pp.frame_refs[i].wmmat[j];
++    }
++
++    StdVideoDecodeAV1PictureInfo stdPic = { };
++    stdPic.flags.disable_cdf_update = pp.coding.disable_cdf_update;
++    stdPic.flags.use_superres = pp.coding.superres;
++    stdPic.flags.allow_screen_content_tools = pp.coding.screen_content_tools;
++    stdPic.flags.is_filter_switchable = pp.interp_filter == 4;
++    stdPic.flags.force_integer_mv = pp.coding.integer_mv;
++    stdPic.flags.allow_intrabc = pp.coding.intrabc;
++    stdPic.flags.allow_high_precision_mv = pp.coding.high_precision_mv;
++    stdPic.flags.is_motion_mode_switchable = pp.coding.switchable_motion_mode;
++    stdPic.flags.use_ref_frame_mvs = pp.coding.use_ref_frame_mvs;
++    stdPic.flags.disable_frame_end_update_cdf = pp.coding.disable_frame_end_update_cdf;
++    stdPic.flags.allow_warped_motion = pp.coding.warped_motion;
++    stdPic.flags.reduced_tx_set = pp.coding.reduced_tx_set;
++    stdPic.flags.reference_select = pp.coding.reference_mode;
++    stdPic.flags.skip_mode_present = pp.coding.skip_mode;
++    stdPic.flags.delta_q_present = pp.quantization.delta_q_present;
++    stdPic.flags.delta_lf_present = pp.loop_filter.delta_lf_present;
++    stdPic.flags.delta_lf_multi = pp.loop_filter.delta_lf_multi;
++    stdPic.flags.segmentation_enabled = pp.segmentation.enabled;
++    stdPic.flags.segmentation_update_map = pp.segmentation.update_map;
++    stdPic.flags.segmentation_temporal_update = pp.segmentation.temporal_update;
++    stdPic.flags.segmentation_update_data = pp.segmentation.update_data;
++    stdPic.flags.UsesLr = usesLr;
++    stdPic.flags.usesChromaLr = usesChromaLr;
++    stdPic.flags.apply_grain = 0;
++    stdPic.frame_type = StdVideoAV1FrameType(pp.format.frame_type);
++    stdPic.OrderHint = pp.order_hint;
++    stdPic.primary_ref_frame = pp.primary_ref_frame;
++    stdPic.refresh_frame_flags = pp.coding.reference_frame_update ? 0xffu : 0u;
++    stdPic.interpolation_filter = StdVideoAV1InterpolationFilter(pp.interp_filter);
++    stdPic.TxMode = StdVideoAV1TxMode(pp.coding.tx_mode);
++    stdPic.delta_q_res = pp.quantization.delta_q_res;
++    stdPic.delta_lf_res = pp.loop_filter.delta_lf_res;
++    stdPic.SkipModeFrame[0] = skipModeFrame[0];
++    stdPic.SkipModeFrame[1] = skipModeFrame[1];
++    stdPic.coded_denom = pp.coding.superres ? uint8_t(pp.superres_denom - 9u) : 0u;
++    std::memcpy(stdPic.OrderHints, cur.orderHints, 8u);
++    stdPic.pTileInfo = &tileInfo;
++    stdPic.pQuantization = &quant;
++    stdPic.pSegmentation = &seg;
++    stdPic.pLoopFilter = &lf;
++    stdPic.pCDEF = &cdef;
++    stdPic.pLoopRestoration = &lr;
++    stdPic.pGlobalMotion = &gm;
++
++    /* the tiles' data: DXVA's offsets are into the bitstream buffer, as Vulkan's */
++    std::vector<uint32_t> tileOffsets(tileCount), tileSizes(tileCount);
++    for (uint32_t i = 0; i < tileCount; i++) {
++      if (uint64_t(tiles[i].DataOffset) + tiles[i].DataSize > bsBuf.size)
++        return E_INVALIDARG;
++      tileOffsets[i] = tiles[i].DataOffset;
++      tileSizes[i] = tiles[i].DataSize;
++    }
++
++    VkVideoDecodeAV1PictureInfoKHR av1Pic = { VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_PICTURE_INFO_KHR };
++    av1Pic.pStdPictureInfo = &stdPic;
++    for (uint32_t i = 0; i < 7u; i++)
++      av1Pic.referenceNameSlotIndices[i] = nameSlot[i];
++#ifdef SG_MUTANT_AV1_REF_NAMES_SWAPPED
++    std::swap(av1Pic.referenceNameSlotIndices[0], av1Pic.referenceNameSlotIndices[3]);
++#endif
++    av1Pic.frameHeaderOffset = 0;
++    av1Pic.tileCount = tileCount;
++    av1Pic.pTileOffsets = tileOffsets.data();
++    av1Pic.pTileSizes = tileSizes.data();
++
++    StdVideoDecodeAV1ReferenceInfo curRef = { };
++    curRef.flags.disable_frame_end_update_cdf = cur.disableFrameEndUpdateCdf;
++    curRef.flags.segmentation_enabled = cur.segmentationEnabled;
++    curRef.frame_type = cur.frameType;
++    curRef.RefFrameSignBias = cur.signBias;
++    curRef.OrderHint = cur.orderHint;
++    std::memcpy(curRef.SavedOrderHints, cur.orderHints, 8u);
++
++    VkVideoDecodeAV1DpbSlotInfoKHR curDpb = { VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_DPB_SLOT_INFO_KHR };
++    curDpb.pStdReferenceInfo = &curRef;
++
++    pic.pictureInfo = &av1Pic;
++    pic.setupInfo = &curDpb;
++    pic.currentSlot = currentSlot;
++    pic.extent = { std::min(pp.width, m_codedExtent.width), std::min(pp.height, m_codedExtent.height) };
++    pic.bitstream = &bsBuf.data;
++    pic.bitstreamSize = bsBuf.size;
++
++    HRESULT hr = Record(f, pic, pContext);
++    if (SUCCEEDED(hr))
++      m_av1Slots[currentSlot] = cur;
++    return hr;
++  }
++
+ }
+diff --git a/src/d3d11/d3d11_video_decoder.h b/src/d3d11/d3d11_video_decoder.h
+index 0ca7a7e..83a48a8 100644
+--- a/src/d3d11/d3d11_video_decoder.h
++++ b/src/d3d11/d3d11_video_decoder.h
+@@ -11,7 +11,8 @@
+  * from the DXVA and Vulkan specifications.
+  *
+  * H.264 (VLD, no film grain), 8-bit 4:2:0, progressive; HEVC Main (NV12) and Main10 (P010); short
+- * slice mode. Offered only on drivers it was proven on (d3d11.videoDecode, d3d11_options.h). */
++ * slice mode; AV1 Main (profile 0), 8-bit (NV12) and 10-bit (P010). Offered only on drivers it was
++ * proven on (d3d11.videoDecode, d3d11_options.h). */
+ 
+ #include <array>
+ #include <mutex>
+@@ -30,8 +31,14 @@ namespace dxvk {
+     H264,
+     HevcMain,
+     HevcMain10,
++    Av1Main8,
++    Av1Main10,
+   };
+ 
++  /* AV1's profile 0 decoder (DXVA's GUID, which the Windows SDK headers we build with lack) */
++  static constexpr GUID D3D11_SG_DECODER_PROFILE_AV1_VLD_PROFILE0 =
++    { 0xb8be4ccb, 0xcf53, 0x46ba, { 0x8d, 0x59, 0xd6, 0xb8, 0xa6, 0xda, 0x5d, 0x2a } };
++
+ 
+   /**
+    * \brief A decoder profile and what the device does of it
+@@ -46,6 +53,7 @@ namespace dxvk {
+     VkVideoDecodeCapabilitiesKHR      decodeCaps  = { VK_STRUCTURE_TYPE_VIDEO_DECODE_CAPABILITIES_KHR };
+     VkVideoDecodeH264CapabilitiesKHR  h264Caps    = { VK_STRUCTURE_TYPE_VIDEO_DECODE_H264_CAPABILITIES_KHR };
+     VkVideoDecodeH265CapabilitiesKHR  h265Caps    = { VK_STRUCTURE_TYPE_VIDEO_DECODE_H265_CAPABILITIES_KHR };
++    VkVideoDecodeAV1CapabilitiesKHR   av1Caps     = { VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_CAPABILITIES_KHR };
+   };
+ 
+ 
+@@ -56,6 +64,7 @@ namespace dxvk {
+     VkVideoProfileInfoKHR             profile     = { VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR };
+     VkVideoDecodeH264ProfileInfoKHR   h264        = { VK_STRUCTURE_TYPE_VIDEO_DECODE_H264_PROFILE_INFO_KHR };
+     VkVideoDecodeH265ProfileInfoKHR   h265        = { VK_STRUCTURE_TYPE_VIDEO_DECODE_H265_PROFILE_INFO_KHR };
++    VkVideoDecodeAV1ProfileInfoKHR    av1         = { VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_PROFILE_INFO_KHR };
+     VkVideoProfileListInfoKHR         list        = { VK_STRUCTURE_TYPE_VIDEO_PROFILE_LIST_INFO_KHR };
+ 
+     void Fill(D3D11VideoCodec Codec);
+@@ -76,7 +85,11 @@ namespace dxvk {
+       return m_profiles;
+     }
+ 
+-    const D3D11VideoDecodeProfile* Find(const GUID& Guid) const;
++    /* the decoder profiles (GUIDs) offered, each once: a GUID may decode to more than one format */
++    std::vector<GUID> Guids() const;
++
++    /* a profile by GUID and output format (DXGI_FORMAT_UNKNOWN: its first) */
++    const D3D11VideoDecodeProfile* Find(const GUID& Guid, DXGI_FORMAT Format = DXGI_FORMAT_UNKNOWN) const;
+ 
+   private:
+ 
+@@ -252,6 +265,17 @@ namespace dxvk {
+     std::vector<int32_t>        m_slotSurface;
+ 
+     Buffer                      m_buffers[D3D11_VIDEO_DECODER_BUFFER_FILM_GRAIN + 1];
++
++    /* AV1: what the references' own decodes were, which DXVA does not repeat (by DPB slot) */
++    struct Av1SlotInfo {
++      uint8_t frameType = 0;
++      uint8_t orderHint = 0;
++      uint8_t signBias = 0;
++      uint8_t orderHints[8] = { };
++      bool    disableFrameEndUpdateCdf = false;
++      bool    segmentationEnabled = false;
++    };
++    std::array<Av1SlotInfo, 17> m_av1Slots;
+     Com<D3D11VideoDecoderOutputView> m_target;
+ 
+     bool CreateSession();
+@@ -274,6 +298,8 @@ namespace dxvk {
+ 
+     HRESULT DecodeHevc(D3D11ImmediateContext* pContext);
+ 
++    HRESULT DecodeAv1(D3D11ImmediateContext* pContext);
++
+   };
+ 
+ }
+diff --git a/src/dxvk/dxvk_device_info.cpp b/src/dxvk/dxvk_device_info.cpp
+index 811469d..e62d27d 100644
+--- a/src/dxvk/dxvk_device_info.cpp
++++ b/src/dxvk/dxvk_device_info.cpp
+@@ -72,6 +72,7 @@ namespace dxvk {
+     HANDLE_EXT(khrVideoDecodeQueue);               \
+     HANDLE_EXT(khrVideoDecodeH264);                \
+     HANDLE_EXT(khrVideoDecodeH265);                \
++    HANDLE_EXT(khrVideoDecodeAV1);                 \
+     HANDLE_EXT(khrUnifiedImageLayouts);            \
+     HANDLE_EXT(khrWin32KeyedMutex);                \
+     HANDLE_EXT(amdBufferMarker);                   \
+@@ -1085,6 +1086,7 @@ namespace dxvk {
+       ENABLE_EXT(khrVideoDecodeQueue, false),
+       ENABLE_EXT(khrVideoDecodeH264, false),
+       ENABLE_EXT(khrVideoDecodeH265, false),
++      ENABLE_EXT(khrVideoDecodeAV1, false),
+ 
+       /* Use GENERAL layout for everything */
+       ENABLE_EXT_FEATURE(khrUnifiedImageLayouts, unifiedImageLayouts, false),
+diff --git a/src/dxvk/dxvk_device_info.h b/src/dxvk/dxvk_device_info.h
+index 19f931f..6283825 100644
+--- a/src/dxvk/dxvk_device_info.h
++++ b/src/dxvk/dxvk_device_info.h
+@@ -116,6 +116,7 @@ namespace dxvk {
+     VkBool32                                                  khrVideoDecodeQueue             = VK_FALSE;
+     VkBool32                                                  khrVideoDecodeH264              = VK_FALSE;
+     VkBool32                                                  khrVideoDecodeH265              = VK_FALSE;
++    VkBool32                                                  khrVideoDecodeAV1               = VK_FALSE;
+     VkBool32                                                  khrWin32KeyedMutex              = VK_FALSE;
+     VkBool32                                                  amdBufferMarker                 = VK_FALSE;
+     VkBool32                                                  nvDeviceDiagnosticCheckpoints   = VK_FALSE;
+@@ -195,6 +196,7 @@ namespace dxvk {
+     VkExtensionProperties khrVideoDecodeQueue               = vk::makeExtension(VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME);
+     VkExtensionProperties khrVideoDecodeH264                = vk::makeExtension(VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME);
+     VkExtensionProperties khrVideoDecodeH265                = vk::makeExtension(VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME);
++    VkExtensionProperties khrVideoDecodeAV1                 = vk::makeExtension(VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME);
+     VkExtensionProperties khrUnifiedImageLayouts            = vk::makeExtension(VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME);
+     VkExtensionProperties khrWin32KeyedMutex                = vk::makeExtension(VK_KHR_WIN32_KEYED_MUTEX_EXTENSION_NAME);
+     VkExtensionProperties amdBufferMarker                   = vk::makeExtension(VK_AMD_BUFFER_MARKER_EXTENSION_NAME);
+-- 
+2.47.3
+

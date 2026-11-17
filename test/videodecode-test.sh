@@ -5,6 +5,8 @@
 # from source for the purpose (test/ffmpeg-d3d11va-build.sh): it decodes short H.264 clips made by
 # GStreamer's x264 -- High profile, B-frames, several references, a picture size that is cropped --
 # and x265 -- HEVC Main with B-frames, Main 10 (P010 output), scaling lists and two slices a picture --
+# and AV1 Main from the host's FFmpeg (libaom: 8-bit, 10-bit, tiles, loop restoration; SVT-AV1: 10-bit
+# with hidden frames shown later), its reference decoded by the host's dav1d --
 # through D3D11VA (frames kept on the GPU, so no quiet fall back to the CPU), and every frame must be
 # bit for bit the frame its own software decoder gives (framemd5).
 #
@@ -12,11 +14,13 @@
 #
 # Host test: wine-sg (/opt/wine-sg or $WINE), Xvfb, python3 GStreamer bindings with x264enc, and a GPU
 # whose Vulkan driver decodes H.264 (VK_KHR_video_decode_h264); skips (77) without them. The HEVC
-# clips need x265enc and VK_KHR_video_decode_h265, and are skipped (said so) without them. Headless:
+# clips need x265enc and VK_KHR_video_decode_h265, the AV1 ones the host's ffmpeg with libaom-av1,
+# libsvtav1 and libdav1d and VK_KHR_video_decode_av1; skipped (said so) without them. Headless:
 # its own Xvfb, a private runtime directory, nothing on anybody's screen.
 # Then with d3d11.videoDecode = False (DXVK_CONFIG): no decoder offered. Auto (the default) offers them
 # only on NVIDIA's driver, where they were proven; True on any driver, for testing.
-# Mutant (dxvk/patches/0006, d3d11_video_decoder.cpp): SG_MUTANT_NO_VIDEO_DECODE.
+# Mutants (d3d11_video_decoder.cpp): SG_MUTANT_NO_VIDEO_DECODE (dxvk/patches/0006: no decoder),
+# SG_MUTANT_AV1_REF_NAMES_SWAPPED (0008: AV1's LAST and GOLDEN references swapped).
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -u
 HERE=$(cd "$(dirname "$0")/.." && pwd)
@@ -45,7 +49,11 @@ trap '"$WINESERVER" -k 2>/dev/null; [ -n "$XP" ] && kill "$XP" 2>/dev/null; rm -
 
 # a GPU that decodes H.264 with Vulkan; otherwise there is nothing to test here
 vulkaninfo 2>/dev/null | grep -q VK_KHR_video_decode_h264 || { echo "SKIP: no Vulkan H.264 video decode on this host"; exit 77; }
-HEVC=1
+HEVC=1 AV1=1
+vulkaninfo 2>/dev/null | grep -q VK_KHR_video_decode_av1 || { AV1=; echo "      (no Vulkan AV1 video decode on this host: the AV1 clips are skipped)"; }
+for e in libaom-av1 libsvtav1; do ffmpeg -hide_banner -encoders 2>/dev/null | grep -q " $e " || AV1=; done
+ffmpeg -hide_banner -decoders 2>/dev/null | grep -q " libdav1d " || AV1=
+[ -n "$AV1" ] || echo "      (no host ffmpeg with libaom-av1, libsvtav1 and libdav1d, or no Vulkan AV1 decode: the AV1 clips are skipped)"
 vulkaninfo 2>/dev/null | grep -q VK_KHR_video_decode_h265 || { HEVC=; echo "      (no Vulkan HEVC video decode on this host: the HEVC clips are skipped)"; }
 python3 -c "import gi; gi.require_version('Gst', '1.0'); from gi.repository import Gst; Gst.init(None); assert Gst.ElementFactory.find('x265enc')" 2>/dev/null \
     || { HEVC=; echo "      (no GStreamer x265enc: the HEVC clips are skipped)"; }
@@ -81,6 +89,21 @@ for name, desc in clips.items():
         sys.exit(1)
 PY
 
+# the AV1 clips, and their frames as dav1d decodes them (the test FFmpeg has no software AV1 decoder)
+if [ -n "$AV1" ]; then
+    hf() { timeout 300 ffmpeg -hide_banner -loglevel error -y "$@" </dev/null; }
+    hf -f lavfi -i testsrc2=size=320x240:rate=30 -frames:v 40 -c:v libaom-av1 -cpu-used 8 -g 20 -lag-in-frames 10 -pix_fmt yuv420p "$T/av1.mp4" &&
+    hf -f lavfi -i testsrc2=size=352x288:rate=30 -frames:v 30 -c:v libaom-av1 -cpu-used 8 -g 15 -lag-in-frames 8 -pix_fmt yuv420p10le "$T/av1x10.mp4" &&
+    hf -f lavfi -i testsrc2=size=640x360:rate=30 -frames:v 30 -c:v libaom-av1 -cpu-used 8 -tile-columns 1 -tile-rows 1 -g 30 -pix_fmt yuv420p "$T/av1tiles.mp4" &&
+    hf -f lavfi -i "testsrc2=size=320x240:rate=30,noise=alls=20:allf=t" -frames:v 30 -c:v libaom-av1 -cpu-used 6 -enable-restoration 1 -g 10 -pix_fmt yuv420p "$T/av1lr.mp4" &&
+    hf -f lavfi -i testsrc2=size=480x272:rate=30 -frames:v 48 -c:v libsvtav1 -preset 8 -g 24 -pix_fmt yuv420p10le "$T/av1svt.mp4" 2>/dev/null \
+        || { echo "FAIL  the AV1 clips could not be made"; exit 1; }
+    for c in av1 av1x10 av1tiles av1lr av1svt; do
+        fmt=nv12; case $c in *10|av1svt) fmt=p010le ;; esac
+        hf -c:v libdav1d -i "$T/$c.mp4" -pix_fmt $fmt -f framemd5 - 2>/dev/null | awk '/^0,/ {print $NF}' > "$T/$c.sw"
+    done
+fi
+
 Xvfb -displayfd 3 -screen 0 640x480x24 -nolisten tcp 3>"$T/display" >/dev/null 2>&1 & XP=$!
 i=0; while [ ! -s "$T/display" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 [ -s "$T/display" ] || { echo "FAIL  Xvfb did not start"; exit 1; }
@@ -91,14 +114,16 @@ export WINEDLLOVERRIDES="mscoree,mshtml=;winemenubuilder.exe=d;dxgi,d3d11,d3d10c
 cp "$FF" "$WINEPREFIX/drive_c/ffmpeg.exe"
 cp "$T"/*.mp4 "$WINEPREFIX/drive_c/"
 
-CLIPS="bframes cropped${HEVC:+ hevc hevc10 hevcsl}"
+CLIPS="bframes cropped${HEVC:+ hevc hevc10 hevcsl}${AV1:+ av1 av1x10 av1tiles av1lr av1svt}"
 for c in $CLIPS; do
-    fmt=nv12; [ "$c" = hevc10 ] && fmt=p010le   # Main 10: P010 surfaces
+    fmt=nv12; case $c in hevc10|av1x10|av1svt) fmt=p010le ;; esac   # 10-bit: P010 surfaces
     (cd "$WINEPREFIX/drive_c" && DXVK_LOG_LEVEL=none timeout -s KILL 300 "$WINE" ffmpeg.exe -hide_banner -loglevel error \
         -hwaccel d3d11va -hwaccel_output_format d3d11 -i "$c.mp4" -vf hwdownload,format=$fmt -f framemd5 - 2>"$T/$c.hw.err" </dev/null) \
         | tr -d '\r' | awk '/^0,/ {print $NF}' > "$T/$c.hw"
+    case $c in av1*) ;; *)   # the AV1 references are dav1d's (above)
     (cd "$WINEPREFIX/drive_c" && timeout -s KILL 300 "$WINE" ffmpeg.exe -hide_banner -loglevel error \
-        -i "$c.mp4" -pix_fmt $fmt -f framemd5 - 2>/dev/null </dev/null) | tr -d '\r' | awk '/^0,/ {print $NF}' > "$T/$c.sw"
+        -i "$c.mp4" -pix_fmt $fmt -f framemd5 - 2>/dev/null </dev/null) | tr -d '\r' | awk '/^0,/ {print $NF}' > "$T/$c.sw" ;;
+    esac
     hw=$(wc -l < "$T/$c.hw"); sw=$(wc -l < "$T/$c.sw")
     diff=$(paste "$T/$c.hw" "$T/$c.sw" | awk '$1 != $2' | wc -l)
     if [ "$sw" -gt 0 ] && [ "$hw" = "$sw" ] && [ "$diff" = 0 ]; then
