@@ -67,6 +67,9 @@
 #     interface is the object's own RCW (mono-0010..0017; 0016, a blocking
 #     thread whose preemptive suspend failed, is gated by wine-sg's
 #     test-agentgone);
+#   - (sg22) an interface pointer a native caller passes that is no object
+#     (misaligned, unmapped, an unreadable vtable) reaches the managed method
+#     as null, not a crash (Visual Studio's IPropertyBag.Read; mono-0018);
 #   - (sg18) a thread that came into managed code from native code reports
 #     the COM apartment it is in (GetApartmentState, ApartmentState), not
 #     Unknown: Visual Studio's main thread is an STA, and WPF refused it
@@ -1103,4 +1106,66 @@ out=$(cd "$C" && timeout 180 "$WINE" sg21h.exe 2>&1 | tr -d '\r')
     || fail "call through a typed RCW for an interface: '$(v itfcall)' (sg21: EXC Exception, not implemented)"
 [ "$(v itfsame)" = True ] && pass "the typed RCW for an interface is the object's own wrapper" || fail "typed RCW identity: '$(v itfsame)'"
 [ "$(v itfnot)" = False ] && pass "and does not cast to an interface the object lacks" || fail "typed RCW cast to a missing interface: '$(v itfnot)'"
+# (sg22) a native caller that passes something that is no object for an interface parameter
+# of a managed method -- misaligned, unmapped, or with an unreadable vtable -- gets null there,
+# not a crash (Visual Studio's managed IPropertyBag.Read declares RemoteRead's 5 parameters;
+# native callers pass the 3-argument Read, so pUnkObj is stack junk: devenv crashed opening a
+# solution). A defensive guard against bad callers; .NET Framework's own handling is unproven.
+cat > "$T/sg21i.c" <<'C'
+#include <windows.h>
+/* native code calls a managed object's interface method with a value that is no object in its
+ * interface parameter -- what a caller that passes fewer arguments than the managed declaration
+ * has leaves there (Visual Studio's IPropertyBag.Read): it must arrive as null, not crash */
+typedef struct ITaker2 ITaker2;
+typedef struct { HRESULT (WINAPI *QI)(ITaker2*, REFIID, void**); ULONG (WINAPI *AddRef)(ITaker2*); ULONG (WINAPI *Release)(ITaker2*);
+                 int (WINAPI *Take)(ITaker2*, void *item); } ITaker2Vtbl;
+struct ITaker2 { const ITaker2Vtbl *lpVtbl; };
+static char junk[64];
+__declspec(dllexport) int WINAPI give_misaligned(ITaker2 *t) { return t->lpVtbl->Take(t, junk + 3); }
+__declspec(dllexport) int WINAPI give_unmapped(ITaker2 *t)
+{
+    /* an aligned address with nothing mapped: reserve a page, then release it */
+    void *p = VirtualAlloc(NULL, 4096, MEM_RESERVE, PAGE_NOACCESS);
+    VirtualFree(p, 0, MEM_RELEASE);
+    return t->lpVtbl->Take(t, p);
+}
+__declspec(dllexport) int WINAPI give_badvtable(ITaker2 *t)
+{
+    /* a readable, aligned object whose vtable pointer leads nowhere */
+    static void *obj[2];
+    void *p = VirtualAlloc(NULL, 4096, MEM_RESERVE, PAGE_NOACCESS);
+    VirtualFree(p, 0, MEM_RELEASE);
+    obj[0] = p;
+    return t->lpVtbl->Take(t, obj);
+}
+C
+x86_64-w64-mingw32-gcc -shared -O1 -o "$C/misalign.dll" "$T/sg21i.c" || { fail "misalign.dll did not build"; exit 1; }
+cat > "$C/sg21i.cs" <<'CS'
+using System; using System.Runtime.InteropServices;
+[ComImport, Guid("2A9C4E11-7B2D-4C1E-9F00-11223344A051"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IItem4 { [PreserveSig] int Answer(); }
+[ComVisible(true), Guid("2A9C4E11-7B2D-4C1E-9F00-11223344A052"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface ITaker2 { [PreserveSig] int Take([MarshalAs(UnmanagedType.Interface)] IItem4 item); }
+[ComVisible(true), ClassInterface(ClassInterfaceType.None)]
+public class Taker2 : ITaker2 { public int Take(IItem4 item) { return item == null ? 1 : 2; } }
+class P {
+  [DllImport("misalign.dll")] static extern int give_misaligned(IntPtr taker);
+  [DllImport("misalign.dll")] static extern int give_unmapped(IntPtr taker);
+  [DllImport("misalign.dll")] static extern int give_badvtable(IntPtr taker);
+  static string Try(Func<int> f) { try { return f().ToString(); } catch (Exception e) { return "EXC " + e.GetType().Name; } }
+  static void Main() {
+    IntPtr p = Marshal.GetComInterfaceForObject(new Taker2(), typeof(ITaker2));
+    Console.WriteLine("misaligned=" + Try(() => give_misaligned(p)));
+    Console.WriteLine("unmapped=" + Try(() => give_unmapped(p)));
+    Console.WriteLine("badvtable=" + Try(() => give_badvtable(p)));
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg21i.exe sg21i.cs >"$T/mcs21i.out" 2>&1)
+[ -f "$C/sg21i.exe" ] || { fail "the sg21i probe did not compile: $(cat "$T/mcs21i.out")"; exit 1; }
+out=$(cd "$C" && timeout 180 "$WINE" sg21i.exe 2>&1 | tr -d '\r')
+for k in misaligned unmapped badvtable; do
+    [ "$(v $k)" = 1 ] && pass "a native caller's $k interface pointer reaches the managed method as null (Visual Studio's IPropertyBag.Read)" \
+        || fail "$k interface pointer from a native caller: '$(v $k)' (sg21 crashes)"
+done
 exit $RC

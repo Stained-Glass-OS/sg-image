@@ -1,0 +1,97 @@
+--- a/mono/metadata/cominterop.c
++++ b/mono/metadata/cominterop.c
+@@ -1456,6 +1456,49 @@
+ 	return AddRef;
+ }
+ 
++#if defined(HOST_WIN32) && !defined(SG_MUTANT_ITF_GUARD_OFF)
++/* Stained Glass OS: is this a pointer to something with a readable vtable? An interface
++ * pointer a native caller passes to a managed method is called through at once, so a value
++ * that cannot be one (misaligned, or its object or vtable not readable memory) is taken as
++ * null instead. Real objects are aligned and readable: valid calls see no change. */
++typedef struct { gboolean logged; char *where; } SgItfGuardSite;
++
++static gboolean
++sg_readable (gconstpointer p, gsize size)
++{
++	MEMORY_BASIC_INFORMATION mbi;
++	const DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ |
++		PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
++	gsize start = (gsize)p, end = start + size;
++
++	while (start < end) {
++		if (!VirtualQuery ((LPCVOID)start, &mbi, sizeof (mbi)) || mbi.State != MEM_COMMIT ||
++		    !(mbi.Protect & readable) || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)))
++			return FALSE;
++		start = (gsize)mbi.BaseAddress + mbi.RegionSize;
++	}
++	return TRUE;
++}
++
++static int
++sg_itf_ptr_usable (gpointer p, SgItfGuardSite *site)
++{
++	gboolean ok = !((gsize)p & (sizeof (gpointer) - 1)) && sg_readable (p, sizeof (gpointer));
++
++	if (ok) {
++		gpointer vtable = *(gpointer *)p;
++		/* the vtable: aligned and readable for IUnknown's three slots */
++		ok = !((gsize)vtable & (sizeof (gpointer) - 1)) && sg_readable (vtable, 3 * sizeof (gpointer));
++	}
++	if (!ok && !site->logged) {
++		site->logged = TRUE;
++		g_warning ("%s: a native caller passed %p for an interface parameter, which is no object; it is taken as null "
++			   "(a caller passing fewer arguments than the managed declaration has?)", site->where, p);
++	}
++	return ok;
++}
++#endif
++
+ int
+ mono_cominterop_emit_marshal_com_interface (EmitMarshalContext *m, int argnum, 
+ 											MonoType *t,
+@@ -1656,7 +1699,7 @@
+ 
+ 	case MARSHAL_ACTION_MANAGED_CONV_IN: {
+ 		int ccw_obj;
+-		guint32 pos_null = 0, pos_ccw = 0, pos_end = 0;
++		guint32 pos_null = 0, pos_ccw = 0, pos_end = 0, pos_unusable = 0;
+ 		ccw_obj = mono_mb_add_local (mb, mono_get_object_type ());
+ 
+ 		klass = mono_class_from_mono_type_internal (t);
+@@ -1673,6 +1716,26 @@
+ 			mono_mb_emit_byte (mb, CEE_LDIND_REF);
+ 		pos_null = mono_mb_emit_short_branch (mb, CEE_BRFALSE_S);
+ 
++#if defined(HOST_WIN32) && !defined(SG_MUTANT_ITF_GUARD_OFF)
++		if (!t->byref) {
++			static MonoMethodSignature *guard_sig;
++			SgItfGuardSite *site = g_new0 (SgItfGuardSite, 1);
++			site->where = g_strdup_printf ("%s, parameter %d", mb->name ? mb->name : "a COM callable wrapper", argnum);
++			if (!guard_sig) {
++				MonoMethodSignature *sig = mono_metadata_signature_alloc (mono_defaults.corlib, 2);
++				sig->ret = m_class_get_byval_arg (mono_defaults.int32_class);
++				sig->params [0] = mono_get_int_type ();
++				sig->params [1] = mono_get_int_type ();
++				sig->pinvoke = TRUE;
++				guard_sig = sig;
++			}
++			mono_mb_emit_ldarg (mb, argnum);
++			mono_mb_emit_ptr (mb, site);
++			mono_mb_emit_native_call (mb, guard_sig, sg_itf_ptr_usable);
++			pos_unusable = mono_mb_emit_short_branch (mb, CEE_BRFALSE_S);
++		}
++#endif
++
+ 		mono_mb_emit_ldarg (mb, argnum);
+ 		if (t->byref)
+ 			mono_mb_emit_byte (mb, CEE_LDIND_REF);
+@@ -1703,6 +1766,8 @@
+ 		mono_mb_patch_short_branch (mb, pos_end);
+ 		/* case if null */
+ 		mono_mb_patch_short_branch (mb, pos_null);
++		if (pos_unusable)
++			mono_mb_patch_short_branch (mb, pos_unusable);
+ 		break;
+ 	}
+ 

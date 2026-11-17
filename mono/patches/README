@@ -367,7 +367,7 @@ mono-0016-blocking-thread-whose-preempt-failed-counts-as-suspended.patch (sg21)
     From gaps3. Gate: wine-sg test/agentgone-gate.sh (the .NET program with its
       agent killed mid-run); mutant SG_MUTANT_PREEMPT_FAIL_ABORTS.
 
-mono-0017-typed-rcw-for-an-interface-is-the-objects-own-rcw.patch (sg22)
+mono-0017-typed-rcw-for-an-interface-is-the-objects-own-rcw.patch (sg21)
     corlib Marshal.GetTypedObjectForIUnknown: for an interface type it returns
       the object's own runtime callable wrapper (GetObjectForIUnknown: same
       identity, cast to the interface by QueryInterface), not a proxy made for
@@ -378,3 +378,17 @@ mono-0017-typed-rcw-for-an-interface-is-the-objects-own-rcw.patch (sg22)
       period has expired" (devenv /Build: "Invalid license data").
     From gaps3. Gate: test/mono-fork-test.sh (sg21h section); stock 9.4.0
       overflows the stack, sg21 throws on the call.
+
+mono-0018-interface-pointers-a-native-caller-passes-that-are-no-object-are-null.patch (sg22)
+    mono/metadata/cominterop.c, native-to-managed calls (COM callable wrappers) only,
+      interface-typed parameters only: a pointer that is misaligned, or whose object or
+      vtable is not readable memory (VirtualQuery), is passed as null, with one warning per
+      call site. Real objects are aligned and readable: valid calls see no change.
+      Why: Visual Studio's own interop declares IPropertyBag.Read (the standard IID
+      55272a00-...) with RemoteRead's 5 parameters (..., uint VARTYPE, [IUnknown] object
+      pUnkObj); native callers pass the 3-argument Read, so pUnkObj is whatever their stack
+      held (here 0x7f44eaec1afb). Mono called QueryInterface on it and devenv crashed
+      opening a solution. The bug is in VS's declaration; .NET Framework's handling of it is
+      unproven -- this is a defensive guard against bad callers.
+    From gaps3. Gate: test/mono-fork-test.sh (sg22 sg21i section: misaligned, unmapped,
+      bad-vtable pointers arrive as null; sg21 crashes). Mutant SG_MUTANT_ITF_GUARD_OFF.
