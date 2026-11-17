@@ -223,6 +223,16 @@ X xdotool key Return; sleep 2
 [ "$(journalctl -b -t sg-oobe --no-pager -o cat | grep -c "key enter down")" -gt "$n" ] && echo "an XTEST Enter reached the wizard" || echo "an XTEST Enter did not reach the wizard either"
 journalctl -b -t sg-compositor --no-pager -o cat | tail -8
 journalctl -b --since -3min --no-pager -o short-monotonic | grep -v -e sshd -e "sg-oobe\[" | tail -40' 2>&1 | cut -c1-220 | sed 's/^/        /'
+    # The machine's wineserver at this moment, and who stopped it: in releases 664 and 939 the
+    # unit sg-wineserver was being stopped or restarted while the wizard waited in pipe_read.
+    echo "      the machine's wineserver and the rest, into $ART/oobe-privacy-*.txt:"
+    ssh_guest 'for s in $(pgrep -x wineserver); do echo "== wineserver $s"; cat /proc/$s/status; echo "-- wchan: $(cat /proc/$s/wchan)"; echo "-- syscall: $(cat /proc/$s/syscall)"; echo "-- stack:"; cat /proc/$s/stack; echo "-- fds:"; ls -l /proc/$s/fd; done
+echo "== sg-wineserver"; systemctl show sg-wineserver -p ActiveState,SubState,Result,MainPID,ExecMainStatus,InvocationID,ActiveEnterTimestampMonotonic,InactiveEnterTimestampMonotonic,NRestarts
+echo "== who stopped it"; journalctl -b --no-pager -o short-monotonic | grep -E "sg-wineserver|Stopping .*wineserver|requested by|jobs?.*sg-wineserver" | grep -v sshd
+echo "== coredumps"; coredumpctl list --no-pager 2>&1 | tail -10
+echo "== threads"; ps -eLo pid,tid,stat,wchan:28,args' > "$ART/oobe-privacy-state.txt" 2>&1
+    ssh_guest "journalctl -b --no-pager -o short-monotonic" > "$ART/oobe-privacy-journal.txt" 2>&1
+    grep -A12 "== who stopped it" "$ART/oobe-privacy-state.txt" | head -14 | cut -c1-200 | sed 's/^/        /'
     fail "the privacy page's keys never reached the first-run setup"
 fi
 wait_for 'page done$' 1 180 && shot "done"
