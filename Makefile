@@ -19,7 +19,7 @@ SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 SG_MAIL     ?= ../sg-mail
 
-.PHONY: desktop-deb desktop-test keyring-test keyring-reset-test netlock-test firewall-test gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-deb apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test surface-handle-test d3d-patchrev upgrade-order-test clean distclean
+.PHONY: desktop-deb desktop-test keyring-test keyring-reset-test netlock-test firewall-test gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-deb apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test videodecode-test surface-handle-test d3d-patchrev upgrade-order-test clean distclean
 
 all: image
 
@@ -297,6 +297,21 @@ dcomp-refresh-test: d3d
 # Context states Chromium's WebGPU asks for (dxvk/patches/0002).
 ctxstate-test: d3d
 	@test/ctxstate-test.sh
+
+# Direct3D 11 video decoders on Vulkan Video (dxvk/patches/0006): H.264 clips
+# decoded through D3D11VA by an FFmpeg built here for the test (never shipped),
+# bit for bit the software decoder's frames. Host test; needs a GPU whose
+# Vulkan driver decodes H.264, skips without.
+FFMPEG_TEST_VERSION := 7.1.1
+FFMPEG_TEST_SHA256  := 733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1
+FFMPEG_TEST_URL     := https://ffmpeg.org/releases/ffmpeg-$(FFMPEG_TEST_VERSION).tar.xz
+videodecode-test: d3d
+	@mkdir -p $(D3D_CACHE)
+	@t=$(D3D_CACHE)/ffmpeg-$(FFMPEG_TEST_VERSION).tar.xz; \
+	[ -f $$t ] || { curl -sSL --retry 3 -o $$t.part $(FFMPEG_TEST_URL) && echo "$(FFMPEG_TEST_SHA256)  $$t.part" | sha256sum -c - >/dev/null && mv $$t.part $$t; }; \
+	c=$(D3D_CACHE)/ffmpeg-d3d11va-$(FFMPEG_TEST_VERSION)-$$(sha256sum test/ffmpeg-d3d11va-build.sh | cut -c1-8); \
+	[ -f $$c/ffmpeg.exe ] || test/ffmpeg-d3d11va-build.sh $$t $$c; \
+	FFMPEG_D3D11VA=$$c/ffmpeg.exe test/videodecode-test.sh
 
 # A composition swap chain for a DirectComposition surface handle through DXVK
 # (dxvk/patches/0004): Windows Terminal's pane was black. Host test, as dcomp-test.
