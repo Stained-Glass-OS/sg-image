@@ -2,7 +2,7 @@
 # The F5 gate: install Stained Glass OS from the live system, then boot the
 # installed disk alone and sign in as the owner Setup created.
 #
-# Two scenarios (SG_INSTALL_SCENARIO):
+# Three scenarios (SG_INSTALL_SCENARIO):
 #
 #   blank     the hybrid path, as a person trying it first would take it:
 #             Setup's first screen -> "Try Stained Glass OS" -> the live
@@ -17,6 +17,12 @@
 #             Afterwards the Windows boot manager, the reserved and data
 #             partitions and their table entries must be byte-identical, and
 #             the installed system must boot from its own boot partition.
+#   dualtarget  Windows' layout again, its 100 MB EFI system partition, and no
+#             unallocated space: a leftover partition where Setup installs
+#             (sg-install --target). The kernels must not go into Windows'
+#             EFI partition: the first 1 GiB of the chosen partition becomes
+#             the boot partition (XBOOTLDR), the rest the system; everything
+#             else checked as for dualboot.
 #
 # Both then power off, boot the installed disk ALONE (fresh firmware
 # variables, no stick) and run the full boot gate as the owner -- sign in by
@@ -55,7 +61,7 @@ fail() { echo "[install-test:$SCENARIO] FAIL: $*" >&2; RC=1; }
 pass() { echo "PASS  $*"; }
 RC=0
 
-case "$SCENARIO" in blank|dualboot) ;; *) echo "SG_INSTALL_SCENARIO is blank or dualboot"; exit 2 ;; esac
+case "$SCENARIO" in blank|dualboot|dualtarget) ;; *) echo "SG_INSTALL_SCENARIO is blank, dualboot or dualtarget"; exit 2 ;; esac
 [[ -f "$IMAGE" ]] || { echo "no image at $IMAGE -- run 'make image'"; exit 2; }
 [[ -f "$SSH_KEY" ]] || { echo "no ssh key -- run 'make image'"; exit 2; }
 for t in sfdisk mkfs.vfat mkfs.ext4 mcopy mtype; do command -v "$t" >/dev/null || { echo "need $t"; exit 2; }; done
@@ -116,9 +122,12 @@ if [[ "$SCENARIO" == blank ]]; then
     truncate -s 24G "$TARGET"
 else
     # Windows' layout: ESP (100 MB, with a boot manager), MSR (16 MB), a data
-    # partition (4 GB), then 27 GB unallocated.
+    # partition (4 GB), then 27 GB unallocated -- or (dualtarget) a 27 GB
+    # leftover partition there, of another Linux.
     truncate -s 32G "$TARGET"
-    printf 'label: gpt\nstart=2048, size=204800, type=%s, name="EFI system partition"\nsize=32768, type=E3C9E316-0B5C-4DB8-817D-F92DF00215AE, name="Microsoft reserved partition"\nsize=8388608, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="Basic data partition"\n' \
+    leftover=""
+    [[ "$SCENARIO" == dualtarget ]] && leftover='type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="old Linux"\n'
+    printf "label: gpt\nstart=2048, size=204800, type=%s, name=\"EFI system partition\"\nsize=32768, type=E3C9E316-0B5C-4DB8-817D-F92DF00215AE, name=\"Microsoft reserved partition\"\nsize=8388608, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name=\"Basic data partition\"\n$leftover" \
         "$ESP_GUID" | sfdisk -q "$TARGET"
     W="$BUILD/win-parts"; rm -rf "$W"; mkdir -p "$W/data"
     head -c 1500000 /dev/urandom > "$W/bootmgfw.efi"
@@ -133,7 +142,8 @@ else
     BOOTMGR_SUM=$(sha256sum < "$W/bootmgfw.efi" | cut -d' ' -f1)
     MSR_SUM=$(part_sum 2); DATA_SUM=$(part_sum 3)
     ENTRIES_BEFORE=$(for n in 1 2 3; do part_entry "$n"; done)
-    log "the target carries Windows' layout: ESP with a boot manager, MSR, data, 27 GB unallocated"
+    if [[ "$SCENARIO" == dualtarget ]]; then log "the target carries Windows' layout: ESP (100 MB) with a boot manager, MSR, data, and a 27 GB leftover partition"
+    else log "the target carries Windows' layout: ESP with a boot manager, MSR, data, 27 GB unallocated"; fi
 fi
 
 ssh_guest() {
@@ -352,7 +362,11 @@ EOS
 else
     press_until start 1 || fail "Setup's first page did not move on"
     to_disk
-    wait_logged 'selected Drive 0 Unallocated Space' 60 && pass "the partitioner preselects the unallocated space beside Windows"
+    if [[ "$SCENARIO" == dualtarget ]]; then
+        wait_logged 'selected Drive 0 Partition 4' 60 && pass "the partitioner preselects the leftover partition beside Windows"
+    else
+        wait_logged 'selected Drive 0 Unallocated Space' 60 && pass "the partitioner preselects the unallocated space beside Windows"
+    fi
     sleep 2; shot setup-disk
     qmp key ret                                   # Next
     page ready 1
@@ -390,7 +404,7 @@ fi
 wait "$QEMU_PID" 2>/dev/null || true; QEMU_PID=""
 
 # --- what else is on the disk: untouched ----------------------------------------
-if [[ "$SCENARIO" == dualboot ]]; then
+if [[ "$SCENARIO" != blank ]]; then
     tesp="$TARGET@@$((2048 * 512))"
     if [[ "$(mtype -i "$tesp" ::/EFI/Microsoft/Boot/bootmgfw.efi | sha256sum | cut -d' ' -f1)" == "$BOOTMGR_SUM" ]]; then
         pass "the Windows boot manager is byte-identical"
@@ -404,8 +418,12 @@ if [[ "$SCENARIO" == dualboot ]]; then
     sfdisk -d "$TARGET" > "$ARTIFACTS/table-after.txt"
     if grep -qi 'type=BC13C2FF-59E6-4262-A352-B275FD6F7172' "$ARTIFACTS/table-after.txt" \
             && grep -qi 'type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709' "$ARTIFACTS/table-after.txt"; then
-        pass "Setup made a boot partition and a root partition of its own in the unallocated space"
+        pass "Setup made a boot partition and a root partition of its own (in the unallocated space, or the partition chosen)"
     else fail "new partitions: $(cat "$ARTIFACTS/table-after.txt")"; fi
+    if ! mdir -i "$tesp" ::/stained-glass >/dev/null 2>&1 && ! mdir -i "$tesp" ::/debian >/dev/null 2>&1 \
+            && [[ -z "$(mdir -i "$tesp" -b ::/loader/entries 2>/dev/null)" ]]; then
+        pass "no kernels or boot entries in Windows' 100 MB system partition: only the boot loader"
+    else fail "Windows' system partition holds our kernels: $(mdir -i "$tesp" -/ -b :: 2>&1 | head -20 | tr '\n' ' ')"; fi
     if mtype -i "$tesp" ::/loader/loader.conf 2>/dev/null | grep -q '^timeout 5'; then
         pass "with Windows on the disk, the boot menu is shown"
     else fail "loader.conf: $(mtype -i "$tesp" ::/loader/loader.conf 2>&1)"; fi
@@ -440,7 +458,7 @@ if timeout 300 apt-get -q update >/tmp/apt-update.log 2>&1; then
     rec=\$(SG_DRIVERS_PCI=/tmp/pci-current sg-drivers --recommended)
     apt-get -q -s install \$rec >/tmp/apt-sim.log 2>&1 && grep -q '^Inst nvidia-driver ' /tmp/apt-sim.log && grep -q '^Inst nvidia-kernel-dkms ' /tmp/apt-sim.log && echo \"PASS  apt resolves the NVIDIA set against the archive (\$rec; DKMS module included)\" || { echo 'FAIL  apt cannot resolve the NVIDIA set'; tail -15 /tmp/apt-sim.log; exit 1; }
 else echo 'SKIP  the archive is unreachable from the VM: apt resolution not checked'; fi"
-if [[ "$SCENARIO" == dualboot ]]; then
+if [[ "$SCENARIO" != blank ]]; then
     POST_CHECK="$POST_CHECK
 ls /xbootldr >/dev/null; [ \"\$(lsblk -n -o PARTTYPE \"\$(findmnt -n -o SOURCE -t vfat /xbootldr)\")\" = bc13c2ff-59e6-4262-a352-b275fd6f7172 ] && grep -qx BOOT_ROOT=/xbootldr /etc/kernel/install.conf && echo 'PASS  the kernels are on its own boot partition (/xbootldr), not in Windows'\"'\"' system partition' || { echo 'FAIL  /xbootldr'; findmnt /xbootldr; exit 1; }
 [ -f /efi/EFI/Microsoft/Boot/bootmgfw.efi ] && echo 'PASS  the Windows boot manager is still in the system partition' || { echo 'FAIL  bootmgfw.efi'; exit 1; }"

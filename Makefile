@@ -876,13 +876,22 @@ boot-layout-test:
 install-test:
 	SG_INSTALL_SCENARIO=blank test/install-test.sh
 	SG_INSTALL_SCENARIO=dualboot test/install-test.sh
+	SG_INSTALL_SCENARIO=dualtarget test/install-test.sh
 
 # One scenario of it: the hybrid path onto a blank disk, or beside Windows.
-.PHONY: install-blank-test install-dualboot-test
+.PHONY: install-blank-test install-dualboot-test install-dualtarget-test
 install-blank-test:
 	SG_INSTALL_SCENARIO=blank test/install-test.sh
 install-dualboot-test:
 	SG_INSTALL_SCENARIO=dualboot test/install-test.sh
+install-dualtarget-test:
+	SG_INSTALL_SCENARIO=dualtarget test/install-test.sh
+
+# A kernel update never fills the boot partition: real Debian kernels through
+# apt on install-test's installed disk, its ESP nearly full (sg-boot-space).
+.PHONY: esp-space-test
+esp-space-test:
+	test/esp-space-test.sh
 
 # The ISO: the finished image as a hybrid UEFI ISO (DVD, a VM's CD drive, or a
 # USB stick) that boots the live system -- try it, or install from it. Built
