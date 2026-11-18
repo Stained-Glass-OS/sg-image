@@ -899,6 +899,15 @@ iso-test:
 	SG_LIVE_ISO=$(ISO) SG_LIVE_ISO_AS=disk SG_INSTALL_SCENARIO=blank test/install-test.sh
 	SG_LIVE_ISO=$(ISO) SG_LIVE_ISO_AS=cdrom SG_INSTALL_SCENARIO=dualboot test/install-test.sh
 	ISO=$(ISO) test/ventoy-test.sh
+	SG_LIVE_ISO=$(ISO) test/bios-test.sh
+
+# Legacy BIOS (SeaBIOS, no UEFI): the ISO boots; Setup installs a system with
+# GRUB a BIOS starts; kernel updates keep starting, with boot counting -- a
+# kernel GRUB cannot load, or one that hangs, gives way to the previous one by
+# itself (sg-session's sg-grub-bios).
+.PHONY: bios-test
+bios-test:
+	SG_LIVE_ISO=$(ISO) test/bios-test.sh
 
 # Put the ISO on https://freesoft.page/iso/ as sg-live-DATE-TIME-REV.iso (UTC;
 # a rebuild of the same sg-image revision with newer packages gets its own name), with its

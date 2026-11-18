@@ -1,7 +1,7 @@
 #!/bin/bash
 # Turn the finished disk image into a bootable ISO: burn it, attach it to a
 # virtual machine's CD drive, or write it to a USB stick (it is hybrid). It
-# boots UEFI machines straight into the live system -- try Stained Glass OS,
+# boots UEFI and legacy BIOS machines straight into the live system -- try Stained Glass OS,
 # or run Setup from it to install.
 #
 #   iso/build-iso.sh IMAGE OUTPUT.iso
@@ -14,6 +14,8 @@
 #                     loader does not look.
 #   live/root.erofs   the image's root file system, compressed, read-only.
 #   live/build-id     matches the initrd's copy: which ISO it belongs to
+#   boot/grub/        GRUB for legacy BIOS (El Torito image, and the MBR's
+#                     code on a stick): the live entries of efi.img, read from it
 # plus loader/sg-live.initrd inside efi.img: iso/sg-live-iso, which finds
 # the medium in the initrd (a block device, or the .iso file on a partition
 # of a multiboot stick such as Ventoy) and attaches root.erofs.
@@ -101,6 +103,44 @@ kib=$(( $(du -sk "$W/esp" | cut -f1) + 16384 ))
 mkfs.vfat -C -n SGLIVEESP "$W/iso/boot/efi.img" "$kib" >/dev/null
 mcopy -s -i "$W/iso/boot/efi.img" "$W"/esp/* ::/
 
+# --- legacy BIOS: GRUB (i386-pc) from the same entries ----------------------------
+# A BIOS machine boots the El Torito image boot/grub/i386-pc/eltorito.img (CD),
+# or the MBR code (GRUB's boot_hybrid.img), which loads it (USB stick). GRUB
+# reads the kernels and initrds out of efi.img itself (loopback): the live
+# entries are the UEFI ones, line for line -- same kernel, initrds, options.
+log "adding the legacy BIOS boot loader (GRUB)"
+GRUB_PC=/usr/lib/grub/i386-pc
+[[ -f "$GRUB_PC/boot_hybrid.img" ]] || { echo "build-iso: GRUB for BIOS is missing (apt install grub-pc-bin)" >&2; exit 1; }
+mkdir -p "$W/iso/boot/grub/i386-pc"
+cp "$GRUB_PC"/*.mod "$GRUB_PC"/*.lst "$W/iso/boot/grub/i386-pc/"
+# This medium's own GRUB finds this medium (several ISOs on one machine): a
+# file named after the build.
+: > "$W/iso/boot/grub/$BUILD_ID.mark"
+cat > "$W/early.cfg" <<EOF
+search --no-floppy --set=root --file /boot/grub/$BUILD_ID.mark
+set prefix=(\$root)/boot/grub
+EOF
+grub-mkimage -O i386-pc-eltorito -c "$W/early.cfg" -p /boot/grub -o "$W/iso/boot/grub/i386-pc/eltorito.img" \
+    biosdisk iso9660 part_gpt part_msdos fat loopback search search_fs_file configfile normal linux echo test \
+    gzio all_video gfxterm || { echo "build-iso: grub-mkimage failed" >&2; exit 1; }
+{
+    printf 'set timeout=3\nset default=0\nloopback esp /boot/efi.img\n'
+    printf 'insmod all_video\nterminal_output console\n'
+    for e in "$W"/esp/loader/entries/*-live.conf; do
+        awk '
+            /^title / { sub(/^title /, ""); title = $0 }
+            /^linux / { linux = $2 }
+            /^initrd / { initrd = initrd " (esp)" $2 }
+            /^options / { sub(/^options /, ""); options = $0 }
+            END {
+                printf "menuentry \"%s\" {\n", title
+                printf "    linux (esp)%s %s\n", linux, options
+                printf "    initrd%s\n", initrd
+                printf "}\n"
+            }' "$e"
+    done
+} > "$W/iso/boot/grub/grub.cfg"
+
 # --- the root file system --------------------------------------------------------
 # Kept beside the ISO and reused while the image is unchanged: compressing is
 # most of the time a rebuild takes.
@@ -132,7 +172,7 @@ Corporation.
 Project and source: https://freesoft.page -- https://github.com/Stained-Glass-OS'
 printf '%s\n' "$NOTICE" > "$W/iso/NOTICE.txt"
 cat > "$W/iso/README.txt" <<'EOF'
-Stained Glass OS -- live and installation medium (UEFI).
+Stained Glass OS -- live and installation medium (UEFI or legacy BIOS).
 
 Stained Glass OS is not Microsoft Windows and is not affiliated with Microsoft;
 see NOTICE.txt.
@@ -143,8 +183,13 @@ dd or any image writer, or copied as a file onto a Ventoy stick) and choose
 Nothing on the computer changes until you run Setup.
 EOF
 rm -f "$OUT"
+# El Torito: the BIOS image first (a BIOS boots the default entry), then the
+# UEFI one; the MBR boot code for a BIOS booting the stick as a disk. UEFI
+# boots exactly as before: the EFI El Torito entry, and the appended ESP.
 xorriso -as mkisofs -quiet -iso-level 3 -full-iso9660-filenames -joliet -joliet-long -rational-rock \
     -volid SGLIVE -output "$OUT" \
+    -b boot/grub/i386-pc/eltorito.img -no-emul-boot -boot-load-size 4 -boot-info-table --grub2-boot-info \
+    --grub2-mbr "$GRUB_PC/boot_hybrid.img" \
     -eltorito-alt-boot -e boot/efi.img -no-emul-boot \
     -append_partition 2 0xef "$W/iso/boot/efi.img" -appended_part_as_gpt \
     "$W/iso"
