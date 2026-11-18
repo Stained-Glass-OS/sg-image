@@ -392,3 +392,18 @@ mono-0018-interface-pointers-a-native-caller-passes-that-are-no-object-are-null.
       unproven -- this is a defensive guard against bad callers.
     From gaps3. Gate: test/mono-fork-test.sh (sg22 sg21i section: misaligned, unmapped,
       bad-vtable pointers arrive as null; sg21 crashes). Mutant SG_MUTANT_ITF_GUARD_OFF.
+
+mono-0019-out-string-arrays-native-fills-come-back.patch (sg23)
+    mono/metadata/marshal-ilgen.c, array marshalling, the way back (CONV_OUT) of a string array
+      passed [Out] or [In, Out]: each native string is converted into the managed array
+      (BSTR, LPWStr, the other string encodings) before it is freed; BSTR elements are freed
+      with SysFreeString (mono_free_bstr), not the task allocator (an invalid free before).
+      LPWStr elements keep Mono's no-free (they may be the managed strings' own buffers).
+      Why: Visual Studio's managed SettingsManagerWrapper calls the native
+      IVsSettingsManager.GetCommonExtensionsSearchPaths([In] uint, [Out, LPArray of BStr,
+      SizeParamIndex 0] string[], out uint) with a sized array; Mono freed the paths native
+      wrote and left the array of nulls, so the extension manager had no CommonExtensions
+      root, no CPS MEF parts loaded and the C++ project system did not either (gaps3's VS
+      notes, 2026-11-17).
+    From gaps2. Gate: test/mono-fork-test.sh (sg23 section: [Out] BSTR, [Out] LPWStr, [In, Out]
+      BSTR arrays filled by a native COM method; sg22 gives null|null).

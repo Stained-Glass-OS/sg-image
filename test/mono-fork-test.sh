@@ -70,6 +70,10 @@
 #   - (sg22) an interface pointer a native caller passes that is no object
 #     (misaligned, unmapped, an unreadable vtable) reaches the managed method
 #     as null, not a crash (Visual Studio's IPropertyBag.Read; mono-0018);
+#   - (sg23) an [Out] or [In, Out] array of strings a native COM method fills
+#     comes back with the strings it wrote, BSTR and LPWStr (Visual Studio's
+#     IVsSettingsManager.GetCommonExtensionsSearchPaths: the array came back
+#     empty, so no CommonExtensions and no C++ project system; mono-0019);
 #   - (sg18) a thread that came into managed code from native code reports
 #     the COM apartment it is in (GetApartmentState, ApartmentState), not
 #     Unknown: Visual Studio's main thread is an STA, and WPF refused it
@@ -1167,5 +1171,82 @@ out=$(cd "$C" && timeout 180 "$WINE" sg21i.exe 2>&1 | tr -d '\r')
 for k in misaligned unmapped badvtable; do
     [ "$(v $k)" = 1 ] && pass "a native caller's $k interface pointer reaches the managed method as null (Visual Studio's IPropertyBag.Read)" \
         || fail "$k interface pointer from a native caller: '$(v $k)' (sg21 crashes)"
+done
+# (sg23) a native COM method that fills a caller-allocated array of strings (count, array,
+# actual) -- Visual Studio's IVsSettingsManager.GetCommonExtensionsSearchPaths, declared
+# [In] uint, [Out, MarshalAs(LPArray, ArraySubType=BStr, SizeParamIndex=0)] string[], out uint --
+# gives the managed array the strings it wrote. Mono freed them and left the array as it went in
+# (nulls): VS found no CommonExtensions, so no CPS parts and no C++ project system (mono-0019).
+cat > "$T/sg23.c" <<'C'
+#include <windows.h>
+#include <oleauto.h>
+typedef struct Obj Obj;
+typedef struct { HRESULT (WINAPI *QI)(Obj*, REFIID, void**); ULONG (WINAPI *AddRef)(Obj*); ULONG (WINAPI *Release)(Obj*);
+                 HRESULT (WINAPI *GetBstr)(Obj*, UINT, BSTR*, UINT*); HRESULT (WINAPI *GetWstr)(Obj*, UINT, WCHAR**, UINT*); } ObjVtbl;
+struct Obj { const ObjVtbl *lpVtbl; LONG ref; };
+static const WCHAR *names[] = { L"C:\\SG\\CommonExtensions", L"C:\\SG\\Extensions\\Second" };
+static HRESULT WINAPI qi(Obj *o, REFIID iid, void **out) { *out = o; InterlockedIncrement(&o->ref); return S_OK; }
+static ULONG WINAPI addref(Obj *o) { return InterlockedIncrement(&o->ref); }
+static ULONG WINAPI release(Obj *o) { return InterlockedDecrement(&o->ref); }
+static HRESULT WINAPI get_bstr(Obj *o, UINT count, BSTR *paths, UINT *actual)
+{
+    UINT i;
+    *actual = 2;
+    for (i = 0; i < count && i < 2; i++) paths[i] = SysAllocString(names[i]);
+    return S_OK;
+}
+static HRESULT WINAPI get_wstr(Obj *o, UINT count, WCHAR **paths, UINT *actual)
+{
+    UINT i;
+    *actual = 2;
+    for (i = 0; i < count && i < 2; i++)
+    {
+        paths[i] = CoTaskMemAlloc((lstrlenW(names[i]) + 1) * sizeof(WCHAR));
+        lstrcpyW(paths[i], names[i]);
+    }
+    return S_OK;
+}
+static const ObjVtbl vtbl = { qi, addref, release, get_bstr, get_wstr };
+static Obj the = { &vtbl, 1 };
+__declspec(dllexport) HRESULT WINAPI get_paths_object(IUnknown **out) { *out = (IUnknown *)&the; return S_OK; }
+C
+x86_64-w64-mingw32-gcc -shared -O1 -o "$C/sgpaths.dll" "$T/sg23.c" -loleaut32 -lole32 || { fail "sgpaths.dll did not build"; exit 1; }
+cat > "$C/sg23.cs" <<'CS'
+using System; using System.Runtime.InteropServices;
+[ComImport, Guid("4F3A6C2E-5B1D-4E8A-9C7F-2D6B8E1A9F30"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IPaths {
+  [PreserveSig] int GetBstr([In] uint paths, [Out, MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.BStr, SizeParamIndex = 0)] string[] p, out uint actual);
+  [PreserveSig] int GetWstr([In] uint paths, [Out, MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.LPWStr, SizeParamIndex = 0)] string[] p, out uint actual);
+}
+[ComImport, Guid("4F3A6C2E-5B1D-4E8A-9C7F-2D6B8E1A9F30"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IPathsInOut {
+  [PreserveSig] int GetBstr([In] uint paths, [In, Out, MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.BStr, SizeParamIndex = 0)] string[] p, out uint actual);
+}
+class P {
+  [DllImport("sgpaths.dll")] static extern int get_paths_object([MarshalAs(UnmanagedType.IUnknown)] out object o);
+  static string Show(string[] a) { return string.Join("|", Array.ConvertAll(a, s => s ?? "null")); }
+  static void Main() {
+    object o; uint n;
+    get_paths_object(out o);
+    IPaths p = (IPaths)o;
+    p.GetBstr(0, new string[0], out n);
+    Console.WriteLine("pathcount=" + n);
+    string[] a = new string[n]; p.GetBstr(n, a, out n);
+    Console.WriteLine("bstrout=" + Show(a));
+    string[] w = new string[2]; p.GetWstr(2, w, out n);
+    Console.WriteLine("wstrout=" + Show(w));
+    string[] io = new string[2]; ((IPathsInOut)o).GetBstr(2, io, out n);
+    Console.WriteLine("bstrinout=" + Show(io));
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg23.exe sg23.cs >"$T/mcs23.out" 2>&1)
+[ -f "$C/sg23.exe" ] || { fail "the sg23 probe did not compile: $(cat "$T/mcs23.out")"; exit 1; }
+out=$(cd "$C" && timeout 180 "$WINE" sg23.exe 2>&1 | tr -d '\r')
+want='C:\SG\CommonExtensions|C:\SG\Extensions\Second'
+[ "$(v pathcount)" = 2 ] && pass "a native COM method's count comes back through an out uint" || fail "count: '$(v pathcount)'"
+for k in bstrout wstrout bstrinout; do
+    [ "$(v $k)" = "$want" ] && pass "$k: the strings a native COM method wrote into the caller's array come back (Visual Studio's CommonExtensions search paths)" \
+        || fail "$k: '$(v $k)' (sg22: null|null)"
 done
 exit $RC

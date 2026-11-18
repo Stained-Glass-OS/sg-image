@@ -1,0 +1,47 @@
+--- a/mono/metadata/marshal-ilgen.c
++++ b/mono/metadata/marshal-ilgen.c
+@@ -2692,12 +2692,43 @@
+ 				}
+ 			}
+ 			else if (eklass == mono_defaults.string_class) {
++				/* Stained Glass OS (mono-0019): an [Out] (or [In, Out]) array of strings the native
++				 * side filled -- Visual Studio's IVsSettingsManager.GetCommonExtensionsSearchPaths
++				 * fills a caller-allocated BSTR array -- gets the strings it wrote: they were freed
++				 * and the managed array left as it went in (nulls), so VS found no CommonExtensions.
++				 * A BSTR is freed as one (SysFreeString), not with the task allocator. */
++				MonoMarshalNative str_encoding = mono_marshal_get_string_encoding (m->piinfo, spec);
++				gboolean is_bstr = str_encoding == MONO_NATIVE_BSTR || str_encoding == MONO_NATIVE_ANSIBSTR ||
++					str_encoding == MONO_NATIVE_TBSTR;
++
++				if (t->attrs & PARAM_ATTRIBUTE_OUT) {
++					gboolean need_free2;
++					MonoMarshalConv sconv = mono_marshal_get_ptr_to_string_conv (m->piinfo, spec, &need_free2);
++
++					if (sconv != MONO_MARSHAL_CONV_INVALID) {
++						/* dest: the managed array's element */
++						mono_mb_emit_ldarg (mb, argnum);
++						if (t->byref)
++							mono_mb_emit_byte (mb, CEE_LDIND_REF);
++						mono_mb_emit_ldloc (mb, index_var);
++
++						/* src: the native string (NULL gives null) */
++						mono_mb_emit_ldloc (mb, src_ptr);
++						mono_mb_emit_byte (mb, CEE_LDIND_I);
++						mono_mb_emit_icall_id (mb, conv_to_icall (sconv, NULL));
++
++						mono_mb_emit_byte (mb, CEE_STELEM_REF);
++					}
++				}
+ 				if (need_free) {
+ 					/* src */
+ 					mono_mb_emit_ldloc (mb, src_ptr);
+ 					mono_mb_emit_byte (mb, CEE_LDIND_I);
+ 
+-					mono_mb_emit_icall (mb, mono_marshal_free);
++					if (is_bstr)
++						mono_mb_emit_icall (mb, mono_free_bstr);
++					else
++						mono_mb_emit_icall (mb, mono_marshal_free);
+ 				}
+ 			}
+ 			else {
