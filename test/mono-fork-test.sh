@@ -74,6 +74,13 @@
 #     apartment (a call into that apartment) does not hold Mono's COM lock:
 #     with it held, the apartment's thread waiting for the lock deadlocked
 #     with it (Visual Studio's Start window never answered; mono-0020);
+#   - (sg26) Type.MetadataToken of an array, pointer or byref type is the nil
+#     TypeDef token and a generic parameter's its GenericParam row, as the
+#     CLR's (Visual Studio's MEF cache refused Mono's 0: no project
+#     templates; mono-0021); WebRequest.Create works for a user without an
+#     Internet Settings key (mono-0022); Marshal.CreateAggregatedObject
+#     aggregates a managed object into a native COM object (Visual Studio's
+#     DTE.Solution threw NotImplementedException; mono-0023);
 #   - (sg25) EndWaitForConnection on a named pipe server that was disposed
 #     is ObjectDisposedException, as the .NET Framework's (also after a
 #     client connected): Visual Studio's response-time channel went on to use
@@ -1378,4 +1385,127 @@ out=$(cd "$C" && for x in c cd d; do timeout -s KILL 60 "$WINE" sg25.exe $x 2>&1
     || fail "disposed while waiting: EndWaitForConnection '$(v dend)' (sg24: IOException)"
 [ "$(v cend)" = ok ] && [ "$(v cconn)" = 1 ] && [ "$(v cbyte)" = 42 ] && pass "a connection still completes and carries data" \
     || fail "plain connection: end '$(v cend)' connected '$(v cconn)' byte '$(v cbyte)'"
+# (sg26) Type.MetadataToken as the CLR's RuntimeTypeHandle::GetToken: an array, a pointer or a
+# byref type is the nil TypeDef token 0x02000000 (Mono said 0, or a byref's element's), and a
+# generic parameter its GenericParam row 0x2Annnnnn (Mono said 0). Visual Studio's MEF cache
+# writer (vs-mef WriteCompressedMetadataToken) refused a type token that is no TypeDef, "Wrong
+# type": no MEF catalog, so no project templates and no SComponentModel (mono-0021). And
+# WebRequest.Create for a user with no Internet Settings key threw NullReferenceException
+# (Registry.GetValue is null for a missing key; Visual Studio's remote settings; mono-0022).
+cat > "$C/sg26.cs" <<'CS'
+using System; using System.Net;
+class G<T> { }
+class P {
+  static string Tok(Type t) { return "0x" + t.MetadataToken.ToString("x8"); }
+  static void Main(string[] a) {
+    Console.WriteLine("arr=" + Tok(typeof(int[])));
+    Console.WriteLine("arr2=" + Tok(typeof(string[,])));
+    Console.WriteLine("ptr=" + Tok(typeof(int).MakePointerType()));
+    Console.WriteLine("byref=" + Tok(typeof(int).MakeByRefType()));
+    Console.WriteLine("gp=" + Tok(typeof(G<>).GetGenericArguments()[0]).Substring(0, 4));
+    Console.WriteLine("gpm=" + Tok(typeof(Array).GetMethod("Empty").GetGenericArguments()[0]).Substring(0, 4));
+    int t = typeof(G<int>).MetadataToken;
+    Console.WriteLine("def=" + ((t & 0xff000000) == 0x02000000 && (t & 0xffffff) != 0 && t == typeof(G<>).MetadataToken ? 1 : 0));
+    try { WebRequest.Create("http://127.0.0.1:9/"); Console.WriteLine("proxy=ok"); }
+    catch (Exception e) { Console.WriteLine("proxy=" + e.GetType().Name); }
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg26.exe sg26.cs >"$T/mcs26.out" 2>&1)
+[ -f "$C/sg26.exe" ] || { fail "the sg26 probe did not compile: $(cat "$T/mcs26.out")"; exit 1; }
+"$WINE" reg delete 'HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings' /f >/dev/null 2>&1
+out=$(cd "$C" && timeout -s KILL 60 "$WINE" sg26.exe 2>&1 | tr -d '\r')
+for k in arr arr2 ptr byref; do
+    [ "$(v $k)" = 0x02000000 ] && pass "$k type's MetadataToken is the nil TypeDef token, as the CLR's (Visual Studio's MEF cache)" \
+        || fail "$k type's MetadataToken: '$(v $k)' (sg25: 0x00000000, byref the element's)"
+done
+[ "$(v gp)" = 0x2a ] && [ "$(v gpm)" = 0x2a ] && pass "a generic parameter's MetadataToken is its GenericParam row (type's and method's)" \
+    || fail "generic parameter MetadataToken: '$(v gp)' '$(v gpm)' (sg25: 0x00)"
+[ "$(v def)" = 1 ] && pass "a type's own token is its TypeDef row, the same for a generic instance" || fail "TypeDef tokens: '$(v def)'"
+[ "$(v proxy)" = ok ] && pass "WebRequest.Create for a user with no Internet Settings key (Visual Studio's remote settings)" \
+    || fail "WebRequest.Create with no Internet Settings key: '$(v proxy)' (sg25: NullReferenceException)"
+# (sg26) Marshal.CreateAggregatedObject: a managed object aggregated by a native COM object, as
+# .NET's -- the inner (non-delegating) IUnknown comes back, the managed interfaces answer as the
+# outer object (QueryInterface, identity, reference counts). Mono threw NotImplementedException:
+# Visual Studio's DTE.Solution (ComWrapperFactory.CreateAggregatedObject), so New Project
+# stopped the IDE (mono-0023).
+cat > "$T/sgagg.c" <<'C'
+#include <windows.h>
+/* an outer COM object that aggregates an inner object: it answers IUnknown and IID_OUTER itself
+ * and passes every other interface to the inner (non-delegating) IUnknown */
+static const GUID IID_OUTER = {0x5d0e0c41,0x7c1b,0x4e0a,{0x9b,0x51,0x3c,0x2a,0x11,0x6e,0x40,0x01}};
+static const GUID IID_AGG   = {0x5d0e0c41,0x7c1b,0x4e0a,{0x9b,0x51,0x3c,0x2a,0x11,0x6e,0x40,0x02}};
+typedef struct Outer Outer;
+typedef struct { HRESULT (WINAPI *QI)(Outer*, REFIID, void**); ULONG (WINAPI *AddRef)(Outer*); ULONG (WINAPI *Release)(Outer*); } OuterVtbl;
+struct Outer { const OuterVtbl *lpVtbl; LONG ref; IUnknown *inner; };
+static HRESULT WINAPI o_qi(Outer *o, REFIID iid, void **out)
+{
+    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_OUTER)) { *out = o; InterlockedIncrement(&o->ref); return S_OK; }
+    if (o->inner) return o->inner->lpVtbl->QueryInterface(o->inner, iid, out);
+    *out = NULL; return E_NOINTERFACE;
+}
+static ULONG WINAPI o_addref(Outer *o) { return InterlockedIncrement(&o->ref); }
+static ULONG WINAPI o_release(Outer *o) { return InterlockedDecrement(&o->ref); }
+static const OuterVtbl vt = { o_qi, o_addref, o_release };
+static Outer the = { &vt, 1, NULL };
+__declspec(dllexport) void * WINAPI agg_outer(void) { return &the; }
+/* checks, as bits: 1 the outer gives the inner's interface; 2 its Value() answers; 4 that
+ * interface's QueryInterface answers as the outer (IID_OUTER); 8 its IUnknown is the outer's;
+ * 16 its AddRef/Release count the outer's references; 32 the inner's IUnknown is the inner;
+ * 64 the inner's IMarshal (free-threaded marshaler) counts the outer's references */
+typedef struct Agg Agg;
+typedef struct { HRESULT (WINAPI *QI)(Agg*, REFIID, void**); ULONG (WINAPI *AddRef)(Agg*); ULONG (WINAPI *Release)(Agg*);
+                 HRESULT (WINAPI *Value)(Agg*, int*); } AggVtbl;
+struct Agg { const AggVtbl *lpVtbl; };
+__declspec(dllexport) int WINAPI agg_check(IUnknown *inner)
+{
+    int r = 0, v = 0; Agg *a = NULL; void *p = NULL; LONG before;
+    the.inner = inner;
+    if (o_qi(&the, &IID_AGG, (void **)&a) == S_OK && a) r |= 1; else return r;
+    if (a->lpVtbl->Value(a, &v) == S_OK && v == 42) r |= 2;
+    if (a->lpVtbl->QI(a, &IID_OUTER, &p) == S_OK && p == &the) { r |= 4; o_release(&the); }
+    p = NULL;
+    if (a->lpVtbl->QI(a, &IID_IUnknown, &p) == S_OK && p == &the) { r |= 8; o_release(&the); }
+    before = the.ref;
+    a->lpVtbl->AddRef(a);
+    if (the.ref == before + 1) r |= 16;
+    a->lpVtbl->Release(a);
+    p = NULL;
+    if (inner->lpVtbl->QueryInterface(inner, &IID_IUnknown, &p) == S_OK && p == inner) { r |= 32; inner->lpVtbl->Release(inner); }
+    before = the.ref; p = NULL;
+    if (inner->lpVtbl->QueryInterface(inner, &IID_IMarshal, &p) == S_OK && p) {
+        if (the.ref == before + 1) r |= 64;
+        ((IUnknown *)p)->lpVtbl->Release((IUnknown *)p);
+        if (the.ref != before) r &= ~64;
+    }
+    a->lpVtbl->Release(a);
+    return r;
+}
+C
+x86_64-w64-mingw32-gcc -shared -O1 -o "$C/sgagg.dll" "$T/sgagg.c" -luuid -lole32 || { fail "sgagg.dll did not build"; exit 1; }
+cat > "$C/sgagg.cs" <<'CS'
+using System; using System.Runtime.InteropServices;
+[ComVisible(true), Guid("5d0e0c41-7c1b-4e0a-9b51-3c2a116e4002"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface ISgAgg { [PreserveSig] int Value(out int v); }
+[ComVisible(true), ClassInterface(ClassInterfaceType.None)]
+public class Agg : ISgAgg { public int Value(out int v) { v = 42; return 0; } }
+class P {
+  [DllImport("sgagg.dll")] static extern IntPtr agg_outer();
+  [DllImport("sgagg.dll")] static extern int agg_check(IntPtr inner);
+  static void Main() {
+    IntPtr inner;
+    try { inner = Marshal.CreateAggregatedObject(agg_outer(), new Agg()); }
+    catch (Exception e) { Console.WriteLine("aggregate=" + e.GetType().Name); return; }
+    Console.WriteLine("aggregate=" + (inner != IntPtr.Zero ? "ok" : "null"));
+    Console.WriteLine("checks=" + agg_check(inner));
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sgagg.exe sgagg.cs >"$T/mcsagg.out" 2>&1)
+[ -f "$C/sgagg.exe" ] || { fail "the aggregation probe did not compile: $(cat "$T/mcsagg.out")"; exit 1; }
+out=$(cd "$C" && timeout -s KILL 60 "$WINE" sgagg.exe 2>&1 | tr -d '\r')
+[ "$(v aggregate)" = ok ] && pass "Marshal.CreateAggregatedObject gives the inner IUnknown (Visual Studio's DTE.Solution)" \
+    || fail "CreateAggregatedObject: '$(v aggregate)' (sg25: NotImplementedException)"
+[ "$(v checks)" = 127 ] && pass "and the aggregated object answers as the outer one: interface, call, QueryInterface, identity, references, inner IUnknown, free-threaded marshaler" \
+    || fail "aggregation checks: '$(v checks)' of 127 (bits: 1 interface 2 call 4 QI as outer 8 identity 16 references 32 inner IUnknown 64 IMarshal counts the outer)"
 exit $RC

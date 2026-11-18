@@ -1,0 +1,32 @@
+diff --git a/mcs/class/System/ReferenceSources/AutoWebProxyScriptEngine.cs b/mcs/class/System/ReferenceSources/AutoWebProxyScriptEngine.cs
+index 8953156b..f1204c33 100644
+--- a/mcs/class/System/ReferenceSources/AutoWebProxyScriptEngine.cs
++++ b/mcs/class/System/ReferenceSources/AutoWebProxyScriptEngine.cs
+@@ -114,20 +114,24 @@ static bool IsWindows ()
+ 				
+ 		WebProxyData InitializeRegistryGlobalProxy ()
+ 		{
+-			int iProxyEnable = (int)Microsoft.Win32.Registry.GetValue ("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "ProxyEnable", 0);
++			// GetValue is null when the user has no Internet Settings key at all, and a value of
++			// another type is no proxy setting: both meant NullReference/InvalidCast for every
++			// HttpWebRequest (.NET Framework reads such a user as "no proxy")
++			object oProxyEnable = Microsoft.Win32.Registry.GetValue ("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "ProxyEnable", 0);
++			int iProxyEnable = oProxyEnable is int ? (int)oProxyEnable : 0;
+ 
+ 			if (iProxyEnable > 0) {
+ 				string strHttpProxy = "";
+ 				bool bBypassOnLocal = false;
+ 				ArrayList al = new ArrayList ();
+ 				
+-				string strProxyServer = (string)Microsoft.Win32.Registry.GetValue ("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "ProxyServer", null);
++				string strProxyServer = Microsoft.Win32.Registry.GetValue ("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "ProxyServer", null) as string;
+ 				
+ 				if(strProxyServer == null) {
+ 					return null;
+ 				}
+ 
+-				string strProxyOverrride = (string)Microsoft.Win32.Registry.GetValue ("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "ProxyOverride", null);
++				string strProxyOverrride = Microsoft.Win32.Registry.GetValue ("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "ProxyOverride", null) as string;
+ 				
+ 				if (strProxyServer.Contains ("=")) {
+ 					foreach (string strEntry in strProxyServer.Split (new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries))

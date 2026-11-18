@@ -1,0 +1,197 @@
+diff -ru a/mcs/class/corlib/System.Runtime.InteropServices/Marshal.cs b/mcs/class/corlib/System.Runtime.InteropServices/Marshal.cs
+--- a/mcs/class/corlib/System.Runtime.InteropServices/Marshal.cs	2026-11-18 09:41:21.526497647 -0800
++++ b/mcs/class/corlib/System.Runtime.InteropServices/Marshal.cs	2026-11-18 09:41:21.510497849 -0800
+@@ -288,10 +288,25 @@
+ 				copy_from_unmanaged_fixed (source, startIndex, destination, length, fixed_destination);
+ 		}
+ 
++#if !MOBILE
++		[MethodImplAttribute (MethodImplOptions.InternalCall)]
++		extern static IntPtr CreateAggregatedObjectInternal (IntPtr pOuter, object o);
++#endif
++
++		// o's COM callable wrapper aggregated by pOuter: returns the inner (non-delegating)
++		// IUnknown, with one reference, as .NET's (Visual Studio's DTE.Solution).
+ 		public static IntPtr CreateAggregatedObject (IntPtr pOuter,
+ 							     object o)
+ 		{
++#if MOBILE
+ 			throw new NotImplementedException ();
++#else
++			if (pOuter == IntPtr.Zero)
++				throw new ArgumentNullException (nameof (pOuter));
++			if (o == null)
++				throw new ArgumentNullException (nameof (o));
++			return CreateAggregatedObjectInternal (pOuter, o);
++#endif
+ 		}
+ 
+ 		public static IntPtr CreateAggregatedObject<T> (IntPtr pOuter, T o) {
+diff -ru a/mono/metadata/cominterop.c b/mono/metadata/cominterop.c
+--- a/mono/metadata/cominterop.c	2026-11-18 09:41:21.510497849 -0800
++++ b/mono/metadata/cominterop.c	2026-11-18 09:41:21.506497900 -0800
+@@ -193,6 +193,14 @@
+ #ifdef  HOST_WIN32
+ 	MonoIUnknown *free_marshaler; // actually IMarshal
+ #endif
++	/* Marshal.CreateAggregatedObject: the controlling (outer) object's IUnknown, which every
++	 * interface's IUnknown methods delegate to, and the inner (non-delegating) IUnknown handed
++	 * to the outer object. NULL for a CCW of its own. */
++	MonoIUnknown *outer;
++	gpointer inner; /* a MonoCCWInterface, declared below */
++#ifdef  HOST_WIN32
++	MonoIUnknown *outer_free_marshaler; /* the free-threaded marshaler the outer object controls */
++#endif
+ } MonoCCW;
+ 
+ enum ccw_method_type {
+@@ -252,6 +260,7 @@
+ static int STDCALL cominterop_ccw_release (MonoCCWInterface* ccwe);
+ 
+ static int STDCALL cominterop_ccw_queryinterface (MonoCCWInterface* ccwe, const guint8* riid, gpointer* ppv);
++static int STDCALL cominterop_ccw_addref_impl (MonoCCWInterface* ccwe);
+ 
+ /* IDispatch */
+ static int STDCALL cominterop_ccw_get_type_info_count (MonoCCWInterface* ccwe, guint32 *pctinfo);
+@@ -2131,6 +2140,62 @@
+ 	return TRUE;
+ }
+ 
++/* Marshal.CreateAggregatedObject (pOuter, o): o's CCW aggregated by the COM object pOuter, as
++ * .NET's: the interfaces of o answer QueryInterface/AddRef/Release as pOuter, and the result is
++ * the inner (non-delegating) IUnknown, with one reference, which pOuter keeps and releases.
++ * Visual Studio's DTE.Solution wraps its managed solution object so (ComWrapperFactory.
++ * CreateAggregatedObject); Mono threw NotImplementedException. */
++gpointer
++ves_icall_System_Runtime_InteropServices_Marshal_CreateAggregatedObjectInternal (gpointer outer, MonoObjectHandle object, MonoError *error)
++{
++#ifndef DISABLE_COM
++	static gpointer inner_vtable [3];
++	MonoCCWInterface *ccwe, *inner;
++	MonoCCW *ccw;
++
++	if (!outer) {
++		mono_error_set_argument_null (error, "pOuter", "");
++		return NULL;
++	}
++	if (MONO_HANDLE_IS_NULL (object)) {
++		mono_error_set_argument_null (error, "o", "");
++		return NULL;
++	}
++	MonoRealProxyHandle real_proxy;
++	if (cominterop_object_is_rcw_handle (object, &real_proxy)) {
++		mono_error_set_argument (error, "o", "A COM object cannot be aggregated.");
++		return NULL;
++	}
++	ccwe = (MonoCCWInterface *)cominterop_get_ccw_checked (object, mono_class_get_iunknown_class (), error);
++	return_val_if_nok (error, NULL);
++	ccw = ccwe->ccw;
++
++	mono_cominterop_lock ();
++	if (ccw->outer && ccw->outer != outer) {
++		mono_cominterop_unlock ();
++		mono_error_set_argument (error, "o", "The object is already aggregated by another COM object.");
++		return NULL;
++	}
++	if (!ccw->inner) {
++		inner_vtable [0] = (gpointer)cominterop_ccw_queryinterface;
++		inner_vtable [1] = (gpointer)cominterop_ccw_addref;
++		inner_vtable [2] = (gpointer)cominterop_ccw_release;
++		inner = g_new0 (MonoCCWInterface, 1);
++		inner->vtable = inner_vtable;
++		inner->ccw = ccw;
++		ccw->inner = inner;
++	}
++	/* not AddRef'd: the outer object controls this object's lifetime, not the other way */
++	ccw->outer = (MonoIUnknown *)outer;
++	mono_cominterop_unlock ();
++
++	cominterop_ccw_addref_impl ((MonoCCWInterface *)ccw->inner);
++	return ccw->inner;
++#else
++	g_assert_not_reached ();
++#endif
++}
++
+ void*
+ ves_icall_System_Runtime_InteropServices_Marshal_GetIUnknownForObjectInternal (MonoObjectHandle object, MonoError *error)
+ {
+@@ -3313,7 +3378,9 @@
+ 			ccw_list = g_list_remove (ccw_list, ccw_iter);
+ #ifdef HOST_WIN32
+ 			mono_IUnknown_Release (ccw_iter->free_marshaler);
++			mono_IUnknown_Release (ccw_iter->outer_free_marshaler);
+ #endif
++			g_free (ccw_iter->inner);
+ 			g_free (ccw_iter);
+ 		}
+ 		else
+@@ -3499,6 +3566,9 @@
+ cominterop_ccw_addref (MonoCCWInterface* ccwe)
+ {
+ 	int result;
++	/* an aggregated object's interfaces count the outer object's references */
++	if (ccwe->ccw->outer && (gpointer)ccwe != ccwe->ccw->inner)
++		return mono_IUnknown_AddRef (ccwe->ccw->outer);
+ 	MONO_CCW_CALL_ENTER;
+ 	result = cominterop_ccw_addref_impl (ccwe);
+ 	MONO_CCW_CALL_EXIT;
+@@ -3530,6 +3600,8 @@
+ cominterop_ccw_release (MonoCCWInterface* ccwe)
+ {
+ 	int result;
++	if (ccwe->ccw->outer && (gpointer)ccwe != ccwe->ccw->inner)
++		return mono_IUnknown_Release (ccwe->ccw->outer);
+ 	MONO_CCW_CALL_ENTER;
+ 	result = cominterop_ccw_release_impl (ccwe);
+ 	MONO_CCW_CALL_EXIT;
+@@ -3592,8 +3664,35 @@
+ cominterop_ccw_queryinterface (MonoCCWInterface* ccwe, const guint8* riid, gpointer* ppv)
+ {
+ 	int result;
++	MonoCCW *ccw = ccwe->ccw;
++	/* an aggregated object's interfaces answer as the outer object (COM aggregation) */
++	if (ccw->outer && (gpointer)ccwe != ccw->inner)
++		return mono_IUnknown_QueryInterface (ccw->outer, riid, ppv);
+ 	MONO_CCW_CALL_ENTER;
+-	result = cominterop_ccw_queryinterface_impl (ccwe, riid, ppv);
++	if (ccw->outer && cominterop_class_guid_equal (riid, mono_class_get_iunknown_class ())) {
++		/* the inner IUnknown's own: itself */
++		*ppv = ccw->inner;
++		cominterop_ccw_addref_impl ((MonoCCWInterface *)ccw->inner);
++		result = MONO_S_OK;
++#ifdef HOST_WIN32
++	} else if (ccw->outer && 0 == memcmp (riid, &MONO_IID_IMarshal, sizeof (IID))) {
++		/* the free-threaded marshaler, aggregated by the outer object as this one is
++		 * (the CCW's own marshaler answers as the CCW: not a CCW interface entry) */
++		*ppv = NULL;
++		if (!ccw->outer_free_marshaler)
++			CoCreateFreeThreadedMarshaler ((LPUNKNOWN)ccw->outer, (LPUNKNOWN*)&ccw->outer_free_marshaler);
++		result = ccw->outer_free_marshaler ? mono_IUnknown_QueryInterface (ccw->outer_free_marshaler, &MONO_IID_IMarshal, ppv)
++						   : MONO_E_NOINTERFACE;
++#endif
++	} else {
++		result = cominterop_ccw_queryinterface_impl (ccwe, riid, ppv);
++		if (ccw->outer && result == MONO_S_OK && *ppv && *ppv != ccw->inner) {
++			/* what the inner IUnknown hands out is the outer object's reference:
++			 * its Release goes to the outer object */
++			cominterop_ccw_release_impl ((MonoCCWInterface *)*ppv);
++			mono_IUnknown_AddRef (ccw->outer);
++		}
++	}
+ 	MONO_CCW_CALL_EXIT;
+ 	return result;
+ }
+diff -ru a/mono/metadata/icall-def.h b/mono/metadata/icall-def.h
+--- a/mono/metadata/icall-def.h	2026-11-18 09:41:21.526497647 -0800
++++ b/mono/metadata/icall-def.h	2026-11-18 09:41:21.506497900 -0800
+@@ -755,6 +755,9 @@
+ NOHANDLES(ICALL(MARSHAL_51,"AllocCoTaskMemSize(uintptr)", ves_icall_System_Runtime_InteropServices_Marshal_AllocCoTaskMemSize))
+ NOHANDLES(ICALL(MARSHAL_3, "AllocHGlobal", ves_icall_System_Runtime_InteropServices_Marshal_AllocHGlobal))
+ NOHANDLES(ICALL(MARSHAL_50, "BufferToBSTR", ves_icall_System_Runtime_InteropServices_Marshal_BufferToBSTR))
++#ifndef DISABLE_COM
++HANDLES(MARSHAL_55, "CreateAggregatedObjectInternal", ves_icall_System_Runtime_InteropServices_Marshal_CreateAggregatedObjectInternal, gpointer, 2, (gpointer, MonoObject))
++#endif
+ HANDLES(MARSHAL_4, "DestroyStructure", ves_icall_System_Runtime_InteropServices_Marshal_DestroyStructure, void, 2, (gpointer, MonoReflectionType))
+ NOHANDLES(ICALL(MARSHAL_5, "FreeBSTR", ves_icall_System_Runtime_InteropServices_Marshal_FreeBSTR))
+ NOHANDLES(ICALL(MARSHAL_6, "FreeCoTaskMem", ves_icall_System_Runtime_InteropServices_Marshal_FreeCoTaskMem))

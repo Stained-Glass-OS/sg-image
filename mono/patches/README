@@ -436,3 +436,40 @@ corefx-0003-end-wait-for-connection-on-a-closed-pipe.patch (sg25)
       ObjectDisposedException from SafePipeHandle and the IDE exited a minute after start.
     From gaps2. Gate: test/mono-fork-test.sh (sg25 section: connected then disposed,
       disposed while waiting, a plain connection); sg24 fails the first and third checks (76/78).
+
+mono-0021-type-metadata-tokens-as-the-clrs.patch (sg26)
+    mono/metadata/reflection.c, Type.MetadataToken (mono_reflection_get_token_checked, a
+      RuntimeType): as the CLR's RuntimeTypeHandle::GetToken, an array, a pointer or a byref
+      type is the nil TypeDef token 0x02000000 (Mono said 0 for arrays and pointers and the
+      element's token for a byref), and a generic parameter is its GenericParam row
+      0x2Annnnnn (Mono said 0).
+      Why: Visual Studio's MEF cache writer (vs-mef SerializationContextBase.
+      WriteCompressedMetadataToken) refuses a type token that is no TypeDef ("Wrong type.
+      Parameter name: type"), so the IDE had no MEF catalog: SComponentModel unavailable,
+      "Create a new project" listed no templates, packages failed SetSite.
+    From gaps2. Gate: test/mono-fork-test.sh (sg26 section); sg25 fails its token checks (sg25: 79/87 of the whole gate).
+      Mutant SG_MUTANT_TYPE_TOKEN_ZERO.
+
+mono-0022-proxy-settings-of-a-user-without-internet-settings.patch (sg26)
+    System, AutoWebProxyScriptEngine.InitializeRegistryGlobalProxy: a user with no
+      Internet Settings key (Registry.GetValue is then null) or values of another type has
+      no proxy, as .NET Framework reads it; it threw NullReferenceException from every
+      WebRequest.Create (Visual Studio's remote settings, sgtest1's fresh profile).
+    From gaps2. Gate: test/mono-fork-test.sh (sg26 section, the proxy check).
+
+mono-0023-com-aggregation-create-aggregated-object.patch (sg26)
+    corlib Marshal.CreateAggregatedObject (it threw NotImplementedException) and COM
+      aggregation in mono/metadata/cominterop.c: the managed object's COM callable
+      wrapper gets the outer object's IUnknown and an inner (non-delegating) IUnknown,
+      which CreateAggregatedObject returns with one reference. Every interface of the
+      wrapper delegates QueryInterface/AddRef/Release to the outer object; the inner
+      IUnknown answers QueryInterface for the managed object's interfaces (IUnknown is
+      itself) and hands them out with an outer reference, as COM aggregation does;
+      its IMarshal is a free-threaded marshaler the outer object controls.
+      Why: Visual Studio's DTE.Solution wraps its managed solution object so
+      (ComWrapperFactory.CreateAggregatedObject); DTE2.get_Solution returned E_NOTIMPL
+      and Next in "Create a new project" ended the IDE.
+    From gaps2. Gate: test/mono-fork-test.sh (sg26 section: a native outer object
+      aggregating a managed one, seven checks); sg25 throws NotImplementedException.
+      The IMarshal check caught a first draft that took the marshaler for a wrapper
+      interface (a crash in Wine's ftmarshaler_Release, as Visual Studio crashed).

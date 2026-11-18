@@ -1,0 +1,27 @@
+diff --git a/mono/metadata/reflection.c b/mono/metadata/reflection.c
+index 1f02d839..e016bd7f 100644
+--- a/mono/metadata/reflection.c
++++ b/mono/metadata/reflection.c
+@@ -2448,6 +2448,22 @@ mono_reflection_get_token_checked (MonoObjectHandle obj, MonoError *error)
+ 	} else if (strcmp (klass_name, "RuntimeType") == 0) {
+ 		MonoType *type = mono_reflection_type_handle_mono_type (MONO_HANDLE_CAST (MonoReflectionType, obj), error);
+ 		return_val_if_nok (error, 0);
++#ifndef SG_MUTANT_TYPE_TOKEN_ZERO
++		/* As the CLR's RuntimeTypeHandle::GetToken: an array, a pointer or a byref has no TypeDef
++		 * row of its own and is the nil TypeDef token (Mono said 0 for arrays and pointers, and
++		 * the element's token for a byref); a generic parameter is its GenericParam row (Mono
++		 * said 0). Visual Studio's MEF cache writer (vs-mef SerializationContextBase.
++		 * WriteCompressedMetadataToken) refuses a type token that is no TypeDef ("Wrong type"),
++		 * so the IDE had no MEF catalog: no templates, no SComponentModel. */
++		if (type->byref || type->type == MONO_TYPE_PTR || type->type == MONO_TYPE_FNPTR ||
++		    type->type == MONO_TYPE_ARRAY || type->type == MONO_TYPE_SZARRAY)
++			return MONO_TOKEN_TYPE_DEF;
++		if (type->type == MONO_TYPE_VAR || type->type == MONO_TYPE_MVAR) {
++			MonoClass *gp = mono_class_from_mono_type_internal (type);
++			token = m_class_get_sizes (gp).generic_param_token;
++			return token ? token : MONO_TOKEN_GENERIC_PARAM;
++		}
++#endif
+ 		MonoClass *mc = mono_class_from_mono_type_internal (type);
+ 		if (!mono_class_init_internal (mc)) {
+ 			mono_error_set_for_class_failure (error, mc);
