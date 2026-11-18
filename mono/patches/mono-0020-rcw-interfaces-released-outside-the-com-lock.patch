@@ -1,0 +1,38 @@
+--- a/mono/metadata/cominterop.c
++++ b/mono/metadata/cominterop.c
+@@ -2418,12 +2418,35 @@
+ 		g_hash_table_remove (rcw_hash, MONO_HANDLE_GETVAL (obj, iunknown));
+ 	}
+ 
++#ifndef SG_MUTANT_RELEASE_UNDER_LOCK
++	/* Stained Glass OS (mono-0020): the wrapper is unlinked under the lock, its interfaces are
++	 * released after it. Releasing a proxy for an object of another apartment is a call into
++	 * that apartment's thread; made with the lock held (the finalizer releasing an STA object's
++	 * wrapper), it waited for the STA thread, which waited for the lock -- Visual Studio's UI
++	 * thread in Marshal.GetCCW: the Start window never answered a click. */
++	GHashTable *itf_hash = MONO_HANDLE_GETVAL (obj, itf_hash);
++	MonoIUnknown *iunknown = MONO_HANDLE_GETVAL (obj, iunknown);
++	if (!itf_hash) {
++		/* released by another thread meanwhile */
++		mono_cominterop_unlock ();
++		return;
++	}
++	MONO_HANDLE_SETVAL (obj, iunknown, MonoIUnknown*, NULL);
++	MONO_HANDLE_SETVAL (obj, itf_hash, GHashTable*, NULL);
++	mono_cominterop_unlock ();
++
++	g_hash_table_foreach_remove (itf_hash, cominterop_rcw_interface_finalizer, NULL);
++	g_hash_table_destroy (itf_hash);
++	if (iunknown)
++		mono_IUnknown_Release (iunknown);
++#else
+ 	g_hash_table_foreach_remove (MONO_HANDLE_GETVAL (obj, itf_hash), cominterop_rcw_interface_finalizer, NULL);
+ 	g_hash_table_destroy (MONO_HANDLE_GETVAL (obj, itf_hash));
+ 	mono_IUnknown_Release (MONO_HANDLE_GETVAL (obj, iunknown));
+ 	MONO_HANDLE_SETVAL (obj, iunknown, MonoIUnknown*, NULL);
+ 	MONO_HANDLE_SETVAL (obj, itf_hash, GHashTable*, NULL);
+ 	mono_cominterop_unlock ();
++#endif
+ }
+ 
+ void

@@ -407,3 +407,17 @@ mono-0019-out-string-arrays-native-fills-come-back.patch (sg23)
       notes, 2026-11-17).
     From gaps2. Gate: test/mono-fork-test.sh (sg23 section: [Out] BSTR, [Out] LPWStr, [In, Out]
       BSTR arrays filled by a native COM method; sg22 gives null|null).
+
+mono-0020-rcw-interfaces-released-outside-the-com-lock.patch (sg24)
+    mono/metadata/cominterop.c, mono_System_ComObject_ReleaseInterfaces (a wrapper's last
+      release: Marshal.FinalReleaseComObject, ReleaseComObject to 0, the finalizer): the
+      wrapper is unlinked under the COM lock (rcw table, its interface table and IUnknown
+      detached), and its interfaces are released after the lock is let go; a second release
+      that comes in meanwhile finds nothing to release.
+      Why: a release that waits -- a proxy's, calling into another apartment or process --
+      held the lock, so every thread that needed it waited too. Visual Studio's UI thread
+      waited in Marshal.GetCCW while its finalizer's release of a proxy waited
+      (ClientRpcChannelBuffer_SendReceive): the Start window drew and never answered a click.
+    From gaps2. Gate: test/mono-fork-test.sh (sg24 section: a native object whose last
+      release waits for the main thread's signal; the main thread takes the lock meanwhile;
+      sg23 deadlocks). Mutant SG_MUTANT_RELEASE_UNDER_LOCK.

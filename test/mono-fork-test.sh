@@ -70,6 +70,10 @@
 #   - (sg22) an interface pointer a native caller passes that is no object
 #     (misaligned, unmapped, an unreadable vtable) reaches the managed method
 #     as null, not a crash (Visual Studio's IPropertyBag.Read; mono-0018);
+#   - (sg24) releasing the last reference to a wrapper of an object of another
+#     apartment (a call into that apartment) does not hold Mono's COM lock:
+#     with it held, the apartment's thread waiting for the lock deadlocked
+#     with it (Visual Studio's Start window never answered; mono-0020);
 #   - (sg23) an [Out] or [In, Out] array of strings a native COM method fills
 #     comes back with the strings it wrote, BSTR and LPWStr (Visual Studio's
 #     IVsSettingsManager.GetCommonExtensionsSearchPaths: the array came back
@@ -1249,4 +1253,72 @@ for k in bstrout wstrout bstrinout; do
     [ "$(v $k)" = "$want" ] && pass "$k: the strings a native COM method wrote into the caller's array come back (Visual Studio's CommonExtensions search paths)" \
         || fail "$k: '$(v $k)' (sg22: null|null)"
 done
+# (sg24) Mono released a wrapper's (RCW's) COM interfaces with its COM lock held. A release that
+# waits -- a proxy's, calling into another apartment or process -- then kept every thread that needs
+# the lock (Marshal.GetCCW, GetIUnknownForObject) waiting with it: Visual Studio's UI thread waited
+# in GetCCW while its finalizer's release of a proxy waited, and the Start window never answered
+# (mono-0020). A native object whose last release waits for the main thread's signal; the main
+# thread takes the lock meanwhile, then signals.
+cat > "$T/sg24.c" <<'C'
+#include <windows.h>
+/* a native object whose last Release waits for the program's main thread (an event it sets): what
+ * a release that calls into a busy apartment or another process does */
+typedef struct Obj Obj;
+typedef struct { HRESULT (WINAPI *QI)(Obj*, REFIID, void**); ULONG (WINAPI *AddRef)(Obj*); ULONG (WINAPI *Release)(Obj*); } ObjVtbl;
+struct Obj { const ObjVtbl *lpVtbl; LONG ref; };
+static HANDLE gate;
+static HRESULT WINAPI qi(Obj *o, REFIID iid, void **out)
+{
+    /* every interface asked for is this object (only IUnknown's methods are called) */
+    *out = o; InterlockedIncrement(&o->ref); return S_OK;
+}
+static ULONG WINAPI addref(Obj *o) { return InterlockedIncrement(&o->ref); }
+static ULONG WINAPI release(Obj *o)
+{
+    ULONG r = InterlockedDecrement(&o->ref);
+    if (!r) WaitForSingleObject(gate, 60000);
+    return r;
+}
+static const ObjVtbl vtbl = { qi, addref, release };
+static Obj the = { &vtbl, 1 };
+__declspec(dllexport) void * WINAPI make_slow_release(HANDLE event) { gate = event; return &the; }
+C
+x86_64-w64-mingw32-gcc -shared -O1 -o "$C/sgapt.dll" "$T/sg24.c" || { fail "sgapt.dll did not build"; exit 1; }
+cat > "$C/sg24.cs" <<'CS'
+using System; using System.Threading; using System.Runtime.InteropServices;
+[ComImport, Guid("6B1D3C2E-0A4F-4E7B-9D5A-1C2B3A4D5E6F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface ISgReleased { }
+class P {
+  [DllImport("sgapt.dll")] static extern IntPtr make_slow_release(IntPtr gate);
+  static void Main() {
+    ManualResetEvent gate = new ManualResetEvent(false), ready = new ManualResetEvent(false), done = new ManualResetEvent(false);
+    IntPtr unk = make_slow_release(gate.SafeWaitHandle.DangerousGetHandle());
+    object rcw = Marshal.GetObjectForIUnknown(unk);
+    Marshal.Release(unk);
+    ISgReleased itf = (ISgReleased)rcw;   /* an interface of the wrapper (it is released with it) */
+    GC.KeepAlive(itf);
+    Thread t = new Thread(() => {
+      ready.Set();
+      Marshal.FinalReleaseComObject(rcw);   /* the last release waits for the main thread */
+      done.Set();
+    });
+    t.Start();
+    ready.WaitOne();
+    Thread.Sleep(500);
+    /* the main thread takes Mono's COM lock while that release waits */
+    DateTime end = DateTime.Now.AddSeconds(2);
+    object mine = new object();   /* one object: the loop allocates nothing (no collection waits for the release) */
+    while (DateTime.Now < end) Marshal.Release(Marshal.GetIUnknownForObject(mine));
+    Console.WriteLine("lockfree=1");
+    gate.Set();
+    Console.WriteLine("released=" + (done.WaitOne(30000) ? 1 : 0));
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg24.exe sg24.cs >"$T/mcs24.out" 2>&1)
+[ -f "$C/sg24.exe" ] || { fail "the sg24 probe did not compile: $(cat "$T/mcs24.out")"; exit 1; }
+out=$(cd "$C" && timeout -s KILL 120 "$WINE" sg24.exe 2>&1 | tr -d '\r')
+[ "$(v lockfree)" = 1 ] && pass "a COM object's last release that waits does not hold Mono's COM lock (Visual Studio's Start window)" \
+    || fail "the main thread never got Mono's COM lock while a release waited: a deadlock (sg23 releases with the lock held)"
+[ "$(v released)" = 1 ] && pass "and the release finishes once it may" || fail "the waiting release: '$(v released)'"
 exit $RC
