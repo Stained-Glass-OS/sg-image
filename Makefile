@@ -887,6 +887,13 @@ install-dualboot-test:
 install-dualtarget-test:
 	SG_INSTALL_SCENARIO=dualtarget test/install-test.sh
 
+# Beside Windows on an MBR disk, legacy BIOS (SeaBIOS): the installer goes
+# into the unallocated space, Windows' partitions and MBR code are kept, and
+# GRUB starts Windows from its menu (an NTFS fixture whose boot sector says so).
+.PHONY: bios-mbr-test
+bios-mbr-test:
+	SG_LIVE_ISO=$(ISO) test/bios-mbr-test.sh
+
 # A kernel update never fills the boot partition: real Debian kernels through
 # apt on install-test's installed disk, its ESP nearly full (sg-boot-space).
 .PHONY: esp-space-test
@@ -909,6 +916,7 @@ iso-test:
 	SG_LIVE_ISO=$(ISO) SG_LIVE_ISO_AS=cdrom SG_INSTALL_SCENARIO=dualboot test/install-test.sh
 	ISO=$(ISO) test/ventoy-test.sh
 	SG_LIVE_ISO=$(ISO) test/bios-test.sh
+	SG_LIVE_ISO=$(ISO) test/bios-mbr-test.sh
 
 # Legacy BIOS (SeaBIOS, no UEFI): the ISO boots; Setup installs a system with
 # GRUB a BIOS starts; kernel updates keep starting, with boot counting -- a
