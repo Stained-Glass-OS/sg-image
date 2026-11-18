@@ -1,0 +1,36 @@
+diff --git a/src/System.IO.Pipes/src/System/IO/Pipes/ConnectionCompletionSource.cs b/src/System.IO.Pipes/src/System/IO/Pipes/ConnectionCompletionSource.cs
+index 7d12edb4..73cdb3a5 100644
+--- a/src/System.IO.Pipes/src/System/IO/Pipes/ConnectionCompletionSource.cs
++++ b/src/System.IO.Pipes/src/System/IO/Pipes/ConnectionCompletionSource.cs
+@@ -19,7 +19,9 @@ namespace System.IO.Pipes
+ 
+         internal override void SetCompletedSynchronously()
+         {
+-            _serverStream.State = PipeState.Connected;
++            // a connection that completes after the server was closed leaves it closed
++            if (_serverStream.State != PipeState.Closed)
++                _serverStream.State = PipeState.Connected;
+             TrySetResult(default(VoidResult));
+         }
+ 
+diff --git a/src/System.IO.Pipes/src/System/IO/Pipes/NamedPipeServerStream.cs b/src/System.IO.Pipes/src/System/IO/Pipes/NamedPipeServerStream.cs
+index 32c867a9..159f9ef9 100644
+--- a/src/System.IO.Pipes/src/System/IO/Pipes/NamedPipeServerStream.cs
++++ b/src/System.IO.Pipes/src/System/IO/Pipes/NamedPipeServerStream.cs
+@@ -157,8 +157,15 @@ namespace System.IO.Pipes
+         public System.IAsyncResult BeginWaitForConnection(AsyncCallback callback, object state) =>
+             TaskToApm.Begin(WaitForConnectionAsync(), callback, state);
+ 
+-        public void EndWaitForConnection(IAsyncResult asyncResult) =>
++        // As the .NET Framework's: a closed (disposed) server is "Cannot access a closed pipe"
++        // (ObjectDisposedException) even when the client's connection came in before the close.
++        // Callbacks written for the Framework catch that and stop; they went on to use the
++        // handle of a pipe that was gone (Visual Studio's response-time channel).
++        public void EndWaitForConnection(IAsyncResult asyncResult)
++        {
++            CheckConnectOperationsServer();
+             TaskToApm.End(asyncResult);
++        }
+ 
+         // Server can only connect from Disconnected state
+         [SuppressMessage("Microsoft.Security", "CA2122:DoNotIndirectlyExposeMethodsWithLinkDemands", Justification = "Consistent with security model")]

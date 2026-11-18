@@ -74,6 +74,10 @@
 #     apartment (a call into that apartment) does not hold Mono's COM lock:
 #     with it held, the apartment's thread waiting for the lock deadlocked
 #     with it (Visual Studio's Start window never answered; mono-0020);
+#   - (sg25) EndWaitForConnection on a named pipe server that was disposed
+#     is ObjectDisposedException, as the .NET Framework's (also after a
+#     client connected): Visual Studio's response-time channel went on to use
+#     the closed pipe and the IDE died a minute after start (corefx-0003);
 #   - (sg23) an [Out] or [In, Out] array of strings a native COM method fills
 #     comes back with the strings it wrote, BSTR and LPWStr (Visual Studio's
 #     IVsSettingsManager.GetCommonExtensionsSearchPaths: the array came back
@@ -1321,4 +1325,57 @@ out=$(cd "$C" && timeout -s KILL 120 "$WINE" sg24.exe 2>&1 | tr -d '\r')
 [ "$(v lockfree)" = 1 ] && pass "a COM object's last release that waits does not hold Mono's COM lock (Visual Studio's Start window)" \
     || fail "the main thread never got Mono's COM lock while a release waited: a deadlock (sg23 releases with the lock held)"
 [ "$(v released)" = 1 ] && pass "and the release finishes once it may" || fail "the waiting release: '$(v released)'"
+# (sg25) EndWaitForConnection on a server that was closed (disposed) is ObjectDisposedException,
+# "Cannot access a closed pipe", as the .NET Framework's is -- also when the client's connection
+# came in before the close. Mono's returned normally (or threw IOException 0x2a4 for a wait the
+# close ended), and a callback written for the Framework went on to use the pipe that was gone:
+# Visual Studio's response-time channel (ChannelReceiver.channelConnectedCallback) died with an
+# unhandled ObjectDisposedException a minute after start (corefx-0003). Each case in a process of
+# its own; the callback waits until the case says go.
+cat > "$C/sg25.cs" <<'CS'
+using System; using System.IO; using System.IO.Pipes; using System.Threading;
+class P {
+  static string Try(Action f) { try { f(); return "ok"; } catch (Exception e) { return e.GetType().Name; } }
+  /* a server waiting with BeginWaitForConnection; "between" runs while the callback waits for "go" */
+  static void Run(string key, Action<NamedPipeServerStream, string, ManualResetEvent> between) {
+    string pn = "sg25-" + key + "-" + Environment.TickCount;
+    var s = new NamedPipeServerStream(pn, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+    ManualResetEvent go = new ManualResetEvent(false), done = new ManualResetEvent(false);
+    string end = "none", conn = "none";
+    s.BeginWaitForConnection(ar => {
+      go.WaitOne(10000);
+      end = Try(() => s.EndWaitForConnection(ar));
+      conn = s.IsConnected ? "1" : "0";
+      done.Set();
+    }, null);
+    between(s, pn, go);
+    done.WaitOne(10000);
+    Console.WriteLine(key + "end=" + end);
+    Console.WriteLine(key + "conn=" + conn);
+    s.Dispose();
+  }
+  static void Main(string[] a) {
+    string only = a.Length > 0 ? a[0] : "";
+    /* a client connects; the server is disposed before the callback calls End (VS's response-time channel) */
+    if (only == "" || only == "cd") Run("cd", (s, pn, go) => { var c = new NamedPipeClientStream(".", pn); c.Connect(5000); Thread.Sleep(300); s.Dispose(); go.Set(); Thread.Sleep(300); c.Dispose(); });
+    /* the server is disposed while it waits, no client */
+    if (only == "" || only == "d") Run("d", (s, pn, go) => { Thread.Sleep(200); s.Dispose(); go.Set(); });
+    /* a client connects and the server talks to it: unchanged */
+    if (only == "" || only == "c") Run("c", (s, pn, go) => {
+      var c = new NamedPipeClientStream(".", pn, PipeDirection.InOut); c.Connect(5000); go.Set();
+      int got = -1; var r = new Thread(() => got = c.ReadByte()); r.Start();
+      s.WriteByte(42); r.Join(10000); Console.WriteLine("cbyte=" + got); c.Dispose(); });
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg25.exe sg25.cs >"$T/mcs25.out" 2>&1)
+[ -f "$C/sg25.exe" ] || { fail "the sg25 probe did not compile: $(cat "$T/mcs25.out")"; exit 1; }
+out=$(cd "$C" && for x in c cd d; do timeout -s KILL 60 "$WINE" sg25.exe $x 2>&1; done | tr -d '\r')
+[ "$(v cdend)" = ObjectDisposedException ] && pass "a client connected, then the server was disposed: EndWaitForConnection says the pipe is closed (Visual Studio's response-time channel)" \
+    || fail "connected, then disposed: EndWaitForConnection '$(v cdend)' (sg24: ok)"
+[ "$(v cdconn)" = 0 ] && pass "and the disposed server is not connected" || fail "disposed server IsConnected: '$(v cdconn)'"
+[ "$(v dend)" = ObjectDisposedException ] && pass "a server disposed while it waits: EndWaitForConnection says the pipe is closed" \
+    || fail "disposed while waiting: EndWaitForConnection '$(v dend)' (sg24: IOException)"
+[ "$(v cend)" = ok ] && [ "$(v cconn)" = 1 ] && [ "$(v cbyte)" = 42 ] && pass "a connection still completes and carries data" \
+    || fail "plain connection: end '$(v cend)' connected '$(v cconn)' byte '$(v cbyte)'"
 exit $RC

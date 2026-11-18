@@ -421,3 +421,18 @@ mono-0020-rcw-interfaces-released-outside-the-com-lock.patch (sg24)
     From gaps2. Gate: test/mono-fork-test.sh (sg24 section: a native object whose last
       release waits for the main thread's signal; the main thread takes the lock meanwhile;
       sg23 deadlocks). Mutant SG_MUTANT_RELEASE_UNDER_LOCK.
+
+corefx-0003-end-wait-for-connection-on-a-closed-pipe.patch (sg25)
+    System.Core, NamedPipeServerStream.EndWaitForConnection: a server that was closed
+      (disposed) is ObjectDisposedException ("Cannot access a closed pipe"), checked
+      before the wait's own result, as the .NET Framework's EndWaitForConnection does --
+      also when the client's connection came in before the close. Mono's returned
+      normally then (and threw IOException 0x2a4, ERROR_HANDLES_CLOSED, for a wait the
+      close ended). A connection that completes after the close leaves the server closed
+      (it was set Connected again).
+      Why: callbacks written for the Framework catch that exception and stop; they went
+      on to use the pipe that was gone. Visual Studio's response-time channel
+      (ChannelReceiver.channelConnectedCallback) then threw an unhandled
+      ObjectDisposedException from SafePipeHandle and the IDE exited a minute after start.
+    From gaps2. Gate: test/mono-fork-test.sh (sg25 section: connected then disposed,
+      disposed while waiting, a plain connection); sg24 fails the first and third checks (76/78).
