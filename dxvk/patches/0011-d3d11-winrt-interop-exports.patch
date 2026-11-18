@@ -1,0 +1,18 @@
+From: Stained Glass OS <ke7oxh@gmail.com>
+Subject: [PATCH] d3d11: CreateDirect3D11DeviceFromDXGIDevice and CreateDirect3D11SurfaceFromDXGISurface
+
+Forward the WinRT interop exports to Wine's sgd3dinterop.dll (wine-sg 7854), which implements
+them once for Wine's d3d11.dll and this one: a DXGI device or surface wrapped as the WinRT
+IDirect3DDevice / IDirect3DSurface (with IDirect3DDxgiInterfaceAccess and IClosable) that
+Windows.Graphics.Capture clients take. OBS's, PotPlayer's and Zoom's capture plugins import them.
+---
+diff --git a/src/d3d11/d3d11.def b/src/d3d11/d3d11.def
+index d406ba0..6db9b2d 100644
+--- a/src/d3d11/d3d11.def
++++ b/src/d3d11/d3d11.def
+@@ -4,3 +4,5 @@ EXPORTS
+     D3D11CreateDevice @22
+     D3D11CreateDeviceAndSwapChain @23
+     D3D11On12CreateDevice @24
++    CreateDirect3D11DeviceFromDXGIDevice = sgd3dinterop.CreateDirect3D11DeviceFromDXGIDevice
++    CreateDirect3D11SurfaceFromDXGISurface = sgd3dinterop.CreateDirect3D11SurfaceFromDXGISurface
