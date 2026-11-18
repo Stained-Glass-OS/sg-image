@@ -1,0 +1,502 @@
+From: Stained Glass OS <ke7oxh@gmail.com>
+Subject: [PATCH] dxgi: Desktop Duplication (DuplicateOutput, DuplicateOutput1)
+
+IDXGIOutput1::DuplicateOutput and IDXGIOutput5::DuplicateOutput1 returned
+DXGI_ERROR_UNSUPPORTED ("Not implemented"), so a program capturing the screen
+through the Desktop Duplication API with DXVK's dxgi (Zoom, Teams, Discord, OBS)
+got nothing. They now return an IDXGIOutputDuplication for a Direct3D 11 device,
+as Wine's own dxgi has it (wine-sg 2611): the output's picture is read through
+its display device context -- on Stained Glass OS the compositor's screen
+capture (wine-sg 7857), the one every program gets, black while the session is
+locked or a consent prompt is up -- into a B8G8R8A8 texture of the device.
+AcquireNextFrame waits until the picture changes or the timeout ends
+(DXGI_ERROR_WAIT_TIMEOUT), a frame must be released before the next
+(DXGI_ERROR_INVALID_CALL), the whole output is a new frame's dirty rectangle,
+no move rectangles, no pointer shape, MapDesktopSurface is
+DXGI_ERROR_UNSUPPORTED (a desktop in video memory). DuplicateOutput1 needs
+B8G8R8A8_UNORM among the formats it is given.
+---
+diff --git a/src/dxgi/dxgi_output.cpp b/src/dxgi/dxgi_output.cpp
+index 8814f5c..68db921 100644
+--- a/src/dxgi/dxgi_output.cpp
++++ b/src/dxgi/dxgi_output.cpp
+@@ -10,6 +10,7 @@
+ #include "dxgi_adapter.h"
+ #include "dxgi_factory.h"
+ #include "dxgi_output.h"
++#include "dxgi_output_dup.h"
+ #include "dxgi_swapchain.h"
+ 
+ #include "../dxvk/dxvk_format.h"
+@@ -508,16 +509,43 @@ namespace dxvk {
+           IDXGIOutputDuplication**  ppOutputDuplication) {
+     InitReturnPtr(ppOutputDuplication);
+ 
+-    if (!pDevice)
++    if (!pDevice || !ppOutputDuplication)
+       return E_INVALIDARG;
+-    
+-    static bool s_errorShown = false;
+ 
+-    if (!std::exchange(s_errorShown, true))
+-      Logger::err("DxgiOutput::DuplicateOutput1: Not implemented");
+-    
+-    // At least return a valid error code
+-    return DXGI_ERROR_UNSUPPORTED;
++    // The desktop is B8G8R8A8: a caller that lists the formats it can use
++    // must list that one
++    if (SupportedFormatsCount) {
++      bool found = false;
++
++      for (uint32_t i = 0; pSupportedFormats && i < SupportedFormatsCount; i++)
++        found |= pSupportedFormats[i] == DXGI_FORMAT_B8G8R8A8_UNORM;
++
++#ifndef SG_MUTANT_DXVKDUP_FORMATS_IGNORED
++      if (!found)
++        return DXGI_ERROR_UNSUPPORTED;
++#endif
++    }
++
++    Com<ID3D11Device> device;
++
++    if (FAILED(pDevice->QueryInterface(__uuidof(ID3D11Device), reinterpret_cast<void**>(&device)))) {
++      Logger::warn("DxgiOutput::DuplicateOutput1: Not a D3D11 device");
++      return E_INVALIDARG;
++    }
++
++    DXGI_OUTPUT_DESC desc;
++    HRESULT hr = GetDesc(&desc);
++
++    if (FAILED(hr))
++      return hr;
++
++    Com<DxgiOutputDuplication> duplication = new DxgiOutputDuplication(this, device.ptr(), desc);
++
++    if (FAILED(hr = duplication->Init()))
++      return hr;
++
++    *ppOutputDuplication = duplication.ref();
++    return S_OK;
+   }
+ 
+ 
+diff --git a/src/dxgi/dxgi_output_dup.cpp b/src/dxgi/dxgi_output_dup.cpp
+new file mode 100644
+index 0000000..50cf379
+--- /dev/null
++++ b/src/dxgi/dxgi_output_dup.cpp
+@@ -0,0 +1,286 @@
++#include "dxgi_output_dup.h"
++
++#include <cstring>
++
++namespace dxvk {
++
++  DxgiOutputDuplication::DxgiOutputDuplication(
++          IDXGIOutput*          pOutput,
++          ID3D11Device*         pDevice,
++    const DXGI_OUTPUT_DESC&     OutputDesc)
++  : m_output  (pOutput),
++    m_device  (pDevice),
++    m_width   (UINT(OutputDesc.DesktopCoordinates.right - OutputDesc.DesktopCoordinates.left)),
++    m_height  (UINT(OutputDesc.DesktopCoordinates.bottom - OutputDesc.DesktopCoordinates.top)),
++    m_rotation(OutputDesc.Rotation) {
++    std::memcpy(m_deviceName, OutputDesc.DeviceName, sizeof(m_deviceName));
++    m_device->GetImmediateContext(&m_context);
++  }
++
++
++  DxgiOutputDuplication::~DxgiOutputDuplication() {
++
++  }
++
++
++  HRESULT DxgiOutputDuplication::Init() {
++    if (!m_width || !m_height)
++      return E_INVALIDARG;
++
++    m_pixels.resize(size_t(m_width) * m_height * 4);
++
++    D3D11_TEXTURE2D_DESC desc = { };
++    desc.Width            = m_width;
++    desc.Height           = m_height;
++    desc.MipLevels        = 1;
++    desc.ArraySize        = 1;
++    desc.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;
++    desc.SampleDesc.Count = 1;
++    desc.Usage            = D3D11_USAGE_DEFAULT;
++    desc.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
++    return m_device->CreateTexture2D(&desc, nullptr, &m_texture);
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiOutputDuplication::QueryInterface(REFIID riid, void** ppvObject) {
++    if (ppvObject == nullptr)
++      return E_POINTER;
++
++    InitReturnPtr(ppvObject);
++
++    if (riid == __uuidof(IUnknown)
++     || riid == __uuidof(IDXGIObject)
++     || riid == __uuidof(IDXGIOutputDuplication)) {
++      *ppvObject = ref(this);
++      return S_OK;
++    }
++
++    return E_NOINTERFACE;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiOutputDuplication::GetParent(REFIID riid, void** ppParent) {
++    return m_output->QueryInterface(riid, ppParent);
++  }
++
++
++  void STDMETHODCALLTYPE DxgiOutputDuplication::GetDesc(DXGI_OUTDUPL_DESC* pDesc) {
++    if (!pDesc)
++      return;
++
++    *pDesc = DXGI_OUTDUPL_DESC();
++    pDesc->ModeDesc.Width                   = m_width;
++    pDesc->ModeDesc.Height                  = m_height;
++    pDesc->ModeDesc.RefreshRate.Numerator   = 60;
++    pDesc->ModeDesc.RefreshRate.Denominator = 1;
++    pDesc->ModeDesc.Format                  = DXGI_FORMAT_B8G8R8A8_UNORM;
++    pDesc->ModeDesc.ScanlineOrdering        = DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE;
++    pDesc->ModeDesc.Scaling                 = DXGI_MODE_SCALING_UNSPECIFIED;
++    pDesc->Rotation                         = m_rotation;
++    pDesc->DesktopImageInSystemMemory       = FALSE;
++  }
++
++
++  /* The output's picture, read through its display device context: the
++   * screen has no alpha, so it is opaque. */
++  bool DxgiOutputDuplication::Capture() {
++    BITMAPINFO info = { };
++    info.bmiHeader.biSize        = sizeof(info.bmiHeader);
++    info.bmiHeader.biWidth       = LONG(m_width);
++    info.bmiHeader.biHeight      = -LONG(m_height);
++    info.bmiHeader.biPlanes      = 1;
++    info.bmiHeader.biBitCount    = 32;
++    info.bmiHeader.biCompression = BI_RGB;
++
++    HDC screen = CreateDCW(m_deviceName, nullptr, nullptr, nullptr);
++    if (!screen)
++      return false;
++
++    HDC mem = CreateCompatibleDC(screen);
++    void* bits = nullptr;
++    HBITMAP bitmap = mem ? CreateDIBSection(mem, &info, DIB_RGB_COLORS, &bits, nullptr, 0) : nullptr;
++    bool ok = false;
++
++    if (bitmap) {
++      HGDIOBJ old = SelectObject(mem, bitmap);
++
++      if (BitBlt(mem, 0, 0, int(m_width), int(m_height), screen, 0, 0, SRCCOPY | CAPTUREBLT)) {
++        GdiFlush();
++        std::memcpy(m_pixels.data(), bits, m_pixels.size());
++
++        for (size_t i = 0; i < size_t(m_width) * m_height; i++) {
++          m_pixels[i * 4 + 3] = 0xff;
++#ifdef SG_MUTANT_DXVKDUP_RB_SWAPPED
++          std::swap(m_pixels[i * 4], m_pixels[i * 4 + 2]);
++#endif
++        }
++
++        ok = true;
++      }
++
++      SelectObject(mem, old);
++      DeleteObject(bitmap);
++    }
++
++    if (mem)
++      DeleteDC(mem);
++    DeleteDC(screen);
++    return ok;
++  }
++
++
++  static uint64_t HashPixels(const uint8_t* data, size_t size) {
++    uint64_t hash = 14695981039346656037ull;
++
++    for (size_t i = 0; i < size; i++)
++      hash = (hash ^ data[i]) * 1099511628211ull;
++
++    return hash;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiOutputDuplication::AcquireNextFrame(
++          UINT                  TimeoutInMilliseconds,
++          DXGI_OUTDUPL_FRAME_INFO* pFrameInfo,
++          IDXGIResource**       ppDesktopResource) {
++    if (!pFrameInfo || !ppDesktopResource)
++      return E_INVALIDARG;
++
++    *pFrameInfo = DXGI_OUTDUPL_FRAME_INFO();
++    *ppDesktopResource = nullptr;
++
++    DWORD start = GetTickCount();
++    std::unique_lock<dxvk::mutex> lock(m_mutex);
++
++#ifndef SG_MUTANT_DXVKDUP_NO_HELD_CHECK
++    if (m_frameHeld)
++      return DXGI_ERROR_INVALID_CALL;
++#endif
++
++    while (true) {
++      if (!Capture())
++        return DXGI_ERROR_ACCESS_LOST;
++
++      uint64_t hash = HashPixels(m_pixels.data(), m_pixels.size());
++
++#ifdef SG_MUTANT_DXVKDUP_ALWAYS_NEW
++      if (true) {
++#else
++      if (!m_haveFrame || hash != m_hash) {
++#endif
++        m_hash = hash;
++        m_haveFrame = true;
++
++        m_context->UpdateSubresource(m_texture.ptr(), 0, nullptr, m_pixels.data(), m_width * 4, 0);
++
++        LARGE_INTEGER now;
++        QueryPerformanceCounter(&now);
++        pFrameInfo->LastPresentTime   = now;
++        pFrameInfo->AccumulatedFrames = 1;
++
++        HRESULT hr = m_texture->QueryInterface(__uuidof(IDXGIResource),
++          reinterpret_cast<void**>(ppDesktopResource));
++
++        if (SUCCEEDED(hr))
++          m_frameHeld = true;
++
++        return hr;
++      }
++
++      if (TimeoutInMilliseconds != INFINITE && GetTickCount() - start >= TimeoutInMilliseconds)
++        return DXGI_ERROR_WAIT_TIMEOUT;
++
++      lock.unlock();
++      Sleep(10);
++      lock.lock();
++    }
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiOutputDuplication::GetFrameDirtyRects(
++          UINT                  DirtyRectsBufferSize,
++          RECT*                 pDirtyRectsBuffer,
++          UINT*                 pDirtyRectsBufferSizeRequired) {
++    if (!pDirtyRectsBufferSizeRequired)
++      return E_INVALIDARG;
++
++    std::lock_guard<dxvk::mutex> lock(m_mutex);
++
++    if (!m_frameHeld)
++      return DXGI_ERROR_INVALID_CALL;
++
++    /* every new frame is reported as changed as a whole */
++    *pDirtyRectsBufferSizeRequired = sizeof(RECT);
++
++    if (DirtyRectsBufferSize < sizeof(RECT) || !pDirtyRectsBuffer)
++      return DXGI_ERROR_MORE_DATA;
++
++#ifdef SG_MUTANT_DXVKDUP_DIRTY_EMPTY
++    SetRect(pDirtyRectsBuffer, 0, 0, 0, 0);
++#else
++    SetRect(pDirtyRectsBuffer, 0, 0, int(m_width), int(m_height));
++#endif
++    return S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiOutputDuplication::GetFrameMoveRects(
++          UINT                  MoveRectsBufferSize,
++          DXGI_OUTDUPL_MOVE_RECT* pMoveRectBuffer,
++          UINT*                 pMoveRectsBufferSizeRequired) {
++    if (!pMoveRectsBufferSizeRequired)
++      return E_INVALIDARG;
++
++    std::lock_guard<dxvk::mutex> lock(m_mutex);
++
++    if (!m_frameHeld)
++      return DXGI_ERROR_INVALID_CALL;
++
++    *pMoveRectsBufferSizeRequired = 0;
++    return S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiOutputDuplication::GetFramePointerShape(
++          UINT                  PointerShapeBufferSize,
++          void*                 pPointerShapeBuffer,
++          UINT*                 pPointerShapeBufferSizeRequired,
++          DXGI_OUTDUPL_POINTER_SHAPE_INFO* pPointerShapeInfo) {
++    if (!pPointerShapeBufferSizeRequired || !pPointerShapeInfo)
++      return E_INVALIDARG;
++
++    std::lock_guard<dxvk::mutex> lock(m_mutex);
++
++    if (!m_frameHeld)
++      return DXGI_ERROR_INVALID_CALL;
++
++    *pPointerShapeBufferSizeRequired = 0;
++    *pPointerShapeInfo = DXGI_OUTDUPL_POINTER_SHAPE_INFO();
++    return S_OK;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiOutputDuplication::MapDesktopSurface(DXGI_MAPPED_RECT* pLockedRect) {
++    if (!pLockedRect)
++      return E_INVALIDARG;
++
++    return DXGI_ERROR_UNSUPPORTED;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiOutputDuplication::UnMapDesktopSurface() {
++    return DXGI_ERROR_INVALID_CALL;
++  }
++
++
++  HRESULT STDMETHODCALLTYPE DxgiOutputDuplication::ReleaseFrame() {
++    std::lock_guard<dxvk::mutex> lock(m_mutex);
++
++    if (!m_frameHeld)
++      return DXGI_ERROR_INVALID_CALL;
++
++    m_frameHeld = false;
++    return S_OK;
++  }
++
++}
+diff --git a/src/dxgi/dxgi_output_dup.h b/src/dxgi/dxgi_output_dup.h
+new file mode 100644
+index 0000000..c9bc659
+--- /dev/null
++++ b/src/dxgi/dxgi_output_dup.h
+@@ -0,0 +1,101 @@
++#pragma once
++
++#include <d3d11.h>
++
++#include "dxgi_object.h"
++
++#include "../util/thread.h"
++
++#include <vector>
++
++namespace dxvk {
++
++  /**
++   * \brief Desktop Duplication (Stained Glass OS)
++   *
++   * IDXGIOutput1::DuplicateOutput and IDXGIOutput5::DuplicateOutput1 for a
++   * Direct3D 11 device, as Wine's own dxgi has them (wine-sg 2611): the
++   * output's display image, read through its display device context (GDI --
++   * under the session's compositor, its screen capture: wine-sg 7857), in a
++   * B8G8R8A8 texture of the device. AcquireNextFrame waits until the picture
++   * changes or the timeout ends; a frame must be released before the next;
++   * the whole output is the dirty rectangle of a new frame; no move
++   * rectangles, no pointer shape; MapDesktopSurface is unsupported, as for a
++   * desktop in video memory.
++   */
++  class DxgiOutputDuplication : public DxgiObject<IDXGIOutputDuplication> {
++
++  public:
++
++    DxgiOutputDuplication(
++            IDXGIOutput*          pOutput,
++            ID3D11Device*         pDevice,
++      const DXGI_OUTPUT_DESC&     OutputDesc);
++
++    ~DxgiOutputDuplication();
++
++    HRESULT Init();
++
++    HRESULT STDMETHODCALLTYPE QueryInterface(
++            REFIID                riid,
++            void**                ppvObject) final;
++
++    HRESULT STDMETHODCALLTYPE GetParent(
++            REFIID                riid,
++            void**                ppParent) final;
++
++    void STDMETHODCALLTYPE GetDesc(
++            DXGI_OUTDUPL_DESC*    pDesc) final;
++
++    HRESULT STDMETHODCALLTYPE AcquireNextFrame(
++            UINT                  TimeoutInMilliseconds,
++            DXGI_OUTDUPL_FRAME_INFO* pFrameInfo,
++            IDXGIResource**       ppDesktopResource) final;
++
++    HRESULT STDMETHODCALLTYPE GetFrameDirtyRects(
++            UINT                  DirtyRectsBufferSize,
++            RECT*                 pDirtyRectsBuffer,
++            UINT*                 pDirtyRectsBufferSizeRequired) final;
++
++    HRESULT STDMETHODCALLTYPE GetFrameMoveRects(
++            UINT                  MoveRectsBufferSize,
++            DXGI_OUTDUPL_MOVE_RECT* pMoveRectBuffer,
++            UINT*                 pMoveRectsBufferSizeRequired) final;
++
++    HRESULT STDMETHODCALLTYPE GetFramePointerShape(
++            UINT                  PointerShapeBufferSize,
++            void*                 pPointerShapeBuffer,
++            UINT*                 pPointerShapeBufferSizeRequired,
++            DXGI_OUTDUPL_POINTER_SHAPE_INFO* pPointerShapeInfo) final;
++
++    HRESULT STDMETHODCALLTYPE MapDesktopSurface(
++            DXGI_MAPPED_RECT*     pLockedRect) final;
++
++    HRESULT STDMETHODCALLTYPE UnMapDesktopSurface() final;
++
++    HRESULT STDMETHODCALLTYPE ReleaseFrame() final;
++
++  private:
++
++    Com<IDXGIOutput>          m_output;
++    Com<ID3D11Device>         m_device;
++    Com<ID3D11DeviceContext>  m_context;
++    Com<ID3D11Texture2D>      m_texture;
++
++    WCHAR                     m_deviceName[32];
++    UINT                      m_width;
++    UINT                      m_height;
++    DXGI_MODE_ROTATION        m_rotation;
++
++    std::vector<uint8_t>      m_pixels;
++    uint64_t                  m_hash      = 0;
++    bool                      m_haveFrame = false;
++    bool                      m_frameHeld = false;
++
++    dxvk::mutex               m_mutex;
++
++    bool Capture();
++
++  };
++
++}
+diff --git a/src/dxgi/meson.build b/src/dxgi/meson.build
+index 1533ce2..3ecb39e 100644
+--- a/src/dxgi/meson.build
++++ b/src/dxgi/meson.build
+@@ -9,6 +9,7 @@ dxgi_src = [
+   'dxgi_monitor.cpp',
+   'dxgi_options.cpp',
+   'dxgi_output.cpp',
++  'dxgi_output_dup.cpp',
+   'dxgi_surface.cpp',
+   'dxgi_swapchain.cpp',
+   'dxgi_composition.cpp',
+@@ -19,7 +20,7 @@ dxgi_link_depends = []
+ dxgi_extra_dep    = []
+ 
+ if platform == 'windows'
+-  dxgi_extra_dep    += [ cpp.find_library('version') ]
++  dxgi_extra_dep    += [ cpp.find_library('version'), cpp.find_library('gdi32') ]
+ else
+   dxgi_ld_args      += [ '-Wl,--version-script', join_paths(meson.current_source_dir(), 'dxgi.sym') ]
+   dxgi_link_depends += files('dxgi.sym')
