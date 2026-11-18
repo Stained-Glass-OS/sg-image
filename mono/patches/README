@@ -483,3 +483,18 @@ mono-0024-a-frame-of-emitted-code-printed-without-a-guid.patch (sg27)
       (page fault reading address 3 in libmono), so its exceptions could not be traced.
     From gaps3. Gate: test/mono-fork-test.sh (sg27 section: emitted code throws three
       times under WINE_MONO_TRACE=E:all); sg26 dies. Mutant SG_MUTANT_DYNAMIC_GUID_NULL.
+
+mono-0025-safearrays-by-reference-into-managed-com-methods.patch (sg28)
+    mono/metadata/cominterop.c, the SAFEARRAY marshaler of a native-to-managed call (a COM
+      callable wrapper's method): a SAFEARRAY* passed by reference (ref object[]) arrives as
+      the array (NULL as null; it threw MarshalDirectiveException "Byref input safearray
+      marshaling not implemented"), and one that is [Out] or in/out (ref with no direction, or
+      [In, Out]) goes back as the array the method left, the caller's own destroyed first;
+      an [In] ref one stays the caller's.
+      Why: Visual Studio calls the C++ project wizards (Microsoft.VC.Wizards, managed) through
+      EnvDTE.IDTWizard.Execute with its context and custom parameters by reference; the
+      wrapper threw before the wizard ran, DTE reported OLE_E_PROMPTSAVECANCELLED
+      (0x8004000C) and Create in "Create a new project" made no project.
+    From gaps3. Gate: test/mono-fork-test.sh (sg28 section: the managed object's wrapper
+      called through its vtable with SAFEARRAY**: in, [In], ref, NULL); sg27 0x80131535.
+      Mutant SG_MUTANT_BYREF_SAFEARRAY_IN.

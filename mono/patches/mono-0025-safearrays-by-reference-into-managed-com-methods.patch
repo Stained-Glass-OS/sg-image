@@ -1,0 +1,67 @@
+diff --git a/mono/metadata/cominterop.c b/mono/metadata/cominterop.c
+--- a/mono/metadata/cominterop.c
++++ b/mono/metadata/cominterop.c
+@@ -4654,9 +4654,29 @@
+ 			break;
+ 
+ 		if (t->byref) {
++#ifdef SG_MUTANT_BYREF_SAFEARRAY_IN
+ 			char *msg = g_strdup ("Byref input safearray marshaling not implemented");
+ 			mono_mb_emit_exception_full (mb, "System.Runtime.InteropServices", "MarshalDirectiveException", msg);
+ 			return conv_arg;
++#else
++			/* Stained Glass OS: a SAFEARRAY* a native caller passes by reference
++			 * (ref object[], [In] or [In, Out]: Visual Studio calling a managed
++			 * wizard's IDTWizard.Execute with its context and custom parameters).
++			 * conv = ptr && *ptr ? mono_marshal_safearray_to_array (*ptr, ...) : null */
++			int label_null;
++
++			mono_mb_emit_ldarg (mb, argnum);
++			label_null = mono_mb_emit_branch (mb, CEE_BRFALSE);
++			mono_mb_emit_ldarg (mb, argnum);
++			mono_mb_emit_byte (mb, CEE_LDIND_I);
++			mono_mb_emit_ptr (mb, mono_class_from_mono_type_internal (t));
++			mono_mb_emit_icon (mb, elem_type);
++			mono_mb_emit_ptr (mb, NULL);
++			mono_mb_emit_icall (mb, mono_marshal_safearray_to_array);
++			mono_mb_emit_stloc (mb, conv_arg);
++			mono_mb_patch_branch (mb, label_null);
++			break;
++#endif
+ 		}
+ 
+ 		/* conv = mono_marshal_safearray_to_array (safearray, typeof(conv), elem_type, NULL); */
+@@ -4670,15 +4690,32 @@
+ 		break;
+ 	}
+ 	case MARSHAL_ACTION_MANAGED_CONV_OUT: {
+-		if (t->attrs & PARAM_ATTRIBUTE_OUT) {
++		/* Stained Glass OS: a by-reference SAFEARRAY goes back to the caller when it is
++		 * [Out] or carries no direction (a ref parameter is in/out); the caller's own array,
++		 * when it passed one in, is destroyed first, as the CLR's marshaler does */
++		gboolean in_out = t->byref && (!(t->attrs & (PARAM_ATTRIBUTE_IN | PARAM_ATTRIBUTE_OUT)) ||
++			(t->attrs & (PARAM_ATTRIBUTE_IN | PARAM_ATTRIBUTE_OUT)) == (PARAM_ATTRIBUTE_IN | PARAM_ATTRIBUTE_OUT));
++
++		if ((t->attrs & PARAM_ATTRIBUTE_OUT) || in_out) {
++			int label_null;
++
+ 			g_assert (t->byref);
+ 
++			mono_mb_emit_ldarg (mb, argnum);
++			label_null = mono_mb_emit_branch (mb, CEE_BRFALSE);
++			if (in_out) {
++				/* mono_marshal_safearray_destroy (*argnum) */
++				mono_mb_emit_ldarg (mb, argnum);
++				mono_mb_emit_byte (mb, CEE_LDIND_I);
++				mono_mb_emit_icall (mb, mono_marshal_safearray_destroy);
++			}
+ 			/* *argnum = mono_marshal_safearray_from_array(conv_arg, elem_type) */
+ 			mono_mb_emit_ldarg (mb, argnum);
+ 			mono_mb_emit_ldloc (mb, conv_arg);
+ 			mono_mb_emit_icon (mb, elem_type);
+ 			mono_mb_emit_icall (mb, mono_marshal_safearray_from_array);
+ 			mono_mb_emit_byte (mb, CEE_STIND_I);
++			mono_mb_patch_branch (mb, label_null);
+ 		}
+ 
+ 		break;

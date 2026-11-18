@@ -81,6 +81,12 @@
 #     Internet Settings key (mono-0022); Marshal.CreateAggregatedObject
 #     aggregates a managed object into a native COM object (Visual Studio's
 #     DTE.Solution threw NotImplementedException; mono-0023);
+#   - (sg28) a SAFEARRAY a native caller passes by reference to a managed
+#     COM method (ref object[]) reaches it as an array, and a ref (in/out)
+#     one goes back to the caller as the array the method left (Visual
+#     Studio calling a C++ project wizard's IDTWizard.Execute: Mono threw
+#     "Byref input safearray marshaling not implemented", so Create made no
+#     project; mono-0025);
 #   - (sg27) a frame of code emitted at run time (Reflection.Emit) is
 #     printed with an all-zero module id: its image has no #GUID heap, and
 #     printing the stack of an exception through it (WINE_MONO_TRACE=E:all,
@@ -1546,4 +1552,80 @@ out=$(cd "$C" && WINE_MONO_TRACE=E:all timeout -s KILL 60 "$WINE" sg27.exe 2>"$T
 [ "$(v caught)" = 3 ] && grep -q "SgDynType" "$T/sg27.err" \
     && pass "an exception through emitted code is traced (its frames printed) and caught, three times" \
     || fail "emitted code's exception under WINE_MONO_TRACE=E:all: caught '$(v caught)', frames printed: $(grep -c SgDynType "$T/sg27.err") (sg26: the process dies)"
+# (sg28) a native caller (here the managed object's own COM wrapper called through its vtable, as
+# native code calls it) passing SAFEARRAY** to a managed method: an [In] ref array arrives and is
+# left to the caller, a plain ref array arrives and the method's new array goes back (the caller's
+# destroyed), NULL arrives as null. Mono threw MarshalDirectiveException (0x80131535) before the
+# method ran: Visual Studio's IDTWizard.Execute of the C++ wizards, so Create made no project
+# (mono-0025).
+cat > "$C/sg28.cs" <<'CS'
+using System; using System.Runtime.InteropServices;
+[ComVisible(true), InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("5a1c0e8e-27b4-4d3a-9b9e-0c5f3a2d7e01")]
+public interface IWiz {
+  void Execute([In, MarshalAs(UnmanagedType.SafeArray, SafeArraySubType = VarEnum.VT_VARIANT)] ref object[] ctx,
+               [MarshalAs(UnmanagedType.SafeArray, SafeArraySubType = VarEnum.VT_VARIANT)] ref object[] custom,
+               out int result);
+}
+[ComVisible(true), ClassInterface(ClassInterfaceType.None)]
+public class Wiz : IWiz {
+  public string seen = "none";
+  public void Execute(ref object[] ctx, ref object[] custom, out int result) {
+    seen = (ctx == null ? "null" : ctx.Length + ":" + ctx[0] + ":" + ctx[1]) + "/" + (custom == null ? "null" : custom.Length.ToString());
+    ctx = new object[] { "ignored" };
+    custom = new object[] { "back", 7, "three" };
+    result = 1;
+  }
+}
+class P {
+  delegate int ExecFn(IntPtr self, ref IntPtr ctx, ref IntPtr custom, out int result);
+  [DllImport("oleaut32.dll")] static extern IntPtr SafeArrayCreateVector(ushort vt, int lb, uint n);
+  [DllImport("oleaut32.dll")] static extern int SafeArrayPutElement(IntPtr psa, int[] idx, IntPtr v);
+  [DllImport("oleaut32.dll")] static extern int SafeArrayGetElement(IntPtr psa, int[] idx, IntPtr v);
+  [DllImport("oleaut32.dll")] static extern int SafeArrayGetUBound(IntPtr psa, uint dim, out int ub);
+  [DllImport("oleaut32.dll")] static extern int VariantClear(IntPtr v);
+  static IntPtr Make(params object[] vals) {
+    IntPtr psa = SafeArrayCreateVector(12 /* VT_VARIANT */, 0, (uint)vals.Length);
+    IntPtr v = Marshal.AllocCoTaskMem(24);
+    for (int i = 0; i < vals.Length; i++) {
+      Marshal.GetNativeVariantForObject(vals[i], v);
+      SafeArrayPutElement(psa, new[] { i }, v); VariantClear(v);
+    }
+    Marshal.FreeCoTaskMem(v); return psa;
+  }
+  static string Read(IntPtr psa) {
+    if (psa == IntPtr.Zero) return "null";
+    int ub; SafeArrayGetUBound(psa, 1, out ub);
+    IntPtr v = Marshal.AllocCoTaskMem(24); string s = (ub + 1).ToString();
+    for (int i = 0; i <= ub; i++) { SafeArrayGetElement(psa, new[] { i }, v); s += ":" + Marshal.GetObjectForNativeVariant(v); VariantClear(v); }
+    Marshal.FreeCoTaskMem(v); return s;
+  }
+  static void Main() {
+    var w = new Wiz();
+    IntPtr itf = Marshal.GetComInterfaceForObject(w, typeof(IWiz));
+    IntPtr fn = Marshal.ReadIntPtr(Marshal.ReadIntPtr(itf), 3 * IntPtr.Size);
+    var exec = (ExecFn)Marshal.GetDelegateForFunctionPointer(fn, typeof(ExecFn));
+    IntPtr ctx = Make("ctx", 42), custom = Make("x"); int r;
+    int hr = exec(itf, ref ctx, ref custom, out r);
+    Console.WriteLine("hr=0x" + hr.ToString("x8"));
+    Console.WriteLine("seen=" + w.seen);
+    Console.WriteLine("ctx=" + Read(ctx));
+    Console.WriteLine("custom=" + Read(custom));
+    IntPtr nul = IntPtr.Zero, nul2 = IntPtr.Zero;
+    hr = exec(itf, ref nul, ref nul2, out r);
+    Console.WriteLine("nullhr=0x" + hr.ToString("x8") + " nullseen=" + w.seen + " nullcustom=" + Read(nul2));
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg28.exe sg28.cs >"$T/mcs28.out" 2>&1)
+[ -f "$C/sg28.exe" ] || { fail "the sg28 probe did not compile: $(cat "$T/mcs28.out")"; exit 1; }
+out=$(cd "$C" && timeout -s KILL 60 "$WINE" sg28.exe 2>&1 | tr -d '\r')
+[ "$(v hr)" = 0x00000000 ] && [ "$(v seen)" = "2:ctx:42/1" ] \
+    && pass "a SAFEARRAY passed by reference from native code reaches the managed method (Visual Studio's IDTWizard.Execute)" \
+    || fail "by-reference SAFEARRAY in: hr '$(v hr)' seen '$(v seen)' (sg27: 0x80131535, method not run)"
+[ "$(v ctx)" = "2:ctx:42" ] && [ "$(v custom)" = "3:back:7:three" ] \
+    && pass "an [In] one stays the caller's, a ref one comes back as the method's new array" \
+    || fail "by-reference SAFEARRAY out: [In] '$(v ctx)', ref '$(v custom)'"
+printf '%s\n' "$out" | grep -q "^nullhr=0x00000000 nullseen=null/null nullcustom=3:back:7:three$" \
+    && pass "a NULL SAFEARRAY by reference arrives as null and a ref one still comes back" \
+    || fail "NULL by-reference SAFEARRAY: '$(printf '%s\n' "$out" | grep nullhr)'"
 exit $RC
