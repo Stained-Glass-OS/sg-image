@@ -139,6 +139,13 @@ else
     dd if="$W/esp.img" of="$TARGET" bs=512 seek=2048 conv=notrunc status=none
     head -c $((16 * 1024 * 1024)) /dev/urandom | dd of="$TARGET" bs=512 seek=206848 conv=notrunc status=none
     dd if="$W/data.img" of="$TARGET" bs=512 seek=239616 conv=notrunc status=none
+    if [[ "$SCENARIO" == dualtarget ]]; then
+        # the leftover partition holds a file system (an old Linux's): Setup
+        # never preselects it, and erases it only after its warning
+        mkdir -p "$W/old"; echo "old files" > "$W/old/readme.txt"
+        mkfs.ext4 -q -F -L "old Linux" -d "$W/old" "$W/old.img" 64M
+        dd if="$W/old.img" of="$TARGET" bs=512 seek=8628224 conv=notrunc,sparse status=none
+    fi
     BOOTMGR_SUM=$(sha256sum < "$W/bootmgfw.efi" | cut -d' ' -f1)
     MSR_SUM=$(part_sum 2); DATA_SUM=$(part_sum 3)
     ENTRIES_BEFORE=$(for n in 1 2 3; do part_entry "$n"; done)
@@ -363,12 +370,23 @@ else
     press_until start 1 || fail "Setup's first page did not move on"
     to_disk
     if [[ "$SCENARIO" == dualtarget ]]; then
-        wait_logged 'selected Drive 0 Partition 4' 60 && pass "the partitioner preselects the leftover partition beside Windows"
+        # no unallocated space, and the only place holds a file system:
+        # nothing preselected; chosen by hand, it is erased only after the
+        # warning (which opens on No) is answered Yes
+        wait_logged 'sg-setup: nothing preselected' 60 && pass "with no unallocated space nothing is preselected (never a partition that holds files)"
+        sleep 2; shot setup-disk
+        qmp key end                               # the leftover partition, the list's last row
+        wait_logged 'selected Drive 0 Partition 4' 60 && pass "the leftover partition chosen by hand"
+        sleep 1; qmp key ret                      # Next: the warning
+        wait_logged 'confirm erase Drive 0 Partition 4' 60 && pass "...Next warns that everything on it will be erased"
+        sleep 2; shot setup-erase-warning
+        qmp key y                                 # Yes
+        wait_logged 'erase Drive 0 Partition 4.*: yes' 60
     else
         wait_logged 'selected Drive 0 Unallocated Space' 60 && pass "the partitioner preselects the unallocated space beside Windows"
+        sleep 2; shot setup-disk
+        qmp key ret                               # Next
     fi
-    sleep 2; shot setup-disk
-    qmp key ret                                   # Next
     page ready 1
 fi
 shot setup-ready
