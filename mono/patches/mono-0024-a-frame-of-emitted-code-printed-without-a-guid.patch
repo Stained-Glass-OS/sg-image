@@ -1,0 +1,18 @@
+diff --git a/mono/metadata/metadata.c b/mono/metadata/metadata.c
+--- a/mono/metadata/metadata.c
++++ b/mono/metadata/metadata.c
+@@ -7468,6 +7468,14 @@
+ char *
+ mono_guid_to_string_minimal (const guint8 *guid)
+ {
++	static const guint8 zero_guid [16];
++
++	/* a dynamic (Reflection.Emit) image has no #GUID heap: its frames are
++	 * printed with an all-zero GUID instead of a read through NULL */
++#ifndef SG_MUTANT_DYNAMIC_GUID_NULL
++	if (!guid)
++		guid = zero_guid;
++#endif
+ 	return g_strdup_printf ("%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+ 				guid[3], guid[2], guid[1], guid[0],
+ 				guid[5], guid[4],

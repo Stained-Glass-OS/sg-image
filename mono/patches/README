@@ -473,3 +473,13 @@ mono-0023-com-aggregation-create-aggregated-object.patch (sg26)
       aggregating a managed one, seven checks); sg25 throws NotImplementedException.
       The IMarshal check caught a first draft that took the marshaler for a wrapper
       interface (a crash in Wine's ftmarshaler_Release, as Visual Studio crashed).
+
+mono-0024-a-frame-of-emitted-code-printed-without-a-guid.patch (sg27)
+    mono/metadata/metadata.c mono_guid_to_string_minimal: a NULL GUID is printed as all
+      zeros. An image made by Reflection.Emit (AssemblyBuilder) has no #GUID heap, and
+      Mono's native frame printing (mono_debug_print_stack_frame: WINE_MONO_TRACE=E:all,
+      thread dumps) read its module id through NULL.
+      Why: every exception-traced Visual Studio run died about 3 minutes after start
+      (page fault reading address 3 in libmono), so its exceptions could not be traced.
+    From gaps3. Gate: test/mono-fork-test.sh (sg27 section: emitted code throws three
+      times under WINE_MONO_TRACE=E:all); sg26 dies. Mutant SG_MUTANT_DYNAMIC_GUID_NULL.

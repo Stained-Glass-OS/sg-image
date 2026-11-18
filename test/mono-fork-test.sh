@@ -81,6 +81,12 @@
 #     Internet Settings key (mono-0022); Marshal.CreateAggregatedObject
 #     aggregates a managed object into a native COM object (Visual Studio's
 #     DTE.Solution threw NotImplementedException; mono-0023);
+#   - (sg27) a frame of code emitted at run time (Reflection.Emit) is
+#     printed with an all-zero module id: its image has no #GUID heap, and
+#     printing the stack of an exception through it (WINE_MONO_TRACE=E:all,
+#     Mono's native frame printing) read through NULL -- Visual Studio
+#     crashed 3 minutes after start whenever exceptions were traced
+#     (mono-0024);
 #   - (sg25) EndWaitForConnection on a named pipe server that was disposed
 #     is ObjectDisposedException, as the .NET Framework's (also after a
 #     client connected): Visual Studio's response-time channel went on to use
@@ -1508,4 +1514,36 @@ out=$(cd "$C" && timeout -s KILL 60 "$WINE" sgagg.exe 2>&1 | tr -d '\r')
     || fail "CreateAggregatedObject: '$(v aggregate)' (sg25: NotImplementedException)"
 [ "$(v checks)" = 127 ] && pass "and the aggregated object answers as the outer one: interface, call, QueryInterface, identity, references, inner IUnknown, free-threaded marshaler" \
     || fail "aggregation checks: '$(v checks)' of 127 (bits: 1 interface 2 call 4 QI as outer 8 identity 16 references 32 inner IUnknown 64 IMarshal counts the outer)"
+# (sg27) an exception thrown by emitted code (AssemblyBuilder, no #GUID heap) while Mono traces
+# exceptions (WINE_MONO_TRACE=E:all prints each one's frames, with each frame's module id): the
+# frame is printed and the program goes on. Mono read the id through NULL and the process died
+# (Visual Studio under an exception trace, 3 minutes after start; mono-0024).
+cat > "$C/sg27.cs" <<'CS'
+using System; using System.Reflection; using System.Reflection.Emit;
+class P {
+  static void Main() {
+    var ab = AppDomain.CurrentDomain.DefineDynamicAssembly(new AssemblyName("SgDyn"), AssemblyBuilderAccess.Run);
+    var tb = ab.DefineDynamicModule("SgDyn").DefineType("SgDynType", TypeAttributes.Public);
+    var m = tb.DefineMethod("Throw", MethodAttributes.Public | MethodAttributes.Static, typeof(void), Type.EmptyTypes);
+    var il = m.GetILGenerator();
+    il.Emit(OpCodes.Nop); il.Emit(OpCodes.Nop);
+    il.Emit(OpCodes.Ldstr, "from emitted code");
+    il.Emit(OpCodes.Newobj, typeof(InvalidOperationException).GetConstructor(new[] { typeof(string) }));
+    il.Emit(OpCodes.Throw);
+    var t = tb.CreateType();
+    int caught = 0;
+    for (int i = 0; i < 3; i++) {
+      try { t.GetMethod("Throw").Invoke(null, null); }
+      catch (TargetInvocationException e) { if (e.InnerException is InvalidOperationException) caught++; }
+    }
+    Console.WriteLine("caught=" + caught);
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg27.exe sg27.cs >"$T/mcs27.out" 2>&1)
+[ -f "$C/sg27.exe" ] || { fail "the sg27 probe did not compile: $(cat "$T/mcs27.out")"; exit 1; }
+out=$(cd "$C" && WINE_MONO_TRACE=E:all timeout -s KILL 60 "$WINE" sg27.exe 2>"$T/sg27.err" | tr -d '\r')
+[ "$(v caught)" = 3 ] && grep -q "SgDynType" "$T/sg27.err" \
+    && pass "an exception through emitted code is traced (its frames printed) and caught, three times" \
+    || fail "emitted code's exception under WINE_MONO_TRACE=E:all: caught '$(v caught)', frames printed: $(grep -c SgDynType "$T/sg27.err") (sg26: the process dies)"
 exit $RC
