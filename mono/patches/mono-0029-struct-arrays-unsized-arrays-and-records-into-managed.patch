@@ -1,0 +1,159 @@
+diff --git a/mcs/class/corlib/System/Variant.cs b/mcs/class/corlib/System/Variant.cs
+--- a/mcs/class/corlib/System/Variant.cs
++++ b/mcs/class/corlib/System/Variant.cs
+@@ -481,6 +481,80 @@
+ 			return obj;
+ 		}
+ 
++		/* Stained Glass OS (mono-0029): a VARIANT holding a record (VT_RECORD: the record's data
++		 * and its IRecordInfo) is the managed value type the record describes: one whose GUID
++		 * (GuidAttribute, as type library imports carry) is the record's, or System.Guid for
++		 * oleaut32's GUID record. Visual Studio passes GUIDs so to IVsGuidParserPrivate.
++		 * TryParseGuid, which threw NotImplementedException. */
++		[ComImport, Guid ("0000002F-0000-0000-C000-000000000046"), InterfaceType (ComInterfaceType.InterfaceIsIUnknown)]
++		interface IRecordInfo {
++			[PreserveSig] int RecordInit (IntPtr pvNew);
++			[PreserveSig] int RecordClear (IntPtr pvExisting);
++			[PreserveSig] int RecordCopy (IntPtr pvExisting, IntPtr pvNew);
++			[PreserveSig] int GetGuid (out Guid pguid);
++			[PreserveSig] int GetName ([MarshalAs (UnmanagedType.BStr)] out string pbstrName);
++			[PreserveSig] int GetSize (out uint pcbSize);
++		}
++
++		static System.Collections.Generic.Dictionary<Guid, Type> record_types;
++
++		static Type FindRecordType (Guid guid)
++		{
++			lock (typeof (BRECORD)) {
++				if (record_types == null)
++					record_types = new System.Collections.Generic.Dictionary<Guid, Type> ();
++				Type found;
++				if (record_types.TryGetValue (guid, out found))
++					return found;
++				foreach (var asm in AppDomain.CurrentDomain.GetAssemblies ()) {
++					if (asm.IsDynamic)
++						continue;
++					Type[] types;
++					try {
++						types = asm.GetTypes ();
++					} catch (System.Reflection.ReflectionTypeLoadException e) {
++						types = e.Types;
++					} catch {
++						continue;
++					}
++					foreach (var t in types) {
++						if (t == null || !t.IsValueType || t.IsEnum || !t.IsDefined (typeof (GuidAttribute), false))
++							continue;
++						if (t.GUID == guid) {
++							found = t;
++							break;
++						}
++					}
++					if (found != null)
++						break;
++				}
++				record_types [guid] = found;
++				return found;
++			}
++		}
++
++		static object RecordToObject (IntPtr data, IntPtr recinfo)
++		{
++			if (data == IntPtr.Zero || recinfo == IntPtr.Zero)
++				return null;
++			var info = (IRecordInfo)Marshal.GetObjectForIUnknown (recinfo);
++			Guid guid;
++			Type type = null;
++			if (info.GetGuid (out guid) >= 0)
++				type = FindRecordType (guid);
++			if (type == null) {
++				uint size;
++				string name;
++				if (info.GetName (out name) >= 0 && name != null &&
++				    string.Equals (name, "GUID", StringComparison.OrdinalIgnoreCase) &&
++				    info.GetSize (out size) >= 0 && size == 16)
++					type = typeof (Guid);
++			}
++			if (type == null)
++				throw new NotSupportedException ("VT_RECORD of a record type with no managed value type (" + guid + ")");
++			return Marshal.PtrToStructure (data, type);
++		}
++
+ 		public object GetValue() {
+ 			object obj = null;
+ 			switch ((VarEnum)vt)
+@@ -537,7 +611,16 @@
+ 				obj = new Decimal((int)decVal.Lo64, (int)(decVal.Lo64 >> 32), decVal.Hi32, decVal.sign != 0, decVal.scale);
+ 				break;
+ 			case VarEnum.VT_RECORD:
++#if !SG_MUTANT_VARIANT_RECORD_NOT_IMPLEMENTED
++				fixed (short* pvt = &vt)
++				{
++					BRECORD* rec = (BRECORD*)((byte*)pvt + 8);
++					obj = RecordToObject(rec->pvRecord, rec->pRecInfo);
++				}
++				break;
++#else
+ 				throw new NotImplementedException("VT_RECORD not implemented");
++#endif
+ #if FEATURE_COMINTEROP
+ 			case VarEnum.VT_UNKNOWN:
+ 			case VarEnum.VT_DISPATCH:
+diff --git a/mono/metadata/marshal-ilgen.c b/mono/metadata/marshal-ilgen.c
+--- a/mono/metadata/marshal-ilgen.c
++++ b/mono/metadata/marshal-ilgen.c
+@@ -2897,7 +2897,15 @@
+ 				//char *msg = g_strdup ("Either SizeConst or SizeParamIndex should be specified when marshalling arrays to managed code.");
+ 				//mono_mb_emit_exception_marshal_directive (mb, msg);
+ 				//return conv_arg;
++#ifndef SG_MUTANT_UNSIZED_ARRAY_EMPTY
++				/* Stained Glass OS (mono-0029): with neither SizeConst nor SizeParamIndex the
++				 * CLR takes one element (a pointer to one item: Visual Studio's
++				 * IVsFontAndColorDefaults.GetItem(int, AllColorableItemInfo[] pInfo)); Mono made
++				 * an empty array and the method's pInfo[0] threw IndexOutOfRangeException */
++				num_elem = 1;
++#else
+ 				num_elem = 0;
++#endif
+ 			}
+ 		}
+ 
+@@ -3054,6 +3062,19 @@
+ 			mono_mb_emit_ldloc (mb, src_ptr);
+ 			sg_emit_bool_elem_from_native (mb, esize);
+ 		}
++#ifndef SG_MUTANT_NO_STRUCT_ARRAYS_TO_MANAGED
++		else if (m_class_is_valuetype (eklass) && !m_class_is_enumtype (eklass)) {
++			/* Stained Glass OS (mono-0029): an array of non-blittable structs (strings in
++			 * them) into a managed method: each element converted from its native layout */
++			mono_mb_emit_ldloc (mb, src_ptr);
++			mono_mb_emit_stloc (mb, 0);
++			mono_mb_emit_ldloc (mb, conv_arg);
++			mono_mb_emit_ldloc (mb, index_var);
++			mono_mb_emit_op (mb, CEE_LDELEMA, eklass);
++			mono_mb_emit_stloc (mb, 1);
++			emit_struct_conv_full (mb, eklass, TRUE, 0, (MonoMarshalNative)-1);
++		}
++#endif
+ 		else {
+ 			char *msg = g_strdup ("Marshalling of non-string and non-blittable arrays to managed code is not implemented.");
+ 			mono_mb_emit_exception_marshal_directive (mb, msg);
+@@ -3197,6 +3218,18 @@
+ 			mono_mb_emit_byte (mb, CEE_LDELEM_U1);
+ 			sg_emit_bool_elem_to_native (mb, esize);
+ 		}
++#ifndef SG_MUTANT_NO_STRUCT_ARRAYS_TO_MANAGED
++		else if (m_class_is_valuetype (eklass) && !m_class_is_enumtype (eklass)) {
++			/* Stained Glass OS (mono-0029): and back to the caller's native structs */
++			mono_mb_emit_ldloc (mb, conv_arg);
++			mono_mb_emit_ldloc (mb, index_var);
++			mono_mb_emit_op (mb, CEE_LDELEMA, eklass);
++			mono_mb_emit_stloc (mb, 0);
++			mono_mb_emit_ldloc (mb, dest_ptr);
++			mono_mb_emit_stloc (mb, 1);
++			emit_struct_conv_full (mb, eklass, FALSE, 0, (MonoMarshalNative)-1);
++		}
++#endif
+ 		else {
+ 			char *msg = g_strdup ("Marshalling of non-string and non-blittable arrays to managed code is not implemented.");
+ 			mono_mb_emit_exception_marshal_directive (mb, msg);

@@ -81,6 +81,11 @@
 #     Internet Settings key (mono-0022); Marshal.CreateAggregatedObject
 #     aggregates a managed object into a native COM object (Visual Studio's
 #     DTE.Solution threw NotImplementedException; mono-0023);
+#   - (sg32) arrays into a managed COM method: an unsized LPArray is one
+#     element, non-blittable struct arrays are converted both ways; a VT_RECORD
+#     VARIANT becomes its managed value type or System.Guid (Visual Studio's
+#     IVsFontAndColorDefaults.GetItem, IVsGuidParserPrivate.TryParseGuid;
+#     mono-0029);
 #   - (sg31) a SAFEARRAY from native code into a managed System.Array
 #     parameter: an array of its SafeArrayUserDefinedSubType (Visual Studio's
 #     IVCTask[]; the type name read from the marshal blob, also when it is
@@ -1923,4 +1928,112 @@ l() { printf '%s\n' "$out" | grep "^$1 " | head -1; }
     && [ "$(l vt12)" = "vt12 hr=0x0 System.Object[]:2:nullelem" ] \
     && pass "an undeclared SAFEARRAY of VT_I4/VT_I8/VT_VARIANT comes as int[]/long[]/object[]" \
     || fail "undeclared SAFEARRAY of values: '$(l vt3)' '$(l vt20)' '$(l vt12)'"
+# (sg32) arrays and records into a managed COM method (mono-0029): an LPArray with no size is one
+# element (VS's IVsFontAndColorDefaults.GetItem(int, AllColorableItemInfo[] pInfo): Mono gave an
+# empty array), arrays of structs with BSTRs are converted in and out (Mono threw
+# MarshalDirectiveException 0x80131535), and a VT_RECORD VARIANT becomes the struct whose [Guid] is
+# the record's, or System.Guid for a GUID record (IVsGuidParserPrivate.TryParseGuid: Mono threw
+# NotImplementedException 0x80004001).
+cat > "$C/sg32.cs" <<'CS'
+// sg32 probe (mono-0029): arrays of structs with strings into a managed COM method (CCW), and an
+// LPArray with no size taken as one element, as the CLR does (Visual Studio's
+// IVsFontAndColorDefaults.GetItem(int, AllColorableItemInfo[] pInfo)).
+using System; using System.Runtime.InteropServices;
+[StructLayout(LayoutKind.Sequential)]
+public struct Info { public int A; [MarshalAs(UnmanagedType.BStr)] public string Name; public uint C; }
+[ComVisible(true), Guid("6b1d9a40-2f7e-4c55-9a51-3e0f7c2a9b31"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IDefaults {
+  [PreserveSig] int GetItem(int i, [Out, MarshalAs(UnmanagedType.LPArray)] Info[] p);
+  [PreserveSig] int PutItems(int n, [In, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 0)] Info[] p);
+}
+[ComVisible(true), ClassInterface(ClassInterfaceType.None)]
+public class Defaults : IDefaults {
+  public static string seen = "none";
+  public int GetItem(int i, Info[] p) { seen = "len" + p.Length; p[0].A = 7; p[0].Name = "seven" + i; p[0].C = 9; return 0; }
+  public int PutItems(int n, Info[] p) { seen = p.Length + ":" + p[0].A + ":" + p[0].Name + ":" + p[1].Name + ":" + p[1].C; return 0; }
+}
+class P {
+  delegate int ItemFn(IntPtr self, int i, IntPtr p);
+  static void Main() {
+    IntPtr itf = Marshal.GetComInterfaceForObject(new Defaults(), typeof(IDefaults));
+    IntPtr vt = Marshal.ReadIntPtr(itf);
+    var get = (ItemFn)Marshal.GetDelegateForFunctionPointer(Marshal.ReadIntPtr(vt, 3 * IntPtr.Size), typeof(ItemFn));
+    var put = (ItemFn)Marshal.GetDelegateForFunctionPointer(Marshal.ReadIntPtr(vt, 4 * IntPtr.Size), typeof(ItemFn));
+    int size = Marshal.SizeOf(typeof(Info));
+    IntPtr buf = Marshal.AllocCoTaskMem(size * 2);
+    for (int k = 0; k < size * 2; k++) Marshal.WriteByte(buf, k, 0);
+    int hr = get(itf, 3, buf);
+    var back = (Info)Marshal.PtrToStructure(buf, typeof(Info));
+    Console.WriteLine("get=0x" + hr.ToString("x") + ":" + Defaults.seen + ":" + back.A + ":" + back.Name + ":" + back.C);
+    var two = new[] { new Info { A = 5, Name = "five", C = 1 }, new Info { A = 6, Name = "six", C = 2 } };
+    for (int k = 0; k < 2; k++) Marshal.StructureToPtr(two[k], buf + k * size, false);
+    hr = put(itf, 2, buf);
+    Console.WriteLine("put=0x" + hr.ToString("x") + ":" + Defaults.seen);
+  }
+}
+CS
+cat > "$C/sg32rec.cs" <<'CS'
+// VT_RECORD VARIANTs into a managed COM method (mono-0029): a record whose GUID is a managed
+// struct's [Guid] becomes that struct; oleaut32's GUID record becomes System.Guid.
+using System; using System.Runtime.InteropServices;
+[StructLayout(LayoutKind.Sequential), Guid("6b1d9a40-2f7e-4c55-9a51-3e0f7c2a9b41")]
+public struct Pt { public int X; public int Y; }
+[ComVisible(true), Guid("6b1d9a40-2f7e-4c55-9a51-3e0f7c2a9b42"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IParse { [PreserveSig] int Take([MarshalAs(UnmanagedType.Struct)] object v); }
+[ComVisible(true), ClassInterface(ClassInterfaceType.None)]
+public class Parse : IParse { public static string seen = "none"; public int Take(object v) { seen = v == null ? "null" : v.GetType().Name + ":" + (v is Pt ? ((Pt)v).X + "," + ((Pt)v).Y : v.ToString()); return 0; } }
+class P {
+  delegate int TakeFn(IntPtr self, IntPtr vt_lo, IntPtr data, IntPtr recinfo);  // VARIANT by value: 24 bytes passed by reference on x64
+  delegate int TakeRef(IntPtr self, IntPtr variant);
+  delegate int QIFn(IntPtr self, ref Guid iid, out IntPtr ppv);
+  delegate int RefFn(IntPtr self);
+  delegate int GuidFn(IntPtr self, out Guid g);
+  delegate int NameFn(IntPtr self, out IntPtr name);
+  delegate int SizeFn(IntPtr self, out uint size);
+  delegate int Dummy(IntPtr self);
+  static Delegate[] keep = new Delegate[0];
+  static IntPtr FakeRecInfo(Guid g, string name, uint size) {
+    QIFn qi = (IntPtr s, ref Guid iid, out IntPtr ppv) => { ppv = s; return 0; };
+    RefFn ar = s => 2, rel = s => 1; Dummy d = s => unchecked((int)0x80004001);
+    GuidFn gg = (IntPtr s, out Guid o) => { o = g; return 0; };
+    NameFn gn = (IntPtr s, out IntPtr n) => { n = Marshal.StringToBSTR(name); return 0; };
+    SizeFn gs = (IntPtr s, out uint z) => { z = size; return 0; };
+    var slots = new Delegate[] { qi, ar, rel, d, d, d, gg, gn, gs, d, d, d, d, d, d, d, d, d, d };
+    var all = new Delegate[keep.Length + slots.Length]; keep.CopyTo(all, 0); slots.CopyTo(all, keep.Length); keep = all;
+    IntPtr vt = Marshal.AllocHGlobal(IntPtr.Size * slots.Length);
+    for (int i = 0; i < slots.Length; i++) Marshal.WriteIntPtr(vt, i * IntPtr.Size, Marshal.GetFunctionPointerForDelegate(slots[i]));
+    IntPtr obj = Marshal.AllocHGlobal(IntPtr.Size); Marshal.WriteIntPtr(obj, vt); return obj;
+  }
+  static void Main() {
+    IntPtr itf = Marshal.GetComInterfaceForObject(new Parse(), typeof(IParse));
+    var take = (TakeRef)Marshal.GetDelegateForFunctionPointer(Marshal.ReadIntPtr(Marshal.ReadIntPtr(itf), 3 * IntPtr.Size), typeof(TakeRef));
+    IntPtr v = Marshal.AllocHGlobal(24);
+    // a Pt record
+    IntPtr data = Marshal.AllocHGlobal(8); Marshal.WriteInt32(data, 0, 3); Marshal.WriteInt32(data, 4, 4);
+    Marshal.WriteInt64(v, 0, 0); Marshal.WriteInt16(v, 0, 36); Marshal.WriteIntPtr(v, 8, data);
+    Marshal.WriteIntPtr(v, 8 + IntPtr.Size, FakeRecInfo(typeof(Pt).GUID, "Pt", 8));
+    int hr = take(itf, v);
+    Console.WriteLine("recpt=0x" + hr.ToString("x") + ":" + Parse.seen);
+    // oleaut32's GUID record
+    var g = new Guid("11112222-3333-4444-5555-666677778888");
+    IntPtr gd = Marshal.AllocHGlobal(16); Marshal.Copy(g.ToByteArray(), 0, gd, 16);
+    Marshal.WriteInt64(v, 0, 0); Marshal.WriteInt16(v, 0, 36); Marshal.WriteIntPtr(v, 8, gd);
+    Marshal.WriteIntPtr(v, 8 + IntPtr.Size, FakeRecInfo(new Guid("00000000-0000-0000-0000-00000000aaaa"), "GUID", 16));
+    Parse.seen = "none"; hr = take(itf, v);
+    Console.WriteLine("recguid=0x" + hr.ToString("x") + ":" + Parse.seen);
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg32.exe sg32.cs >"$T/mcs32.out" 2>&1; timeout 300 "$WINE" "$mcs" -out:sg32rec.exe sg32rec.cs >>"$T/mcs32.out" 2>&1)
+[ -f "$C/sg32.exe" ] && [ -f "$C/sg32rec.exe" ] || { fail "the sg32 probes did not compile: $(cat "$T/mcs32.out")"; exit 1; }
+out=$(cd "$C" && timeout -s KILL 60 "$WINE" sg32.exe 2>&1 | tr -d '\r'; cd "$C" && timeout -s KILL 60 "$WINE" sg32rec.exe 2>&1 | tr -d '\r')
+[ "$(v get)" = "0x0:len1:7:seven3:9" ] \
+    && pass "an unsized [Out] struct array into a managed method is one element and its BSTR comes back (VS's GetItem)" \
+    || fail "unsized struct array: '$(v get)' (sg31: 0x80131535:len0)"
+[ "$(v put)" = "0x0:2:5:five:six:2" ] \
+    && pass "a sized [In] array of structs with BSTRs reaches the managed method" \
+    || fail "struct array in: '$(v put)' (sg31: 0x80131535)"
+[ "$(v recpt)" = "0x0:Pt:3,4" ] && [ "$(v recguid)" = "0x0:Guid:11112222-3333-4444-5555-666677778888" ] \
+    && pass "a VT_RECORD VARIANT becomes its [Guid] struct, a GUID record a System.Guid (VS's TryParseGuid)" \
+    || fail "VT_RECORD VARIANT: '$(v recpt)' '$(v recguid)' (sg31: 0x80004001)"
 exit $RC

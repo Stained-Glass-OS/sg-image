@@ -561,3 +561,22 @@ mono-0028-safearray-element-types-from-native.patch (sg31)
       length, and with no subtype of VT_UNKNOWN/VT_DISPATCH/VT_I4/VT_I8); sg30 gives Object[]
       and 0x80131533. Mutants SG_MUTANT_SAFEARRAY_UDT_IGNORED,
       SG_MUTANT_SYSTEM_ARRAY_SAFEARRAY_AS_VARIANT.
+
+mono-0029-struct-arrays-unsized-arrays-and-records-into-managed.patch (sg32)
+    mono/metadata/marshal-ilgen.c, native-to-managed (COM callable wrapper) arrays:
+    - an LPArray with neither SizeConst nor SizeParamIndex is one element, as the CLR takes it
+      (a pointer to one item); Mono made an empty array;
+    - an array of non-blittable structs (strings in them) is converted element by element, in
+      and out; Mono threw MarshalDirectiveException ("non-string and non-blittable arrays to
+      managed code is not implemented").
+    mcs/class/corlib System/Variant.cs: a VARIANT holding a record (VT_RECORD) becomes the
+      managed value type whose [Guid] is the record's (IRecordInfo.GetGuid), or System.Guid
+      for oleaut32's GUID record; Mono threw NotImplementedException.
+    Why: Visual Studio's IVsFontAndColorDefaults.GetItem(int, AllColorableItemInfo[] pInfo)
+      (430 failures while VS opened a new C++ project) and IVsGuidParserPrivate.TryParseGuid
+      with a GUID record.
+    From gaps3b. Gate: test/mono-fork-test.sh (sg32 section: a wrapper filling one unsized
+      struct with a BSTR and reading two sized ones; VT_RECORD of a [Guid] struct and of a GUID
+      record through a fake IRecordInfo); sg31 0x80131535 / 0x80004001. Mutants
+      SG_MUTANT_UNSIZED_ARRAY_EMPTY, SG_MUTANT_NO_STRUCT_ARRAYS_TO_MANAGED,
+      SG_MUTANT_VARIANT_RECORD_NOT_IMPLEMENTED.
