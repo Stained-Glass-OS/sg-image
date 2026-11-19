@@ -498,3 +498,23 @@ mono-0025-safearrays-by-reference-into-managed-com-methods.patch (sg28)
     From gaps3. Gate: test/mono-fork-test.sh (sg28 section: the managed object's wrapper
       called through its vtable with SAFEARRAY**: in, [In], ref, NULL); sg27 0x80131535.
       Mutant SG_MUTANT_BYREF_SAFEARRAY_IN.
+
+mono-0026-bool-arrays-in-com-methods-as-variant-bool.patch (sg29)
+    mono/metadata/marshal-ilgen.c, LPArray marshaling of bool[] (both directions, managed to
+      native and native to managed): each element is sized and converted by ArraySubType --
+      I1/U1 one byte, VariantBool two bytes with -1 for true, otherwise a four-byte BOOL --
+      where Mono always used a four-byte BOOL and ignored ArraySubType, and a native-to-
+      managed bool[] (a COM callable wrapper's method) threw MarshalDirectiveException
+      ("non-blittable arrays to managed code is not implemented"). mono/metadata/cominterop.c:
+      in COM interface methods (RCW and CCW wrappers) a bool[] with no ArraySubType is
+      VARIANT_BOOL, as in .NET; P/Invoke keeps BOOL.
+      Why: Visual Studio's MEF host asks IVsAppQueryLoad2.QueryLoadComponentAssemblies which
+      component assemblies may load ([Out] bool[] of VARIANT_BOOLs). Read as four-byte
+      BOOLs, only the first half of the 222 assemblies came back approved, so VS never
+      scanned the core editor's MEF parts (Microsoft.VisualStudio.Platform.VSEditor and
+      the rest): no ITextDocumentFactoryService, and the C++ wizards' Create failed with
+      "Exception of type 'System.Exception' was thrown".
+    From gaps3b. Gate: test/mono-fork-test.sh (sg29 section: a native object filling and
+      reading bool arrays through an RCW, and native code calling a managed object's
+      wrapper: default, I1 and Bool elements); sg28 gives 111000 for 101101 and the wrapper
+      0x80131535. Mutant SG_MUTANT_COM_BOOL_ARRAY_BOOL.

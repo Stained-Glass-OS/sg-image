@@ -1,0 +1,212 @@
+diff --git a/mono/metadata/cominterop.c b/mono/metadata/cominterop.c
+--- a/mono/metadata/cominterop.c
++++ b/mono/metadata/cominterop.c
+@@ -1070,6 +1070,8 @@
+ 
+ static MonoMarshalSpec*
+ cominterop_get_ccw_default_mspec (const MonoType *param_type);
++static void
++sg_com_bool_array_default (MonoType *t, MonoMarshalSpec *spec);
+ 
+ /**
+  * cominterop_get_native_wrapper_adjusted:
+@@ -1118,6 +1120,7 @@
+ 		if (mspecs[mspec_index] == NULL) {
+ 			mspecs[mspec_index] = cominterop_get_ccw_default_mspec (sig_native->params[i]);
+ 		}
++		sg_com_bool_array_default (sig_native->params[i], mspecs[mspec_index]);
+ 	}
+ 
+ 	if (method->iflags & METHOD_IMPL_ATTRIBUTE_PRESERVE_SIG) {
+@@ -2765,6 +2768,31 @@
+ 	return MONO_VARIANT_UNKNOWN;
+ }
+ 
++/*
++ * Stained Glass OS (mono-0026): in COM interface methods a bool array element with no
++ * ArraySubType is a VARIANT_BOOL (as in .NET); marshal-ilgen.c reads the element type from here.
++ * Built with -DSG_MUTANT_COM_BOOL_ARRAY_BOOL (gate mutant) it keeps the 4-byte BOOL.
++ */
++static void
++sg_com_bool_array_default (MonoType *t, MonoMarshalSpec *spec)
++{
++	if (!spec || spec->native != MONO_NATIVE_LPARRAY || t->type != MONO_TYPE_SZARRAY ||
++	    t->data.klass != mono_defaults.boolean_class)
++		return;
++	switch (spec->data.array_data.elem_type) {
++	case MONO_NATIVE_I1:
++	case MONO_NATIVE_U1:
++	case MONO_NATIVE_VARIANTBOOL:
++	case MONO_NATIVE_BOOLEAN:
++		return;
++	default:
++#ifndef SG_MUTANT_COM_BOOL_ARRAY_BOOL
++		spec->data.array_data.elem_type = MONO_NATIVE_VARIANTBOOL;
++#endif
++		break;
++	}
++}
++
+ static MonoMarshalSpec*
+ cominterop_get_ccw_default_mspec (const MonoType *param_type)
+ {
+@@ -2943,6 +2971,7 @@
+ 			    sig_adjusted->params[param_index]->type == MONO_TYPE_SZARRAY)
+ 				if (mspecs[mspec_index]->data.array_data.param_num != -1)
+ 					mspecs[mspec_index]->data.array_data.param_num++;
++			sg_com_bool_array_default (sig_adjusted->params[param_index], mspecs[mspec_index]);
+ 		}
+ 	}
+ 
+diff --git a/mono/metadata/marshal-ilgen.c b/mono/metadata/marshal-ilgen.c
+--- a/mono/metadata/marshal-ilgen.c
++++ b/mono/metadata/marshal-ilgen.c
+@@ -2450,6 +2450,55 @@
+ 	}
+ }
+ 
++/*
++ * Stained Glass OS (mono-0026): bool array elements. Mono marshalled every bool element of an
++ * LPArray as a 4-byte BOOL and ignored ArraySubType. .NET honours ArraySubType (I1/U1 = 1 byte,
++ * VariantBool = 2 bytes with -1 for true, Bool = 4 bytes) and, in COM interface methods, uses
++ * VARIANT_BOOL by default (cominterop.c sets that default in the spec). Visual Studio's
++ * IVsAppQueryLoad2.QueryLoadComponentAssemblies fills a VARIANT_BOOL array: read as 4-byte BOOLs
++ * only the first half of the component assemblies were approved, so the editor's MEF parts were
++ * never scanned.
++ */
++static int
++sg_bool_array_elem_size (MonoMarshalSpec *spec)
++{
++	if (spec && spec->native == MONO_NATIVE_LPARRAY) {
++		switch (spec->data.array_data.elem_type) {
++		case MONO_NATIVE_I1:
++		case MONO_NATIVE_U1:
++			return 1;
++		case MONO_NATIVE_VARIANTBOOL:
++			return 2;
++		default:
++			break;
++		}
++	}
++	return 4;
++}
++
++/* stack: native element address, managed bool (u1) -> stores the native value */
++static void
++sg_emit_bool_elem_to_native (MonoMethodBuilder *mb, int size)
++{
++	mono_mb_emit_byte (mb, CEE_LDC_I4_0);
++	mono_mb_emit_byte (mb, CEE_PREFIX1);
++	mono_mb_emit_byte (mb, CEE_CGT_UN);
++	if (size == 2)
++		mono_mb_emit_byte (mb, CEE_NEG);
++	mono_mb_emit_byte (mb, size == 1 ? CEE_STIND_I1 : size == 2 ? CEE_STIND_I2 : CEE_STIND_I4);
++}
++
++/* stack: managed array, index, native element address -> stores the managed bool */
++static void
++sg_emit_bool_elem_from_native (MonoMethodBuilder *mb, int size)
++{
++	mono_mb_emit_byte (mb, size == 1 ? CEE_LDIND_U1 : size == 2 ? CEE_LDIND_I2 : CEE_LDIND_I4);
++	mono_mb_emit_byte (mb, CEE_LDC_I4_0);
++	mono_mb_emit_byte (mb, CEE_PREFIX1);
++	mono_mb_emit_byte (mb, CEE_CGT_UN);
++	mono_mb_emit_byte (mb, CEE_STELEM_I1);
++}
++
+ static int
+ emit_marshal_array_ilgen (EmitMarshalContext *m, int argnum, MonoType *t,
+ 					MonoMarshalSpec *spec, 
+@@ -2522,6 +2571,8 @@
+ 				esize = TARGET_SIZEOF_VOID_P;
+ 			else if (eklass == mono_defaults.char_class) /*can't call mono_marshal_type_size since it causes all sorts of asserts*/
+ 				esize = mono_pinvoke_is_unicode (m->piinfo) ? 2 : 1;
++			else if (eklass == mono_defaults.boolean_class)
++				esize = sg_bool_array_elem_size (spec);
+ 			else
+ 				esize = mono_class_native_size (eklass, NULL);
+ 
+@@ -2563,6 +2614,12 @@
+ 				mono_mb_emit_byte (mb, CEE_LDELEM_REF);
+ 				mono_mb_emit_icall_id (mb, conv_to_icall (conv, &stind_op));
+ 				mono_mb_emit_byte (mb, stind_op);
++			} else if (eklass == mono_defaults.boolean_class) {
++				mono_mb_emit_ldloc (mb, dest_ptr);
++				mono_mb_emit_ldloc (mb, src_var);
++				mono_mb_emit_ldloc (mb, index_var);
++				mono_mb_emit_byte (mb, CEE_LDELEM_U1);
++				sg_emit_bool_elem_to_native (mb, esize);
+ 			} else {
+ 				/* set the src_ptr */
+ 				mono_mb_emit_ldloc (mb, src_var);
+@@ -2636,6 +2693,8 @@
+ 				esize = TARGET_SIZEOF_VOID_P;
+ 			else if (eklass == mono_defaults.char_class)
+ 				esize = mono_pinvoke_is_unicode (m->piinfo) ? 2 : 1;
++			else if (eklass == mono_defaults.boolean_class)
++				esize = sg_bool_array_elem_size (spec);
+ 			else
+ 				esize = mono_class_native_size (eklass, NULL);
+ 			src_ptr = mono_mb_add_local (mb, int_type);
+@@ -2731,6 +2790,16 @@
+ 						mono_mb_emit_icall (mb, mono_marshal_free);
+ 				}
+ 			}
++			else if (eklass == mono_defaults.boolean_class) {
++				if (need_convert) {
++					mono_mb_emit_ldarg (mb, argnum);
++					if (t->byref)
++						mono_mb_emit_byte (mb, CEE_LDIND_REF);
++					mono_mb_emit_ldloc (mb, index_var);
++					mono_mb_emit_ldloc (mb, src_ptr);
++					sg_emit_bool_elem_from_native (mb, esize);
++				}
++			}
+ 			else {
+ 				if (need_convert) {
+ 					/* set the src_ptr */
+@@ -2926,6 +2995,8 @@
+ 
+ 		if (is_string)
+ 			esize = TARGET_SIZEOF_VOID_P;
++		else if (eklass == mono_defaults.boolean_class)
++			esize = sg_bool_array_elem_size (spec);
+ 		else
+ 			esize = mono_class_native_size (eklass, NULL);
+ 		src_ptr = mono_mb_add_local (mb, int_type);
+@@ -2977,6 +3048,12 @@
+ 			mono_mb_emit_icall_id (mb, conv_to_icall (conv, NULL));
+ 			mono_mb_emit_byte (mb, CEE_STELEM_REF);
+ 		}
++		else if (eklass == mono_defaults.boolean_class) {
++			mono_mb_emit_ldloc (mb, conv_arg);
++			mono_mb_emit_ldloc (mb, index_var);
++			mono_mb_emit_ldloc (mb, src_ptr);
++			sg_emit_bool_elem_from_native (mb, esize);
++		}
+ 		else {
+ 			char *msg = g_strdup ("Marshalling of non-string and non-blittable arrays to managed code is not implemented.");
+ 			mono_mb_emit_exception_marshal_directive (mb, msg);
+@@ -3040,6 +3117,8 @@
+ 
+ 		if (is_string)
+ 			esize = TARGET_SIZEOF_VOID_P;
++		else if (eklass == mono_defaults.boolean_class)
++			esize = sg_bool_array_elem_size (spec);
+ 		else
+ 			esize = mono_class_native_size (eklass, NULL);
+ 
+@@ -3111,6 +3190,13 @@
+ 			mono_mb_emit_icall_id (mb, conv_to_icall (conv, &stind_op));
+ 			mono_mb_emit_byte (mb, stind_op);
+ 		}
++		else if (eklass == mono_defaults.boolean_class) {
++			mono_mb_emit_ldloc (mb, dest_ptr);
++			mono_mb_emit_ldloc (mb, conv_arg);
++			mono_mb_emit_ldloc (mb, index_var);
++			mono_mb_emit_byte (mb, CEE_LDELEM_U1);
++			sg_emit_bool_elem_to_native (mb, esize);
++		}
+ 		else {
+ 			char *msg = g_strdup ("Marshalling of non-string and non-blittable arrays to managed code is not implemented.");
+ 			mono_mb_emit_exception_marshal_directive (mb, msg);

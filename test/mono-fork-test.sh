@@ -81,6 +81,13 @@
 #     Internet Settings key (mono-0022); Marshal.CreateAggregatedObject
 #     aggregates a managed object into a native COM object (Visual Studio's
 #     DTE.Solution threw NotImplementedException; mono-0023);
+#   - (sg29) a bool[] in a COM interface method is an array of VARIANT_BOOLs
+#     (two bytes, -1 for true) unless its ArraySubType says otherwise (I1 one
+#     byte, Bool four), both from managed to native code and into a managed
+#     object's COM wrapper (Visual Studio's MEF host asked which component
+#     assemblies may load; read as four-byte BOOLs only the first half came
+#     back approved and the core editor's parts were never scanned;
+#     mono-0026);
 #   - (sg28) a SAFEARRAY a native caller passes by reference to a managed
 #     COM method (ref object[]) reaches it as an array, and a ref (in/out)
 #     one goes back to the caller as the array the method left (Visual
@@ -1628,4 +1635,115 @@ out=$(cd "$C" && timeout -s KILL 60 "$WINE" sg28.exe 2>&1 | tr -d '\r')
 printf '%s\n' "$out" | grep -q "^nullhr=0x00000000 nullseen=null/null nullcustom=3:back:7:three$" \
     && pass "a NULL SAFEARRAY by reference arrives as null and a ref one still comes back" \
     || fail "NULL by-reference SAFEARRAY: '$(printf '%s\n' "$out" | grep nullhr)'"
+# (sg29) bool[] in COM interface methods: VARIANT_BOOL elements by default, ArraySubType I1/Bool
+# honoured; a native object (vtable made here) filling/reading through an RCW, and native code
+# calling a managed object's wrapper. Mono used four-byte BOOLs always (sg28: 111000 for 101101)
+# and its wrappers threw MarshalDirectiveException 0x80131535: Visual Studio's MEF host approved
+# only half its component assemblies (IVsAppQueryLoad2.QueryLoadComponentAssemblies) and never
+# scanned the core editor's parts (mono-0026).
+cat > "$C/sg29.cs" <<'CS'
+// sg29 probe (mono-0026): bool[] as LPArray in COM interface methods. COM's default element is
+// VARIANT_BOOL (2 bytes, -1 = true); ArraySubType I1/Bool are 1/4 bytes. Both directions.
+using System; using System.Runtime.InteropServices; using System.Text;
+[ComImport, Guid("6b1d9a40-2f7e-4c55-9a51-3e0f7c2a9b11"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface INat {
+  [PreserveSig] int Fill(uint n, [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 0)] bool[] a);
+  [PreserveSig] int Read(uint n, [In, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 0)] bool[] a);
+  [PreserveSig] int FillI1(uint n, [Out, MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.I1, SizeParamIndex = 0)] bool[] a);
+  [PreserveSig] int FillBool(uint n, [Out, MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.Bool, SizeParamIndex = 0)] bool[] a);
+}
+[ComVisible(true), Guid("6b1d9a40-2f7e-4c55-9a51-3e0f7c2a9b12"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IMan {
+  [PreserveSig] int Fill(uint n, [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 0)] bool[] a);
+  [PreserveSig] int Read(uint n, [In, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 0)] bool[] a);
+  [PreserveSig] int FillI1(uint n, [Out, MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.I1, SizeParamIndex = 0)] bool[] a);
+  [PreserveSig] int FillBool(uint n, [Out, MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.Bool, SizeParamIndex = 0)] bool[] a);
+}
+[ComVisible(true), ClassInterface(ClassInterfaceType.None)]
+public class Man : IMan {
+  public static string seen = "none";
+  static void Pat(bool[] a) { for (int i = 0; i < a.Length; i++) a[i] = P.Pattern[i]; }
+  public int Fill(uint n, bool[] a) { Pat(a); return 0; }
+  public int Read(uint n, bool[] a) { seen = P.Bits(a); return 0; }
+  public int FillI1(uint n, bool[] a) { Pat(a); return 0; }
+  public int FillBool(uint n, bool[] a) { Pat(a); return 0; }
+}
+class P {
+  public static readonly bool[] Pattern = { true, false, true, true, false, true };
+  public static string Bits(bool[] a) { var s = new StringBuilder(); foreach (var b in a) s.Append(b ? '1' : '0'); return s.ToString(); }
+  delegate int QIFn(IntPtr self, ref Guid iid, out IntPtr ppv);
+  delegate int RefFn(IntPtr self);
+  delegate int ArrFn(IntPtr self, uint n, IntPtr arr);
+  static string natSeen = "none";
+  static void Put(IntPtr arr, int i, int size, bool v) {
+    if (size == 1) Marshal.WriteByte(arr, i, (byte)(v ? 1 : 0));
+    else if (size == 2) Marshal.WriteInt16(arr, i * 2, (short)(v ? -1 : 0));
+    else Marshal.WriteInt32(arr, i * 4, v ? 1 : 0);
+  }
+  static string Dump(IntPtr arr, int n, int size) {
+    var s = new StringBuilder();
+    for (int i = 0; i < n; i++) {
+      long v = size == 1 ? Marshal.ReadByte(arr, i) : size == 2 ? Marshal.ReadInt16(arr, i * 2) : Marshal.ReadInt32(arr, i * 4);
+      s.Append(i > 0 ? "," : "").Append(v);
+    }
+    return s.ToString();
+  }
+  static Delegate[] keep;
+  static IntPtr FakeNative() {
+    QIFn qi = (IntPtr self, ref Guid iid, out IntPtr ppv) => { ppv = self; return 0; };
+    RefFn ar = self => 2, rel = self => 1;
+    ArrFn fill = (self, n, arr) => { for (int i = 0; i < n; i++) Put(arr, i, 2, Pattern[i]); return 0; };
+    ArrFn read = (self, n, arr) => { natSeen = Dump(arr, (int)n, 2); return 0; };
+    ArrFn fill1 = (self, n, arr) => { for (int i = 0; i < n; i++) Put(arr, i, 1, Pattern[i]); return 0; };
+    ArrFn fill4 = (self, n, arr) => { for (int i = 0; i < n; i++) Put(arr, i, 4, Pattern[i]); return 0; };
+    keep = new Delegate[] { qi, ar, rel, fill, read, fill1, fill4 };
+    IntPtr vt = Marshal.AllocHGlobal(IntPtr.Size * keep.Length);
+    for (int i = 0; i < keep.Length; i++) Marshal.WriteIntPtr(vt, i * IntPtr.Size, Marshal.GetFunctionPointerForDelegate(keep[i]));
+    IntPtr obj = Marshal.AllocHGlobal(IntPtr.Size);
+    Marshal.WriteIntPtr(obj, vt);
+    return obj;
+  }
+  static void Main() {
+    // managed -> native (RCW)
+    try {
+      var nat = (INat)Marshal.GetObjectForIUnknown(FakeNative());
+      var a = new bool[6]; int hr = nat.Fill(6, a); Console.WriteLine("rcw fill hr=" + hr + " got=" + Bits(a));
+      hr = nat.Read(6, (bool[])Pattern.Clone()); Console.WriteLine("rcw read hr=" + hr + " native=" + natSeen);
+      a = new bool[6]; hr = nat.FillI1(6, a); Console.WriteLine("rcw filli1 hr=" + hr + " got=" + Bits(a));
+      a = new bool[6]; hr = nat.FillBool(6, a); Console.WriteLine("rcw fillbool hr=" + hr + " got=" + Bits(a));
+    } catch (Exception e) { Console.WriteLine("rcw EXC " + e.GetType().Name + ": " + e.Message); }
+    // native -> managed (CCW)
+    try {
+      IntPtr itf = Marshal.GetComInterfaceForObject(new Man(), typeof(IMan));
+      IntPtr vt = Marshal.ReadIntPtr(itf);
+      Func<int, ArrFn> slot = k => (ArrFn)Marshal.GetDelegateForFunctionPointer(Marshal.ReadIntPtr(vt, k * IntPtr.Size), typeof(ArrFn));
+      IntPtr buf = Marshal.AllocHGlobal(64);
+      for (int i = 0; i < 64; i++) Marshal.WriteByte(buf, i, 0x55);
+      int hr = slot(3)(itf, 6, buf); Console.WriteLine("ccw fill hr=0x" + hr.ToString("x") + " native=" + Dump(buf, 6, 2));
+      for (int i = 0; i < 6; i++) Put(buf, i, 2, Pattern[i]);
+      hr = slot(4)(itf, 6, buf); Console.WriteLine("ccw read hr=0x" + hr.ToString("x") + " got=" + Man.seen);
+      for (int i = 0; i < 64; i++) Marshal.WriteByte(buf, i, 0x55);
+      hr = slot(5)(itf, 6, buf); Console.WriteLine("ccw filli1 hr=0x" + hr.ToString("x") + " native=" + Dump(buf, 6, 1));
+      for (int i = 0; i < 64; i++) Marshal.WriteByte(buf, i, 0x55);
+      hr = slot(6)(itf, 6, buf); Console.WriteLine("ccw fillbool hr=0x" + hr.ToString("x") + " native=" + Dump(buf, 6, 4));
+    } catch (Exception e) { Console.WriteLine("ccw EXC " + e.GetType().Name + ": " + e.Message); }
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg29.exe sg29.cs >"$T/mcs29.out" 2>&1)
+[ -f "$C/sg29.exe" ] || { fail "the sg29 probe did not compile: $(cat "$T/mcs29.out")"; exit 1; }
+out=$(cd "$C" && timeout -s KILL 60 "$WINE" sg29.exe 2>&1 | tr -d '\r')
+l() { printf '%s\n' "$out" | grep "^$1 " | head -1; }
+[ "$(l 'rcw fill')" = "rcw fill hr=0 got=101101" ] && [ "$(l 'rcw read')" = "rcw read hr=0 native=-1,0,-1,-1,0,-1" ] \
+    && pass "a native COM method's bool[] is VARIANT_BOOLs both ways (Visual Studio's QueryLoadComponentAssemblies)" \
+    || fail "bool[] through an RCW: '$(l 'rcw fill')' '$(l 'rcw read')' (sg28: got=111000, native=1,0,0,0,1,0)"
+[ "$(l 'rcw filli1')" = "rcw filli1 hr=0 got=101101" ] && [ "$(l 'rcw fillbool')" = "rcw fillbool hr=0 got=101101" ] \
+    && pass "ArraySubType I1 and Bool bool[] elements are one and four bytes" \
+    || fail "bool[] ArraySubType: '$(l 'rcw filli1')' '$(l 'rcw fillbool')'"
+[ "$(l 'ccw fill')" = "ccw fill hr=0x0 native=-1,0,-1,-1,0,-1" ] && [ "$(l 'ccw read')" = "ccw read hr=0x0 got=101101" ] \
+    && pass "native code calling a managed COM method with a bool[] gets and gives VARIANT_BOOLs" \
+    || fail "bool[] into a managed object's wrapper: '$(l 'ccw fill')' '$(l 'ccw read')' (sg28: hr=0x80131535)"
+[ "$(l 'ccw filli1')" = "ccw filli1 hr=0x0 native=1,0,1,1,0,1" ] && [ "$(l 'ccw fillbool')" = "ccw fillbool hr=0x0 native=1,0,1,1,0,1" ] \
+    && pass "into a managed wrapper, I1 and Bool bool[] elements are one and four bytes" \
+    || fail "bool[] ArraySubType into a wrapper: '$(l 'ccw filli1')' '$(l 'ccw fillbool')'"
 exit $RC
