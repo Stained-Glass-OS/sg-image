@@ -1,0 +1,139 @@
+diff --git a/mcs/class/corlib/System.Reflection.Emit/AssemblyBuilder.cs b/mcs/class/corlib/System.Reflection.Emit/AssemblyBuilder.cs
+--- a/mcs/class/corlib/System.Reflection.Emit/AssemblyBuilder.cs
++++ b/mcs/class/corlib/System.Reflection.Emit/AssemblyBuilder.cs
+@@ -1020,6 +1020,29 @@
+ 				UpdateNativeCustomAttributes (this);
+ 		}
+ 
++		/* Stained Glass OS (mono-0027): does this assembly carry
++		 * [IgnoresAccessChecksTo("<a's name>")] (a type the program defines itself)? */
++		internal bool IgnoresAccessChecksTo (Assembly a)
++		{
++			if (cattrs == null || a == null)
++				return false;
++			string name = a.GetName ().Name;
++			foreach (CustomAttributeBuilder cb in cattrs) {
++				if (cb.Ctor == null || cb.Ctor.DeclaringType == null ||
++				    cb.Ctor.DeclaringType.FullName != "System.Runtime.CompilerServices.IgnoresAccessChecksToAttribute")
++					continue;
++				string arg;
++				try {
++					arg = cb.string_arg ();
++				} catch {
++					continue;
++				}
++				if (arg != null && String.Equals (arg, name, StringComparison.OrdinalIgnoreCase))
++					return true;
++			}
++			return false;
++		}
++
+ 		[ComVisible (true)]
+ 		public void SetCustomAttribute ( ConstructorInfo con, byte[] binaryAttribute) {
+ 			if (con == null)
+diff --git a/mcs/class/corlib/System.Reflection.Emit/TypeBuilder.cs b/mcs/class/corlib/System.Reflection.Emit/TypeBuilder.cs
+--- a/mcs/class/corlib/System.Reflection.Emit/TypeBuilder.cs
++++ b/mcs/class/corlib/System.Reflection.Emit/TypeBuilder.cs
+@@ -827,7 +827,14 @@
+ 				throw new TypeLoadException ("Could not load type '" + FullName + "' from assembly '" + Assembly + "' because it is an enum with methods.");
+ 			if (interfaces != null) {
+ 				foreach (var iface in interfaces) {
+-					if (iface.IsNestedPrivate && iface.Assembly != Assembly)
++					if (iface.IsNestedPrivate && iface.Assembly != Assembly
++#if !SG_MUTANT_IACT_PRIVATE_INTERFACE
++					    /* Stained Glass OS (mono-0027): [IgnoresAccessChecksTo] on the dynamic
++					     * assembly lets it implement the named assembly's private interfaces, as
++					     * on .NET Framework (vs-mef's metadata view proxies) */
++					    && !pmodule.assemblyb.IgnoresAccessChecksTo (iface.Assembly)
++#endif
++					    )
+ 						throw new TypeLoadException ("Could not load type '" + FullName + "' from assembly '" + Assembly + "' because it is implements the inaccessible interface '" + iface.FullName + "'.");
+ 				}
+ 			}
+diff --git a/mcs/class/corlib/System/Variant.cs b/mcs/class/corlib/System/Variant.cs
+--- a/mcs/class/corlib/System/Variant.cs
++++ b/mcs/class/corlib/System/Variant.cs
+@@ -346,6 +346,29 @@
+ #if !FEATURE_COMINTEROP
+ 				throw new NotImplementedException(string.Format("Variant couldn't handle object of type {0}", obj.GetType()));
+ #else
++#if !SG_MUTANT_VARIANT_DISPATCH_BY_EXCEPTION
++				/* Stained Glass OS (mono-0027): VT_DISPATCH when the object answers IDispatch, else
++				 * VT_UNKNOWN, found by QueryInterface rather than by catching GetIDispatchForObject's
++				 * InvalidCastException: Visual Studio passes objects that have no IDispatch through
++				 * VARIANTs constantly (1.4 million exceptions in five minutes on its UI thread). */
++				try 
++				{
++					IntPtr unk = Marshal.GetIUnknownForObject(obj);
++					IntPtr disp;
++					Guid iid_dispatch = new Guid("00020400-0000-0000-C000-000000000046");
++					if (Marshal.QueryInterface(unk, ref iid_dispatch, out disp) == 0 && disp != IntPtr.Zero)
++					{
++						Marshal.Release(unk);
++						vt = (short)VarEnum.VT_DISPATCH;
++						pdispVal = disp;
++					}
++					else
++					{
++						vt = (short)VarEnum.VT_UNKNOWN;
++						pdispVal = unk;
++					}
++				}
++#else
+ 				try 
+ 				{
+ 					pdispVal = Marshal.GetIDispatchForObject(obj);
+@@ -358,6 +381,7 @@
+ 					vt = (short)VarEnum.VT_UNKNOWN;
+ 					pdispVal = Marshal.GetIUnknownForObject(obj);
+ 				}
++#endif
+ 				catch (Exception ex)
+ 				{
+ 					throw new NotImplementedException(string.Format("Variant couldn't handle object of type {0}", obj.GetType()), ex);
+diff --git a/mono/metadata/cominterop.c b/mono/metadata/cominterop.c
+--- a/mono/metadata/cominterop.c
++++ b/mono/metadata/cominterop.c
+@@ -2680,6 +2680,22 @@
+ 
+ 	object = cominterop_get_ccw_object (ccw_entry, FALSE);
+ 
++#ifndef SG_MUTANT_CCW_DEAD_OBJECT_CRASHES
++	/* Stained Glass OS (mono-0027): a native caller using a wrapper whose object is gone
++	 * (released to no reference, then collected) gets an error HRESULT from the wrapper (its
++	 * managed call throws on the null object and the wrapper's catch turns that into the
++	 * HRESULT) instead of Mono reading through NULL here. Visual Studio crashed in
++	 * IVsTask.get_IsCanceled now and then. */
++	if (!object) {
++		static gboolean warned;
++		if (!warned) {
++			warned = TRUE;
++			g_warning ("COM callable wrapper called after its object was collected");
++		}
++		return;
++	}
++#endif
++
+ 	if (mono_object_class (object) == mono_defaults.appdomain_class)
+ 		obj_domain = cominterop_get_domain_for_appdomain ((MonoAppDomain *)object);
+ 	else
+diff --git a/mono/metadata/marshal-ilgen.c b/mono/metadata/marshal-ilgen.c
+--- a/mono/metadata/marshal-ilgen.c
++++ b/mono/metadata/marshal-ilgen.c
+@@ -6731,7 +6731,16 @@
+ 				mono_emit_marshal (m, i, invoke_sig->params [i], mspecs [i + 1], tmp_locals [i], NULL, MARSHAL_ACTION_MANAGED_CONV_OUT);
+ 				break;
+ 			default:
++#ifdef SG_MUTANT_OUT_BYVAL_PRIMITIVE_ASSERTS
+ 				g_assert_not_reached ();
++#else
++				/* Stained Glass OS (mono-0027): [Out] (or [In, Out]) on a by-value
++				 * primitive, an IntPtr, a string: nothing to copy back, as in .NET.
++				 * Mono aborted building the wrapper (Visual Studio's
++				 * IVCManagedInterop: [In, Out] IntPtr rgText; the C++ project system
++				 * quit VS when it made that object's COM wrapper). */
++				break;
++#endif
+ 			}
+ 		}
+ 	}

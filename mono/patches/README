@@ -518,3 +518,27 @@ mono-0026-bool-arrays-in-com-methods-as-variant-bool.patch (sg29)
       reading bool arrays through an RCW, and native code calling a managed object's
       wrapper: default, I1 and Bool elements); sg28 gives 111000 for 101101 and the wrapper
       0x80131535. Mutant SG_MUTANT_COM_BOOL_ARRAY_BOOL.
+
+mono-0027-vs-cpp-project-system-loads.patch (sg30)
+    Four fixes that Visual Studio 2022's C++ project system needed to load and create a project:
+    - mcs/class/corlib System.Reflection.Emit TypeBuilder/AssemblyBuilder: a dynamic assembly
+      carrying [IgnoresAccessChecksTo("Name")] may implement assembly Name's private nested
+      interfaces, as on .NET Framework. vs-mef's metadata view proxies do that
+      (ProjectMultiThreadedService+IJoinableTaskContextProviderMetadataView); TypeBuilder threw
+      TypeLoadException "implements the inaccessible interface", so CPS's IProjectService had no
+      export and the Visual C++ Project System package failed (SetSite 0x80131522).
+    - mono/metadata/marshal-ilgen.c, native-to-managed wrappers: [Out] on a by-value primitive,
+      IntPtr or string copies nothing back, as in .NET; Mono aborted building the wrapper
+      ("should not be reached") -- IVCManagedInterop has [In, Out] IntPtr rgText, and VS quit
+      when it made that object's COM wrapper.
+    - mono/metadata/cominterop.c cominterop_set_ccw_domain: a native caller using a wrapper
+      whose object was collected gets an error HRESULT (warning once) instead of Mono reading
+      through NULL (VS crashed in IVsTask.get_IsCanceled now and then).
+    - mcs/class/corlib System/Variant.cs: an object goes into a VARIANT as VT_DISPATCH when it
+      answers QueryInterface(IDispatch), else VT_UNKNOWN, without throwing and catching
+      InvalidCastException each time (1.4 million on VS's UI thread in five minutes).
+    From gaps3b. Gate: test/mono-fork-test.sh (sg30 section: emitted proxy of a private
+      interface with and without the attribute; a wrapper with [In, Out] IntPtr; VARIANT types;
+      a collected object's wrapper called). sg29: TypeLoadException, then Mono aborts.
+      Mutants SG_MUTANT_IACT_PRIVATE_INTERFACE, SG_MUTANT_OUT_BYVAL_PRIMITIVE_ASSERTS,
+      SG_MUTANT_CCW_DEAD_OBJECT_CRASHES, SG_MUTANT_VARIANT_DISPATCH_BY_EXCEPTION.

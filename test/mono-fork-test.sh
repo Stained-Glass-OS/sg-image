@@ -81,6 +81,12 @@
 #     Internet Settings key (mono-0022); Marshal.CreateAggregatedObject
 #     aggregates a managed object into a native COM object (Visual Studio's
 #     DTE.Solution threw NotImplementedException; mono-0023);
+#   - (sg30) Visual Studio's C++ project system: an emitted type in a dynamic
+#     assembly carrying [IgnoresAccessChecksTo] implements another assembly's
+#     private nested interface (vs-mef metadata view proxies); [In, Out] on a
+#     by-value IntPtr of a managed COM method does not abort Mono; a VARIANT
+#     takes VT_UNKNOWN/VT_DISPATCH by QueryInterface; a collected object's
+#     wrapper called from native code fails with an HRESULT (mono-0027);
 #   - (sg29) a bool[] in a COM interface method is an array of VARIANT_BOOLs
 #     (two bytes, -1 for true) unless its ArraySubType says otherwise (I1 one
 #     byte, Bool four), both from managed to native code and into a managed
@@ -1746,4 +1752,109 @@ l() { printf '%s\n' "$out" | grep "^$1 " | head -1; }
 [ "$(l 'ccw filli1')" = "ccw filli1 hr=0x0 native=1,0,1,1,0,1" ] && [ "$(l 'ccw fillbool')" = "ccw fillbool hr=0x0 native=1,0,1,1,0,1" ] \
     && pass "into a managed wrapper, I1 and Bool bool[] elements are one and four bytes" \
     || fail "bool[] ArraySubType into a wrapper: '$(l 'ccw filli1')' '$(l 'ccw fillbool')'"
+# (sg30) Visual Studio's C++ project system (mono-0027): a proxy type emitted into a dynamic
+# assembly with [IgnoresAccessChecksTo("sg30")] implements sg30's private nested interface (vs-mef
+# metadata views; TypeLoadException made CPS's IProjectService missing); without the attribute it
+# still fails; a managed COM method with [In, Out] IntPtr gets a wrapper (Mono aborted: "should
+# not be reached"); VARIANTs take VT_UNKNOWN (13) / VT_DISPATCH (9); a wrapper whose object was
+# released and collected answers native code with an error HRESULT (Mono crashed reading NULL).
+cat > "$C/sg30.cs" <<'CS'
+// sg30 probe (mono-0027): a dynamic assembly carrying [IgnoresAccessChecksTo("sg30")] implements
+// sg30's private nested interface (vs-mef's metadata view proxies); without it, TypeLoadException.
+using System; using System.Reflection; using System.Reflection.Emit;
+namespace System.Runtime.CompilerServices {
+  [AttributeUsage(AttributeTargets.Assembly, AllowMultiple = true)]
+  public class IgnoresAccessChecksToAttribute : Attribute {
+    public IgnoresAccessChecksToAttribute(string assemblyName) { AssemblyName = assemblyName; }
+    public string AssemblyName { get; private set; }
+  }
+}
+[System.Runtime.InteropServices.ComVisible(true), System.Runtime.InteropServices.Guid("6b1d9a40-2f7e-4c55-9a51-3e0f7c2a9b13"),
+ System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
+public interface IOutPtr { [System.Runtime.InteropServices.PreserveSig] int Put([System.Runtime.InteropServices.In, System.Runtime.InteropServices.Out] IntPtr text, int n); }
+[System.Runtime.InteropServices.ComVisible(true), System.Runtime.InteropServices.ClassInterface(System.Runtime.InteropServices.ClassInterfaceType.None)]
+public class OutPtr : IOutPtr { public int Put(IntPtr text, int n) { System.Runtime.InteropServices.Marshal.WriteInt32(text, n * 2); return 7; } }
+class Hidden { }  // not public: no IDispatch
+[System.Runtime.InteropServices.ComVisible(true), System.Runtime.InteropServices.ClassInterface(System.Runtime.InteropServices.ClassInterfaceType.AutoDispatch)]
+public class Disp { }
+public class Outer {
+  private interface IView { int Value { get; } }
+  public static Type ViewType { get { return typeof(IView); } }
+  public static int Read(object o) { return ((IView)o).Value; }
+}
+class P {
+  [System.Runtime.InteropServices.DllImport("oleaut32.dll")] static extern int VariantClear(IntPtr v);
+  delegate int PutFn(IntPtr self, IntPtr text, int n);
+  static string Make(bool iact, string tag) {
+    try {
+      var ab = AppDomain.CurrentDomain.DefineDynamicAssembly(new AssemblyName("SgProxies" + tag), AssemblyBuilderAccess.Run);
+      if (iact)
+        ab.SetCustomAttribute(new CustomAttributeBuilder(typeof(System.Runtime.CompilerServices.IgnoresAccessChecksToAttribute).GetConstructor(new[] { typeof(string) }), new object[] { "sg30" }));
+      var mb = ab.DefineDynamicModule("m");
+      var tb = mb.DefineType("Proxy" + tag, TypeAttributes.Public | TypeAttributes.Class, typeof(object), new[] { Outer.ViewType });
+      var get = tb.DefineMethod("get_Value", MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.HideBySig | MethodAttributes.SpecialName | MethodAttributes.NewSlot | MethodAttributes.Final, typeof(int), Type.EmptyTypes);
+      var il = get.GetILGenerator(); il.Emit(OpCodes.Ldc_I4, 42); il.Emit(OpCodes.Ret);
+      tb.DefineMethodOverride(get, Outer.ViewType.GetProperty("Value").GetGetMethod(true));
+      var t = tb.CreateType();
+      return "ok:" + Outer.Read(Activator.CreateInstance(t));
+    } catch (Exception e) { return e.GetType().Name; }
+  }
+  [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+  static IntPtr MakeDead() {
+    IntPtr p = System.Runtime.InteropServices.Marshal.GetComInterfaceForObject(new OutPtr(), typeof(IOutPtr));
+    System.Runtime.InteropServices.Marshal.Release(p);
+    return p;
+  }
+  static void Main() {
+    Console.WriteLine("iact=" + Make(true, "A"));
+    Console.WriteLine("noiact=" + Make(false, "B"));
+    // [In, Out] on a by-value IntPtr of a managed COM method (Visual Studio's IVCManagedInterop):
+    // making the object's COM wrapper aborted Mono (marshal-ilgen.c "should not be reached")
+    IntPtr itf = System.Runtime.InteropServices.Marshal.GetComInterfaceForObject(new OutPtr(), typeof(IOutPtr));
+    var put = (PutFn)System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer(
+        System.Runtime.InteropServices.Marshal.ReadIntPtr(System.Runtime.InteropServices.Marshal.ReadIntPtr(itf), 3 * IntPtr.Size), typeof(PutFn));
+    IntPtr buf = System.Runtime.InteropServices.Marshal.AllocHGlobal(8);
+    int hr = put(itf, buf, 21);
+    Console.WriteLine("outptr=" + hr + ":" + System.Runtime.InteropServices.Marshal.ReadInt32(buf));
+    // an object without IDispatch goes into a VARIANT as VT_UNKNOWN without an exception thrown
+    // (Visual Studio does this constantly); one with IDispatch as VT_DISPATCH
+    int casts = 0;
+    AppDomain.CurrentDomain.FirstChanceException += (s, e) => { if (e.Exception is InvalidCastException) casts++; };
+    IntPtr v = System.Runtime.InteropServices.Marshal.AllocCoTaskMem(24);
+    var hidden = new Hidden(); var disp = new Disp();
+    for (int i = 0; i < 100; i++) {
+      System.Runtime.InteropServices.Marshal.GetNativeVariantForObject(hidden, v);
+      VariantClear(v);
+    }
+    System.Runtime.InteropServices.Marshal.GetNativeVariantForObject(hidden, v);
+    short vtu = System.Runtime.InteropServices.Marshal.ReadInt16(v); VariantClear(v);
+    System.Runtime.InteropServices.Marshal.GetNativeVariantForObject(disp, v);
+    short vtd = System.Runtime.InteropServices.Marshal.ReadInt16(v); VariantClear(v);
+    Console.WriteLine("variant=" + vtu + ":" + vtd);
+    // a native caller using a wrapper after its last Release and a collection gets an error
+    // HRESULT, not a crash in Mono (Visual Studio's IVsTask.get_IsCanceled)
+    IntPtr dead = MakeDead();
+    for (int i = 0; i < 3; i++) { GC.Collect(); GC.WaitForPendingFinalizers(); }
+    var put2 = (PutFn)System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer(
+        System.Runtime.InteropServices.Marshal.ReadIntPtr(System.Runtime.InteropServices.Marshal.ReadIntPtr(dead), 3 * IntPtr.Size), typeof(PutFn));
+    int hr2 = put2(dead, buf, 1);
+    Console.WriteLine("deadccw=" + (hr2 != 0 ? "error" : "ok"));
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg30.exe sg30.cs >"$T/mcs30.out" 2>&1)
+[ -f "$C/sg30.exe" ] || { fail "the sg30 probe did not compile: $(cat "$T/mcs30.out")"; exit 1; }
+out=$(cd "$C" && timeout -s KILL 60 "$WINE" sg30.exe 2>&1 | tr -d '\r')
+[ "$(v iact)" = "ok:42" ] && [ "$(v noiact)" = "TypeLoadException" ] \
+    && pass "[IgnoresAccessChecksTo] lets an emitted proxy implement a private interface, and only with it (vs-mef metadata views)" \
+    || fail "private interface in an emitted type: with '$(v iact)' without '$(v noiact)' (sg29: TypeLoadException both)"
+[ "$(v outptr)" = "7:42" ] \
+    && pass "a managed COM method with [In, Out] IntPtr gets its wrapper and runs (VS's IVCManagedInterop)" \
+    || fail "[In, Out] IntPtr wrapper: '$(v outptr)' (sg29: Mono aborts)"
+[ "$(v variant)" = "13:9" ] \
+    && pass "VARIANTs: an object without IDispatch is VT_UNKNOWN, a dispatch one VT_DISPATCH" \
+    || fail "VARIANT of objects: '$(v variant)'"
+[ "$(v deadccw)" = "error" ] \
+    && pass "a collected object's COM wrapper called from native code returns an error HRESULT" \
+    || fail "collected object's wrapper: '$(v deadccw)' (sg29: crash in cominterop_set_ccw_domain)"
 exit $RC
