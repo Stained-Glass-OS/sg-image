@@ -1,0 +1,140 @@
+diff --git a/mono/metadata/cominterop.c b/mono/metadata/cominterop.c
+--- a/mono/metadata/cominterop.c
++++ b/mono/metadata/cominterop.c
+@@ -4603,6 +4603,9 @@
+ {
+ 	MonoMethodBuilder *mb = m->mb;
+ 	MonoMarshalVariant elem_type = spec->data.safearray_data.elem_type;
++	/* the element type a SAFEARRAY is read with: for a System.Array with no element type,
++	 * 0 = the SAFEARRAY's own (Stained Glass OS, mono-0028) */
++	MonoMarshalVariant to_array_type = elem_type;
+ 	int result_var;
+ 
+ 	if (elem_type == 0)
+@@ -4615,6 +4618,32 @@
+ 			MonoClass *eklass = m_class_get_element_class (klass);
+ 			elem_type = vt_from_class (eklass);
+ 		}
++#ifndef SG_MUTANT_SYSTEM_ARRAY_SAFEARRAY_AS_VARIANT
++		/* from native code it is an array of whatever the SAFEARRAY holds (VT_UNKNOWN gives
++		 * object[], VT_I4 int[], ...), as .NET does: Visual Studio's VCProjectEngine2.
++		 * WaitForMultipleTasks/WaitForMultipleHandles take System.Array this way, and every call
++		 * failed with SafeArrayTypeMismatchException */
++		to_array_type = klass == mono_defaults.array_class ? 0 : elem_type;
++#else
++		to_array_type = elem_type;
++#endif
++	}
++
++	/* Stained Glass OS (mono-0028): a System.Array declared as a SAFEARRAY of interfaces or
++	 * records with a SafeArrayUserDefinedSubType comes from native code as an array of that
++	 * type, as in .NET: Visual Studio's VCProjectEngine2.WaitForMultipleTasks casts its
++	 * SAFEARRAY(VT_UNKNOWN) of IVCTask to IVCTask[]; as object[] every call threw
++	 * InvalidCastException and the native caller retried for ever ("Creating project..."). */
++	MonoClass *to_array_class = mono_class_from_mono_type_internal (t);
++	if (to_array_class == mono_defaults.array_class && spec->data.safearray_data.sg_udt_name &&
++	    (elem_type == MONO_VARIANT_UNKNOWN || elem_type == MONO_VARIANT_DISPATCH || elem_type == MONO_VARIANT_RECORD)) {
++		ERROR_DECL (udt_error);
++		MonoAssemblyLoadContext *alc = mono_domain_ambient_alc (mono_domain_get ());
++		MonoImage *udt_image = spec->data.safearray_data.sg_udt_image ? spec->data.safearray_data.sg_udt_image : m->image;
++		MonoType *udt = mono_reflection_type_from_name_checked (spec->data.safearray_data.sg_udt_name, alc, udt_image, udt_error);
++		if (udt && is_ok (udt_error))
++			to_array_class = mono_class_create_array (mono_class_from_mono_type_internal (udt), 1);
++		mono_error_cleanup (udt_error);
+ 	}
+ 
+ #ifndef DISABLE_JIT
+@@ -4665,8 +4694,8 @@
+ 			result_var = mono_mb_add_local (mb, object_type);
+ 
+ 			mono_mb_emit_ldloc (mb, conv_arg);
+-			mono_mb_emit_ptr (mb, mono_class_from_mono_type_internal (t));
+-			mono_mb_emit_icon (mb, elem_type);
++			mono_mb_emit_ptr (mb, to_array_class);
++			mono_mb_emit_icon (mb, to_array_type);
+ 			if (byValue)
+ 				mono_mb_emit_ldarg (mb, argnum);
+ 			else
+@@ -4714,8 +4743,8 @@
+ 			label_null = mono_mb_emit_branch (mb, CEE_BRFALSE);
+ 			mono_mb_emit_ldarg (mb, argnum);
+ 			mono_mb_emit_byte (mb, CEE_LDIND_I);
+-			mono_mb_emit_ptr (mb, mono_class_from_mono_type_internal (t));
+-			mono_mb_emit_icon (mb, elem_type);
++			mono_mb_emit_ptr (mb, to_array_class);
++			mono_mb_emit_icon (mb, to_array_type);
+ 			mono_mb_emit_ptr (mb, NULL);
+ 			mono_mb_emit_icall (mb, mono_marshal_safearray_to_array);
+ 			mono_mb_emit_stloc (mb, conv_arg);
+@@ -4726,8 +4755,8 @@
+ 
+ 		/* conv = mono_marshal_safearray_to_array (safearray, typeof(conv), elem_type, NULL); */
+ 		mono_mb_emit_ldarg (mb, argnum);
+-		mono_mb_emit_ptr (mb, mono_class_from_mono_type_internal (t));
+-		mono_mb_emit_icon (mb, elem_type);
++		mono_mb_emit_ptr (mb, to_array_class);
++		mono_mb_emit_icon (mb, to_array_type);
+ 		mono_mb_emit_ptr (mb, NULL);
+ 		mono_mb_emit_icall (mb, mono_marshal_safearray_to_array);
+ 		mono_mb_emit_stloc (mb, conv_arg);
+@@ -5642,6 +5671,17 @@
+ 	{
+ 		MonoClass* klass;
+ 
++#ifdef HOST_WIN32
++		/* Stained Glass OS (mono-0028): no element type asked for: the SAFEARRAY's own */
++		if (!vt) {
++			VARTYPE own_vt;
++			if (FAILED (SafeArrayGetVartype (safearray, &own_vt))) {
++				mono_error_set_generic_error (error, "System.Runtime.InteropServices", "SafeArrayTypeMismatchException", "Specified array was not of the expected type.");
++				return NULL_HANDLE_ARRAY;
++			}
++			vt = own_vt;
++		}
++#endif
+ 		switch (vt) {
+ 		case VT_I1: klass = mono_defaults.sbyte_class; break;
+ 		case VT_UI1: klass = mono_defaults.byte_class; break;
+diff --git a/mono/metadata/metadata.c b/mono/metadata/metadata.c
+--- a/mono/metadata/metadata.c
++++ b/mono/metadata/metadata.c
+@@ -7080,8 +7080,25 @@
+ 		res->data.safearray_data.num_elem = 0;
+ 		if (ptr - start <= len)
+ 			res->data.safearray_data.elem_type = (MonoMarshalVariant)*ptr++;
++#ifndef SG_MUTANT_SAFEARRAY_UDT_IGNORED
++		/* Stained Glass OS (mono-0028): what follows the variant type is the
++		 * SafeArrayUserDefinedSubType, a SerString (ECMA-335 II.23.4), not a count */
++		if (ptr - start <= len) {
++			/* the blob's end: its data follows its (one to four byte) length */
++			const char *blob_data;
++			int blob_len = mono_metadata_decode_value (start, &blob_data);
++			const char *blob_end = blob_data + blob_len;
++			int udt_len;
++			udt_len = mono_metadata_decode_value (ptr, &ptr);
++			if (udt_len > 0 && udt_len != 0xff && ptr + udt_len <= blob_end) {
++				res->data.safearray_data.sg_udt_name = image ? mono_image_strndup (image, ptr, udt_len) : g_strndup (ptr, udt_len);
++				res->data.safearray_data.sg_udt_image = parent_image ? parent_image : image;
++			}
++		}
++#else
+ 		if (ptr - start <= len)
+ 			res->data.safearray_data.num_elem = *ptr++;
++#endif
+ 	}
+ 	return res;
+ }
+diff --git a/mono/metadata/metadata.h b/mono/metadata/metadata.h
+--- a/mono/metadata/metadata.h
++++ b/mono/metadata/metadata.h
+@@ -199,6 +199,10 @@
+ 		struct {
+ 			MonoMarshalVariant elem_type;
+ 			int32_t num_elem;
++			/* Stained Glass OS (mono-0028): SafeArrayUserDefinedSubType (the element type of
++			 * a SAFEARRAY of VT_UNKNOWN/VT_DISPATCH/VT_RECORD) and the image it is named in */
++			char *sg_udt_name;
++			MonoImage *sg_udt_image;
+ 		} safearray_data;
+ 	} data;
+ } MonoMarshalSpec;

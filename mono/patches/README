@@ -542,3 +542,22 @@ mono-0027-vs-cpp-project-system-loads.patch (sg30)
       a collected object's wrapper called). sg29: TypeLoadException, then Mono aborts.
       Mutants SG_MUTANT_IACT_PRIVATE_INTERFACE, SG_MUTANT_OUT_BYVAL_PRIMITIVE_ASSERTS,
       SG_MUTANT_CCW_DEAD_OBJECT_CRASHES, SG_MUTANT_VARIANT_DISPATCH_BY_EXCEPTION.
+
+mono-0028-safearray-element-types-from-native.patch (sg31)
+    mono/metadata/metadata.c (+ metadata.h): a SAFEARRAY marshal spec's SafeArrayUserDefinedSubType
+      (the SerString after the variant type, ECMA-335 II.23.4) is read and kept; Mono read the
+      string's first byte as an element count and dropped the type.
+    mono/metadata/cominterop.c: a System.Array parameter declared SAFEARRAY(VT_UNKNOWN/
+      VT_DISPATCH/VT_RECORD) with such a type comes from native code as an array of it; a
+      System.Array with no element type at all comes as an array of what the SAFEARRAY holds
+      (VT_UNKNOWN object[], VT_I4 int[], ...), as in .NET; Mono read both as VARIANT
+      (object[], or SafeArrayTypeMismatchException).
+      Why: Visual Studio's VCProjectEngine2.WaitForMultipleTasks takes SAFEARRAY(VT_UNKNOWN) of
+      IVCTask as System.Array and casts it to IVCTask[]; as object[] every call threw
+      InvalidCastException, the native caller retried for ever and "Creating project..." never
+      ended (1.3 million exceptions on VS's UI thread).
+    From gaps3b. Gate: test/mono-fork-test.sh (sg31 section: a managed object's wrapper called
+      with SAFEARRAYs of VT_UNKNOWN with a user-defined subtype whose name takes a two-byte
+      length, and with no subtype of VT_UNKNOWN/VT_DISPATCH/VT_I4/VT_I8); sg30 gives Object[]
+      and 0x80131533. Mutants SG_MUTANT_SAFEARRAY_UDT_IGNORED,
+      SG_MUTANT_SYSTEM_ARRAY_SAFEARRAY_AS_VARIANT.

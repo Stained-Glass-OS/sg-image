@@ -81,6 +81,11 @@
 #     Internet Settings key (mono-0022); Marshal.CreateAggregatedObject
 #     aggregates a managed object into a native COM object (Visual Studio's
 #     DTE.Solution threw NotImplementedException; mono-0023);
+#   - (sg31) a SAFEARRAY from native code into a managed System.Array
+#     parameter: an array of its SafeArrayUserDefinedSubType (Visual Studio's
+#     IVCTask[]; the type name read from the marshal blob, also when it is
+#     longer than 127 bytes), or of what the SAFEARRAY holds when no element
+#     type is declared (mono-0028);
 #   - (sg30) Visual Studio's C++ project system: an emitted type in a dynamic
 #     assembly carrying [IgnoresAccessChecksTo] implements another assembly's
 #     private nested interface (vs-mef metadata view proxies); [In, Out] on a
@@ -1857,4 +1862,65 @@ out=$(cd "$C" && timeout -s KILL 60 "$WINE" sg30.exe 2>&1 | tr -d '\r')
 [ "$(v deadccw)" = "error" ] \
     && pass "a collected object's COM wrapper called from native code returns an error HRESULT" \
     || fail "collected object's wrapper: '$(v deadccw)' (sg29: crash in cominterop_set_ccw_domain)"
+# (sg31) SAFEARRAYs from native code into a managed System.Array (mono-0028): declared
+# SAFEARRAY(VT_UNKNOWN) of ITask (a type name past 127 bytes: a two-byte length in the blob) comes
+# as ITask[] (Visual Studio's VCProjectEngine2.WaitForMultipleTasks casts to IVCTask[]; as object[]
+# it threw for ever and "Creating project..." never ended); with no element type declared, as an
+# array of what the SAFEARRAY holds (VT_UNKNOWN/VT_DISPATCH object[], VT_I4 int[], VT_I8 long[];
+# Mono read it as VARIANT: SafeArrayTypeMismatchException 0x80131533).
+cat > "$C/sg31.cs" <<'CS'
+using System; using System.Runtime.InteropServices; using Sg.Probe.ALongNamespaceSoTheUserDefinedSubTypeNameIsLongerThanOneHundredAndTwentySevenBytesEvenWithoutAnAssemblyNameAfterIt;
+[ComVisible(true), Guid("6b1d9a40-2f7e-4c55-9a51-3e0f7c2a9b21"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IWait { [PreserveSig] int Wait(uint t, [In, MarshalAs(UnmanagedType.SafeArray)] Array a);
+  [PreserveSig] int WaitTasks(uint t, [In, MarshalAs(UnmanagedType.SafeArray, SafeArraySubType = VarEnum.VT_UNKNOWN, SafeArrayUserDefinedSubType = typeof(ITask))] Array a); }
+namespace Sg.Probe.ALongNamespaceSoTheUserDefinedSubTypeNameIsLongerThanOneHundredAndTwentySevenBytesEvenWithoutAnAssemblyNameAfterIt {
+// (a name past 127 bytes takes a two-byte length in the marshal blob, as Visual Studio's IVCTask does)
+[ComVisible(true), Guid("6b1d9a40-2f7e-4c55-9a51-3e0f7c2a9b22"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface ITask { [PreserveSig] int Id(); }
+}
+namespace Sg.Probe { }
+[ComVisible(true), ClassInterface(ClassInterfaceType.None)]
+public class Tsk : ITask { public int Id() { return 42; } }
+[ComVisible(true), ClassInterface(ClassInterfaceType.None)]
+public class W : IWait { public static string seen;
+  public int WaitTasks(uint t, Array a) { var ts = a as ITask[]; seen = a == null ? "null" : a.GetType().Name + ":" + (ts != null ? ts[0].Id().ToString() : "notyped"); return 0; } public int Wait(uint t, Array a) { seen = a == null ? "null" : a.GetType() + ":" + a.Length + ":" + (a.Length > 0 ? (a.GetValue(0) == null ? "nullelem" : a.GetValue(0).GetType().ToString()) : ""); return 0; } }
+public class Obj { }
+class P {
+  delegate int WaitFn(IntPtr self, uint t, IntPtr sa);
+  [DllImport("oleaut32.dll")] static extern IntPtr SafeArrayCreateVector(ushort vt, int lb, uint n);
+  [DllImport("oleaut32.dll")] static extern int SafeArrayPutElement(IntPtr psa, int[] idx, IntPtr v);
+  static void Main() {
+    IntPtr itf = Marshal.GetComInterfaceForObject(new W(), typeof(IWait));
+    var f = (WaitFn)Marshal.GetDelegateForFunctionPointer(Marshal.ReadIntPtr(Marshal.ReadIntPtr(itf), 3 * IntPtr.Size), typeof(WaitFn));
+    {
+      var f2 = (WaitFn)Marshal.GetDelegateForFunctionPointer(Marshal.ReadIntPtr(Marshal.ReadIntPtr(itf), 4 * IntPtr.Size), typeof(WaitFn));
+      IntPtr psa = SafeArrayCreateVector(13, 0, 1);
+      SafeArrayPutElement(psa, new[] { 0 }, Marshal.GetComInterfaceForObject(new Tsk(), typeof(ITask)));
+      W.seen = "notcalled"; int hr = f2(itf, 1, psa);
+      Console.WriteLine("udt hr=0x" + hr.ToString("x") + " " + W.seen);
+    }
+    foreach (ushort vt in new ushort[] { 13, 9, 12, 3, 20 }) {
+      IntPtr psa = SafeArrayCreateVector(vt, 0, 2);
+      if (vt == 13 || vt == 9) { IntPtr u = vt == 13 ? Marshal.GetIUnknownForObject(new Obj()) : Marshal.GetIDispatchForObject(new W()); SafeArrayPutElement(psa, new[] { 0 }, u); }
+      W.seen = "notcalled";
+      int hr = f(itf, 1, psa);
+      Console.WriteLine("vt" + vt + " hr=0x" + hr.ToString("x") + " " + W.seen);
+    }
+  }
+}
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg31.exe sg31.cs >"$T/mcs31.out" 2>&1)
+[ -f "$C/sg31.exe" ] || { fail "the sg31 probe did not compile: $(cat "$T/mcs31.out")"; exit 1; }
+out=$(cd "$C" && timeout -s KILL 60 "$WINE" sg31.exe 2>&1 | tr -d '\r')
+l() { printf '%s\n' "$out" | grep "^$1 " | head -1; }
+[ "$(l udt)" = "udt hr=0x0 ITask[]:42" ] \
+    && pass "SAFEARRAY(VT_UNKNOWN) with a user-defined subtype reaches a managed System.Array as that type's array (VS's IVCTask[])" \
+    || fail "user-defined SAFEARRAY subtype: '$(l udt)' (sg30: Object[]:notyped)"
+[ "$(l vt13)" = "vt13 hr=0x0 System.Object[]:2:Obj" ] && [ "$(l vt9)" = "vt9 hr=0x0 System.Object[]:2:W" ] \
+    && pass "an undeclared SAFEARRAY of VT_UNKNOWN/VT_DISPATCH comes as object[]" \
+    || fail "undeclared SAFEARRAY of interfaces: '$(l vt13)' '$(l vt9)' (sg30: 0x80131533)"
+[ "$(l vt3)" = "vt3 hr=0x0 System.Int32[]:2:System.Int32" ] && [ "$(l vt20)" = "vt20 hr=0x0 System.Int64[]:2:System.Int64" ] \
+    && [ "$(l vt12)" = "vt12 hr=0x0 System.Object[]:2:nullelem" ] \
+    && pass "an undeclared SAFEARRAY of VT_I4/VT_I8/VT_VARIANT comes as int[]/long[]/object[]" \
+    || fail "undeclared SAFEARRAY of values: '$(l vt3)' '$(l vt20)' '$(l vt12)'"
 exit $RC
