@@ -299,7 +299,7 @@ ctxstate-test: d3d
 	@test/ctxstate-test.sh
 
 # Direct3D 9 through the DXVK built here (sg-d3d builds d3d9.dll from source since dxvk/patches/0010,
-# DXVA2 video decoders): clear, draw, an NV12 surface, present, 64- and 32-bit. Host test.
+# DXVA2 video decoders): clear, draw, an NV12 surface, a P010 one (0013), present, 64- and 32-bit. Host test.
 d3d9-test: d3d
 	@test/d3d9-test.sh
 

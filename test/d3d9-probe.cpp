@@ -1,8 +1,9 @@
 // d3d9-probe: Direct3D 9 through the DXVK built here (sg-d3d now builds d3d9.dll from source, with
 // patches) -- for test/d3d9-test.sh. A D3D9Ex device on a window: a clear, a triangle drawn with
 // DrawPrimitiveUP, an NV12 surface written with LockRect and stretched onto the render target, each
-// read back with GetRenderTargetData; then Present. Prints one line:
-// "d3d9=ok clear=RRGGBB draw=RRGGBB nv12=RRGGBB" or "FAIL <step> 0x<hr>".
+// read back with GetRenderTargetData; the same with a P010 surface (DXVA2's 10-bit decoders,
+// dxvk/patches/0013); then Present. Prints one line:
+// "d3d9=ok clear=RRGGBB draw=RRGGBB nv12=RRGGBB p010=RRGGBB" or "FAIL <step> 0x<hr>".
 #include <windows.h>
 #include <d3d9.h>
 #include <cstdio>
@@ -64,7 +65,26 @@ int main() {
   if (FAILED(hr = dev->StretchRect(nv12, nullptr, rt, nullptr, D3DTEXF_NONE))) { printf("FAIL stretch 0x%08lx\n", hr); return 0; }
   unsigned yuv = centre();
 
+  // a P010 surface: the same blue, 16-bit samples (the 10 bits on top), as DXVA2's 10-bit decoders give it
+  IDirect3DSurface9* p010 = nullptr;
+  unsigned yuv10 = 0xdeadbeef;
+  dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_XRGB(255, 0, 0), 1.0f, 0);
+  hr = dev->CreateOffscreenPlainSurface(64, 64, (D3DFORMAT)MAKEFOURCC('P', '0', '1', '0'), D3DPOOL_DEFAULT, &p010, nullptr);
+  if (SUCCEEDED(hr) && SUCCEEDED(hr = p010->LockRect(&lr, nullptr, 0))) {
+    for (int y = 0; y < 64; y++) {
+      unsigned short* row = (unsigned short*)((char*)lr.pBits + lr.Pitch * y);
+      for (int x = 0; x < 64; x++) row[x] = 41 << 8;
+    }
+    for (int y = 0; y < 32; y++) {
+      unsigned short* row = (unsigned short*)((char*)lr.pBits + lr.Pitch * (64 + y));
+      for (int x = 0; x < 32; x++) { row[2 * x] = 240 << 8; row[2 * x + 1] = 110 << 8; }
+    }
+    p010->UnlockRect();
+    if (SUCCEEDED(dev->StretchRect(p010, nullptr, rt, nullptr, D3DTEXF_NONE)))
+      yuv10 = centre();
+  }
+
   hr = dev->PresentEx(nullptr, nullptr, nullptr, nullptr, 0);
-  printf("d3d9=%s clear=%06x draw=%06x nv12=%06x\n", SUCCEEDED(hr) ? "ok" : "nopresent", clear, draw, yuv);
+  printf("d3d9=%s clear=%06x draw=%06x nv12=%06x p010=%06x\n", SUCCEEDED(hr) ? "ok" : "nopresent", clear, draw, yuv, yuv10 & 0xffffff);
   return 0;
 }

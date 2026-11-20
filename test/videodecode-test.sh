@@ -10,7 +10,8 @@
 # profile 2 (10-bit) from the host's libvpx (hidden alt-ref frames, two tile columns, segmentation) --
 # through D3D11VA (frames kept on the GPU, so no quiet fall back to the CPU), and every frame must be
 # bit for bit the frame its own software decoder gives (framemd5). Then the same decoders through DXVA2
-# (Direct3D 9: MPC-HC, VLC's dxva2 mode), the 8-bit clips, NV12 surfaces read back with LockRect.
+# (Direct3D 9: MPC-HC, VLC's dxva2 mode), NV12 surfaces read back with LockRect -- and the 10-bit clips
+# on P010 surfaces (dxvk/patches/0013).
 #
 #   test/videodecode-test.sh [DXVK_X64_DIR]   (FFMPEG_D3D11VA=ffmpeg.exe; default DXVK: the staged payload)
 #
@@ -25,7 +26,8 @@
 # Mutants (dxvk_video_decoder.cpp since 0010): SG_MUTANT_NO_VIDEO_DECODE (dxvk/patches/0006: no decoder),
 # SG_MUTANT_AV1_REF_NAMES_SWAPPED (0008: AV1's LAST and GOLDEN references swapped),
 # SG_MUTANT_VP9_NO_COMPRESSED_HEADER_OFFSET (0009: the compressed header taken from the frame's start),
-# SG_MUTANT_DXVA2_NO_CHROMA (0010, d3d9_device.cpp: a DXVA2 surface gets no chroma).
+# SG_MUTANT_DXVA2_NO_CHROMA (0010, d3d9_device.cpp: a DXVA2 surface gets no chroma),
+# SG_MUTANT_DXVA2_NO_P010 (0013, d3d9_video.cpp: no 10-bit DXVA2 decoders).
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -u
 HERE=$(cd "$(dirname "$0")/.." && pwd)
@@ -160,15 +162,16 @@ for c in $CLIPS; do
 done
 
 # DXVA2 (Direct3D 9, through Wine's dxva2.dll, which asks the device for its decoders -- wine-sg
-# 7849): the same decoders, 8-bit clips (this D3D9 makes no P010 surfaces)
+# 7849): the same decoders, 8-bit clips on NV12 surfaces and 10-bit ones on P010 (dxvk/patches/0013)
 (cd "$WINEPREFIX/drive_c" && DXVK_LOG_LEVEL=info DXVK_LOG_PATH=none timeout -s KILL 300 "$WINE" ffmpeg.exe -hide_banner -loglevel error \
     -hwaccel dxva2 -hwaccel_output_format dxva2_vld -i bframes.mp4 -frames:v 1 -vf hwdownload,format=nv12 -f framemd5 - </dev/null 2>&1) \
     | grep -q "ideo decode H.264" && DXVA2=1 || { DXVA2=; echo "      (this Wine's dxva2.dll does not ask the device for decoders -- wine-sg 7849: the DXVA2 clips are skipped)"; }
 if [ -n "$DXVA2" ]; then
-    for c in bframes cropped ${HEVC:+hevc} ${AV1:+av1 av1tiles} ${VP9:+vp9 vp9tiles}; do
+    for c in bframes cropped ${HEVC:+hevc hevc10} ${AV1:+av1 av1tiles av1x10} ${VP9:+vp9 vp9tiles vp9x10}; do
         f=$c.mp4; case $c in vp9*) f=$c.webm ;; esac
+        fmt=nv12; case $c in hevc10|av1x10|vp9x10) fmt=p010le ;; esac   # 10-bit: P010 surfaces
         (cd "$WINEPREFIX/drive_c" && DXVK_LOG_LEVEL=none timeout -s KILL 300 "$WINE" ffmpeg.exe -hide_banner -loglevel error \
-            -hwaccel dxva2 -hwaccel_output_format dxva2_vld -i "$f" -vf hwdownload,format=nv12 -f framemd5 - 2>"$T/$c.dx.err" </dev/null) \
+            -hwaccel dxva2 -hwaccel_output_format dxva2_vld -i "$f" -vf hwdownload,format=$fmt -f framemd5 - 2>"$T/$c.dx.err" </dev/null) \
             | tr -d '\r' | awk '/^0,/ {print $NF}' > "$T/$c.dx"
         hw=$(wc -l < "$T/$c.dx"); sw=$(wc -l < "$T/$c.sw")
         diff=$(paste "$T/$c.dx" "$T/$c.sw" | awk '$1 != $2' | wc -l)

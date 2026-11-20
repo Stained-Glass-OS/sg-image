@@ -1,0 +1,223 @@
+From: Stained Glass OS <ke7oxh@gmail.com>
+Subject: [PATCH] d3d9: P010 surfaces, and DXVA2's 10-bit video decoders
+
+DXVA2's decoders (0010) were 8-bit only: this D3D9 made no P010
+surfaces. P010 -- NV12's layout with 16-bit samples, the top 10 bits
+used -- is now a format of its own (stored as
+G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16, what a decoded 10-bit picture
+is), drawn through a converter of its own (d3d9_convert_p010.comp: NV12's,
+reading 16-bit samples), and the DXVA2 service offers the 10-bit profiles
+(HEVC Main10, VP9 profile 2, AV1 10-bit) with P010 render targets.
+d3d9_device.cpp's decoded-picture copy already lays P010 out as LockRect
+gives it.
+
+Bit-exact through FFmpeg's dxva2 hwaccel on NVIDIA's driver: HEVC Main10,
+VP9 profile 2, AV1 10-bit (videodecode-test); a P010 surface written with
+LockRect shows as the NV12 one does (d3d9-test).
+---
+  src/d3d9/d3d9_format.cpp                | 11 ++++++
+  src/d3d9/d3d9_format.h                  |  1 +
+  src/d3d9/d3d9_format_helpers.cpp        |  7 ++++
+  src/d3d9/d3d9_video.cpp                 | 21 ++++++++---
+  src/d3d9/meson.build                    |  1 +
+  src/d3d9/shaders/d3d9_convert_p010.comp | 64 +++++++++++++++++++++++++++++++++
+  6 files changed, 100 insertions(+), 5 deletions(-)
+
+diff --git a/src/d3d9/d3d9_format.cpp b/src/d3d9/d3d9_format.cpp
+index 11fb4ac..f4ca610 100644
+--- a/src/d3d9/d3d9_format.cpp
++++ b/src/d3d9/d3d9_format.cpp
+@@ -413,6 +413,17 @@ namespace dxvk {
+         { D3D9ConversionFormat_NV12, VK_FORMAT_B8G8R8A8_UNORM }
+       };
+ 
++      /* Stained Glass OS: P010 (NV12 with 16-bit samples, the top 10 bits used), for DXVA2's 10-bit
++       * video decoders -- read through a converter, as NV12 */
++      case D3D9Format::P010: return {
++        VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16,
++        VK_FORMAT_UNDEFINED,
++        VK_IMAGE_ASPECT_COLOR_BIT,
++        { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
++          VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY },
++        { D3D9ConversionFormat_P010, VK_FORMAT_B8G8R8A8_UNORM }
++      };
++
+       case D3D9Format::YV12: return {
+         VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM,
+         VK_FORMAT_UNDEFINED,
+diff --git a/src/d3d9/d3d9_format.h b/src/d3d9/d3d9_format.h
+index 3f2c417..67518d6 100644
+--- a/src/d3d9/d3d9_format.h
++++ b/src/d3d9/d3d9_format.h
+@@ -144,6 +144,7 @@ namespace dxvk {
+     D3D9ConversionFormat_W11V11U10,
+     D3D9ConversionFormat_NV12,
+     D3D9ConversionFormat_YV12,
++    D3D9ConversionFormat_P010,
+     D3D9ConversionFormat_Count
+   };
+ 
+diff --git a/src/d3d9/d3d9_format_helpers.cpp b/src/d3d9/d3d9_format_helpers.cpp
+index 8016495..88d93d8 100644
+--- a/src/d3d9/d3d9_format_helpers.cpp
++++ b/src/d3d9/d3d9_format_helpers.cpp
+@@ -6,6 +6,7 @@
+ #include <d3d9_convert_a2w10v10u10.h>
+ #include <d3d9_convert_w11v11u10.h>
+ #include <d3d9_convert_nv12.h>
++#include <d3d9_convert_p010.h>
+ #include <d3d9_convert_yv12.h>
+ 
+ namespace dxvk {
+@@ -42,6 +43,11 @@ namespace dxvk {
+         ConvertGenericFormat(ctx, conversionFormat, dstImage, dstSubresource, srcSlice, VK_FORMAT_R16_UINT, { 2u, 1u });
+         break;
+ 
++      case D3D9ConversionFormat_P010:
++        /* two 16-bit samples a texel: the same layout arithmetic as NV12's */
++        ConvertGenericFormat(ctx, conversionFormat, dstImage, dstSubresource, srcSlice, VK_FORMAT_R32_UINT, { 2u, 1u });
++        break;
++
+       case D3D9ConversionFormat_YV12:
+         ConvertGenericFormat(ctx, conversionFormat, dstImage, dstSubresource, srcSlice, VK_FORMAT_R8_UINT, { 1u, 1u });
+         break;
+@@ -148,6 +154,7 @@ namespace dxvk {
+     m_pipelines[D3D9ConversionFormat_A2W10V10U10] = CreatePipeline(sizeof(d3d9_convert_a2w10v10u10), d3d9_convert_a2w10v10u10, 0);
+     m_pipelines[D3D9ConversionFormat_W11V11U10] = CreatePipeline(sizeof(d3d9_convert_w11v11u10), d3d9_convert_w11v11u10, 0);
+     m_pipelines[D3D9ConversionFormat_NV12] = CreatePipeline(sizeof(d3d9_convert_nv12), d3d9_convert_nv12, 0);
++    m_pipelines[D3D9ConversionFormat_P010] = CreatePipeline(sizeof(d3d9_convert_p010), d3d9_convert_p010, 0);
+     m_pipelines[D3D9ConversionFormat_YV12] = CreatePipeline(sizeof(d3d9_convert_yv12), d3d9_convert_yv12, 0);
+   }
+ 
+diff --git a/src/d3d9/d3d9_video.cpp b/src/d3d9/d3d9_video.cpp
+index 6b33773..2ae460d 100644
+--- a/src/d3d9/d3d9_video.cpp
++++ b/src/d3d9/d3d9_video.cpp
+@@ -20,11 +20,22 @@ namespace dxvk {
+ 
+ 
+   static constexpr D3DFORMAT FormatNV12 = D3DFORMAT(MAKEFOURCC('N', 'V', '1', '2'));
++  static constexpr D3DFORMAT FormatP010 = D3DFORMAT(MAKEFOURCC('P', '0', '1', '0'));
+ 
+-  /* an output surface format's bit depth for DxvkVideoDecodeSupport::Find; NV12 only: this D3D9
+-   * makes no P010 surfaces, so 10-bit decoders are not offered */
++  /* an output surface format's bit depth for DxvkVideoDecodeSupport::Find: NV12 for the 8-bit
++   * profiles, P010 for the 10-bit ones */
+   static uint32_t d3d9VideoDepth(D3DFORMAT Format) {
++#ifdef SG_MUTANT_DXVA2_NO_P010
+     return Format == FormatNV12 ? 8u : 99u;
++#endif
++    return Format == FormatNV12 ? 8u : Format == FormatP010 ? 10u : 99u;
++  }
++
++  static bool d3d9VideoDepthSupported(uint32_t Depth) {
++#ifdef SG_MUTANT_DXVA2_NO_P010
++    return Depth == 8u;
++#endif
++    return Depth == 8u || Depth == 10u;
+   }
+ 
+ 
+@@ -113,7 +124,7 @@ namespace dxvk {
+ 
+     std::vector<GUID> guids;
+     for (const auto& p : m_support.Profiles()) {
+-      if (p.bitDepth == 8u && std::find(guids.begin(), guids.end(), p.guid) == guids.end())
++      if (d3d9VideoDepthSupported(p.bitDepth) && std::find(guids.begin(), guids.end(), p.guid) == guids.end())
+         guids.push_back(p.guid);
+     }
+     *pCount = 0u;
+@@ -137,8 +148,8 @@ namespace dxvk {
+ 
+     std::vector<D3DFORMAT> formats;
+     for (const auto& p : m_support.Profiles()) {
+-      if (p.guid == Guid && p.bitDepth == 8u)
+-        formats.push_back(FormatNV12);
++      if (p.guid == Guid && d3d9VideoDepthSupported(p.bitDepth))
++        formats.push_back(p.bitDepth == 10u ? FormatP010 : FormatNV12);
+     }
+ 
+     *pCount = 0u;
+diff --git a/src/d3d9/meson.build b/src/d3d9/meson.build
+index 5c6a4d7..7cc79ea 100644
+--- a/src/d3d9/meson.build
++++ b/src/d3d9/meson.build
+@@ -7,6 +7,7 @@ d3d9_shaders = files([
+   'shaders/d3d9_convert_a2w10v10u10.comp',
+   'shaders/d3d9_convert_w11v11u10.comp',
+   'shaders/d3d9_convert_nv12.comp',
++  'shaders/d3d9_convert_p010.comp',
+   'shaders/d3d9_convert_yv12.comp',
+   'shaders/d3d9_fixed_function_vert.vert',
+   'shaders/d3d9_fixed_function_frag.frag',
+diff --git a/src/d3d9/shaders/d3d9_convert_p010.comp b/src/d3d9/shaders/d3d9_convert_p010.comp
+new file mode 100644
+index 0000000..694ef5e
+--- /dev/null
++++ b/src/d3d9/shaders/d3d9_convert_p010.comp
+@@ -0,0 +1,64 @@
++#version 450
++#extension GL_GOOGLE_include_directive : enable
++
++#include "d3d9_convert_common.h"
++
++layout(
++  local_size_x = 8,
++  local_size_y = 8,
++  local_size_z = 1) in;
++
++layout(binding = 0)
++writeonly uniform image2D dst;
++
++layout(binding = 1) uniform usamplerBuffer src;
++
++layout(push_constant)
++uniform u_info_t {
++  uvec2 extent;
++} u_info;
++
++// Stained Glass OS: P010 -- NV12's layout with 16-bit samples, the top 10 bits used.
++vec2 fetchUnorm2x16(usamplerBuffer source, uint offset) {
++  return unpackUnorm2x16(texelFetch(src, int(offset)).r);
++}
++
++// Format is:
++// YYYYYYYYYYYYYYY... (16 bits each)
++// YYYYYYYYYYYYYYY...
++// UVUVUVUVUVUVUVU...
++
++void main() {
++  ivec3 thread_id = ivec3(gl_GlobalInvocationID);
++
++  if (all(lessThan(thread_id.xy, u_info.extent))) {
++    uvec2 pitch = uvec2(u_info.extent.x, u_info.extent.y);
++
++    uint offset = thread_id.x
++                + thread_id.y * pitch.x;
++
++    // Fetch 2 luminance samples.
++    vec2 y = fetchUnorm2x16(src, offset) - (4096 / 65535.0);   // 64 << 6: black
++
++    // Go into the second plane to get the chroma data.
++    // UV data is subsampled as [2, 2]
++    // So we need to divide thread_id.y by 2.
++    // thread_id.x is already accounted for as we read uint32
++    offset = thread_id.x
++           + thread_id.y / 2 * pitch.x
++           + pitch.x * pitch.y;
++
++    vec2 uv = fetchUnorm2x16(src, offset) - (32768 / 65535.0);   // 512 << 6
++
++    // As NV12: the BT.709 color space.
++    vec4 color0 = convertBT_709(vec3(y.x, uv.x, uv.y));
++    vec4 color1 = convertBT_709(vec3(y.y, uv.x, uv.y));
++
++    // We write as a macropixel of [2, 1]
++    // So write out 2 pixels in this run.
++    ivec2 writePos = thread_id.xy * ivec2(2, 1);
++
++    imageStore(dst, ivec2(writePos.x,     writePos.y), color0);
++    imageStore(dst, ivec2(writePos.x + 1, writePos.y), color1);
++  }
++}
+\ No newline at end of file

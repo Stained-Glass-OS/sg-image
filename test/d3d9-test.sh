@@ -2,7 +2,7 @@
 # Direct3D 9 through the DXVK built here: sg-d3d now builds d3d9.dll from the pinned source with
 # Stained Glass OS's patches (dxvk/patches/0010: DXVA2 video decoders) instead of shipping the
 # release's. The probe (64- and 32-bit) makes a D3D9Ex device, clears red, draws a green triangle,
-# stretches a blue NV12 surface onto the target -- each read back -- and presents.
+# stretches a blue NV12 surface onto the target, and a blue P010 one (0013) -- each read back -- and presents.
 #
 #   test/d3d9-test.sh [DXVK_DIR]     (the payload's dxvk directory: x64 and x32 in it)
 #
@@ -48,6 +48,14 @@ for a in 64 32; do
             echo "PASS  $a-bit: a D3D9 device clears, draws, shows an NV12 surface and presents"
         else
             echo "FAIL  $a-bit: the NV12 surface came out $rgb (wanted blue)"; RC=1
+        fi
+        # the same blue from a P010 surface (dxvk/patches/0013: DXVA2's 10-bit decoders)
+        rgb=${5#p010=}
+        r=$((0x$(echo "$rgb" | cut -c1-2))); g=$((0x$(echo "$rgb" | cut -c3-4))); b=$((0x$(echo "$rgb" | cut -c5-6)))
+        if [ $r -lt 40 ] && [ $g -lt 40 ] && [ $b -gt 200 ]; then
+            echo "PASS  $a-bit: a P010 surface shows (made, written with LockRect, stretched)"
+        else
+            echo "FAIL  $a-bit: the P010 surface came out $rgb (wanted blue)"; RC=1
         fi ;;
     *"FAIL device"*) echo "SKIP: DXVK made no Direct3D 9 device here (no Vulkan)"; exit 77 ;;
     *) echo "FAIL  $a-bit: $out"; RC=1 ;;
