@@ -1,0 +1,119 @@
+diff --git a/mcs/class/System/System.Net.NetworkInformation/Win32IPv4InterfaceStatistics.cs b/mcs/class/System/System.Net.NetworkInformation/Win32IPv4InterfaceStatistics.cs
+index 710ff87a..ad8a3630 100644
+--- a/mcs/class/System/System.Net.NetworkInformation/Win32IPv4InterfaceStatistics.cs
++++ b/mcs/class/System/System.Net.NetworkInformation/Win32IPv4InterfaceStatistics.cs
+@@ -39,53 +39,78 @@ public Win32IPv4InterfaceStatistics (Win32_MIB_IFROW info)
+ 		}
+ 
+ 		public override long BytesReceived {
+-			get { return info.InOctets; }
++			get { return (uint) info.InOctets; }
+ 		}
+ 
+ 		public override long BytesSent {
+-			get { return info.OutOctets; }
++			get { return (uint) info.OutOctets; }
+ 		}
+ 
+ 		public override long IncomingPacketsDiscarded {
+-			get { return info.InDiscards; }
++			get { return (uint) info.InDiscards; }
+ 		}
+ 
+ 		public override long IncomingPacketsWithErrors {
+-			get { return info.InErrors; }
++			get { return (uint) info.InErrors; }
+ 		}
+ 
+ 		public override long IncomingUnknownProtocolPackets {
+-			get { return info.InUnknownProtos; }
++			get { return (uint) info.InUnknownProtos; }
+ 		}
+ 
+ 		public override long NonUnicastPacketsReceived {
+-			get { return info.InNUcastPkts; }
++			get { return (uint) info.InNUcastPkts; }
+ 		}
+ 
+ 		public override long NonUnicastPacketsSent {
+-			get { return info.OutNUcastPkts; }
++			get { return (uint) info.OutNUcastPkts; }
+ 		}
+ 
+ 		public override long OutgoingPacketsDiscarded {
+-			get { return info.OutDiscards; }
++			get { return (uint) info.OutDiscards; }
+ 		}
+ 
+ 		public override long OutgoingPacketsWithErrors {
+-			get { return info.OutErrors; }
++			get { return (uint) info.OutErrors; }
+ 		}
+ 
+ 		public override long OutputQueueLength {
+-			get { return info.OutQLen; }
++			get { return (uint) info.OutQLen; }
+ 		}
+ 
+ 		public override long UnicastPacketsReceived {
+-			get { return info.InUcastPkts; }
++			get { return (uint) info.InUcastPkts; }
+ 		}
+ 
+ 		public override long UnicastPacketsSent {
+-			get { return info.OutUcastPkts; }
++			get { return (uint) info.OutUcastPkts; }
+ 		}
+ 
+ 	}
++
++	// MIB_IFROW's counters are DWORDs: read unsigned, as .NET Framework does (they were
++	// negative past 2 GB)
++	class Win32IPInterfaceStatistics : IPInterfaceStatistics
++	{
++		Win32_MIB_IFROW info;
++
++		public Win32IPInterfaceStatistics (Win32_MIB_IFROW info)
++		{
++			this.info = info;
++		}
++
++		public override long BytesReceived { get { return (uint) info.InOctets; } }
++		public override long BytesSent { get { return (uint) info.OutOctets; } }
++		public override long IncomingPacketsDiscarded { get { return (uint) info.InDiscards; } }
++		public override long IncomingPacketsWithErrors { get { return (uint) info.InErrors; } }
++		public override long IncomingUnknownProtocolPackets { get { return (uint) info.InUnknownProtos; } }
++		public override long NonUnicastPacketsReceived { get { return (uint) info.InNUcastPkts; } }
++		public override long NonUnicastPacketsSent { get { return (uint) info.OutNUcastPkts; } }
++		public override long OutgoingPacketsDiscarded { get { return (uint) info.OutDiscards; } }
++		public override long OutgoingPacketsWithErrors { get { return (uint) info.OutErrors; } }
++		public override long OutputQueueLength { get { return (uint) info.OutQLen; } }
++		public override long UnicastPacketsReceived { get { return (uint) info.InUcastPkts; } }
++		public override long UnicastPacketsSent { get { return (uint) info.OutUcastPkts; } }
++	}
+ }
+ #endif
+diff --git a/mcs/class/System/System.Net.NetworkInformation/Win32NetworkInterface.cs b/mcs/class/System/System.Net.NetworkInformation/Win32NetworkInterface.cs
+index 776206bc..493b5ed5 100644
+--- a/mcs/class/System/System.Net.NetworkInformation/Win32NetworkInterface.cs
++++ b/mcs/class/System/System.Net.NetworkInformation/Win32NetworkInterface.cs
+@@ -158,6 +158,19 @@ public override IPv4InterfaceStatistics GetIPv4Statistics ()
+ 			return ip4stats;
+ 		}
+ 
++#if !SG_MUTANT_IPSTATS_NOT_IMPLEMENTED
++		// .NET Framework 4.6 and later: the interface's counters as they are now
++		// (LibreHardwareMonitor's network sensors died on NotImplementedException).
++		public override IPInterfaceStatistics GetIPStatistics ()
++		{
++			Win32_MIB_IFROW row = default (Win32_MIB_IFROW);
++			row.Index = mib4.Index >= 0 ? mib4.Index : mib6.Index;
++			if (row.Index < 0 || GetIfEntry (ref row) != 0)
++				row = mib4.Index >= 0 ? mib4 : mib6;
++			return new Win32IPInterfaceStatistics (row);
++		}
++#endif
++
+ 		public override PhysicalAddress GetPhysicalAddress ()
+ 		{
+ 			byte [] bytes = new byte [addr.PhysicalAddressLength];

@@ -81,6 +81,9 @@
 #     Internet Settings key (mono-0022); Marshal.CreateAggregatedObject
 #     aggregates a managed object into a native COM object (Visual Studio's
 #     DTE.Solution threw NotImplementedException; mono-0023);
+#   - (sg33) NetworkInterface.GetIPStatistics gives every interface's
+#     counters (.NET Framework 4.6+; LibreHardwareMonitor died at start), and
+#     MIB_IFROW's DWORD counters are read unsigned (mono-0030);
 #   - (sg32) arrays into a managed COM method: an unsized LPArray is one
 #     element, non-blittable struct arrays are converted both ways; a VT_RECORD
 #     VARIANT becomes its managed value type or System.Guid (Visual Studio's
@@ -2036,4 +2039,31 @@ out=$(cd "$C" && timeout -s KILL 60 "$WINE" sg32.exe 2>&1 | tr -d '\r'; cd "$C" 
 [ "$(v recpt)" = "0x0:Pt:3,4" ] && [ "$(v recguid)" = "0x0:Guid:11112222-3333-4444-5555-666677778888" ] \
     && pass "a VT_RECORD VARIANT becomes its [Guid] struct, a GUID record a System.Guid (VS's TryParseGuid)" \
     || fail "VT_RECORD VARIANT: '$(v recpt)' '$(v recguid)' (sg31: 0x80004001)"
+# (sg33) NetworkInterface.GetIPStatistics (mono-0030): .NET Framework 4.6+ gives every
+# interface's counters; Mono threw NotImplementedException (LibreHardwareMonitor died at start
+# building its network sensors). The counters are MIB_IFROW's DWORDs, read unsigned (they were
+# negative past 2 GB, in GetIPv4Statistics too). sg32: NotImplementedException.
+# Mutant: -d:SG_MUTANT_IPSTATS_NOT_IMPLEMENTED (System.dll).
+cat > "$C/sg33.cs" <<'CS'
+using System; using System.Net.NetworkInformation;
+class P { static void Main() {
+  int n = 0, ok = 0, neg = 0; string err = "none";
+  foreach (var ni in NetworkInterface.GetAllNetworkInterfaces()) {
+    n++;
+    try {
+      var s = ni.GetIPStatistics(); var s4 = ni.GetIPv4Statistics();
+      if (s.BytesReceived < 0 || s.BytesSent < 0 || s4.BytesReceived < 0) neg++;
+      else if (s.BytesReceived >= s4.BytesReceived && s.UnicastPacketsReceived >= 0) ok++;
+    } catch (Exception e) { err = e.GetType().Name; }
+  }
+  Console.WriteLine("ifs=" + n + " ok=" + ok + " neg=" + neg + " err=" + err);
+} }
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -out:sg33.exe sg33.cs >"$T/mcs33.out" 2>&1)
+[ -f "$C/sg33.exe" ] || { fail "the sg33 probe did not compile: $(cat "$T/mcs33.out")"; exit 1; }
+out=$(cd "$C" && timeout -s KILL 60 "$WINE" sg33.exe 2>&1 | tr -d '\r' | grep '^ifs=')
+ifs=$(printf '%s' "$out" | sed -n 's/^ifs=\([0-9]*\).*/\1/p')
+[ -n "$ifs" ] && [ "$ifs" -gt 0 ] && printf '%s' "$out" | grep -q " ok=$ifs neg=0 err=none" \
+    && pass "every interface's GetIPStatistics, counters unsigned ($out)" \
+    || fail "GetIPStatistics: '$out' (sg32: err=NotImplementedException)"
 exit $RC

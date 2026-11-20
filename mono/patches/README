@@ -580,3 +580,17 @@ mono-0029-struct-arrays-unsized-arrays-and-records-into-managed.patch (sg32)
       record through a fake IRecordInfo); sg31 0x80131535 / 0x80004001. Mutants
       SG_MUTANT_UNSIZED_ARRAY_EMPTY, SG_MUTANT_NO_STRUCT_ARRAYS_TO_MANAGED,
       SG_MUTANT_VARIANT_RECORD_NOT_IMPLEMENTED.
+
+mono-0030-network-interface-ip-statistics.patch (sg33)
+    mcs/class/System/System.Net.NetworkInformation: Win32NetworkInterface2 overrides
+    GetIPStatistics (.NET Framework 4.6+): a fresh GetIfEntry of the interface each call, as
+    .NET queries each time; Mono's base threw NotImplementedException. MIB_IFROW's counters
+    are DWORDs and are now read unsigned in both statistics classes (Win32IPv4InterfaceStatistics
+    returned negative byte counts past 2 GB).
+    Why: LibreHardwareMonitor 0.9.6 died at start (Computer.IsNetworkEnabled -> Network ctor ->
+      GetIPStatistics). With it, LHM's window and sensor tree come up (host build, sg32 + this).
+    From apps8. Gate: test/mono-fork-test.sh (sg33 section, outbox mono-fork-test-sg33-hunk.sh):
+      every interface's GetIPStatistics, no negative counters; sg32 NotImplementedException.
+      Mutant SG_MUTANT_IPSTATS_NOT_IMPLEMENTED.
+    Verified: probe on sg32 image (old: NotImplementedException; new: 2/2 interfaces, enp4s0
+      rx 2230148193 -- was -2071081991 before the unsigned read).
