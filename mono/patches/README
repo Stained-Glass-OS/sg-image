@@ -594,3 +594,27 @@ mono-0030-network-interface-ip-statistics.patch (sg33)
       Mutant SG_MUTANT_IPSTATS_NOT_IMPLEMENTED.
     Verified: probe on sg32 image (old: NotImplementedException; new: 2/2 interfaces, enp4s0
       rx 2230148193 -- was -2071081991 before the unsigned read).
+
+mono-0031-com-late-binding-invokemember.patch (sg34)
+    mcs/class/corlib: Type.InvokeMember on a COM object late-binds through its IDispatch, as
+      the .NET Framework does: GetIDsOfNames for the member and the named arguments, then
+      Invoke (DISPATCH_METHOD/PROPERTYGET/PROPERTYPUT/PROPERTYPUTREF from the binding flags; a
+      put's value named DISPID_PROPERTYPUT; by-reference arguments copied back; "[DISPID=n]"
+      names that dispatch id). DISP_E_UNKNOWNNAME/MEMBERNOTFOUND is MissingMethodException,
+      DISP_E_EXCEPTION a TargetInvocationException around a COMException with the object's
+      description. Works for Mono's COM proxies (ComInteropProxy) and for a bare
+      System.__ComObject (an IDispatch from a VARIANT). Mono threw NotImplementedException.
+    Why: Mesen 0.9.9 (and any program that drives COM objects by name) -- see corefx-0004.
+    From apps9. Gate: test/mono-fork-test.sh (sg34 section). Mutant
+      SG_MUTANT_COM_INVOKEMEMBER_NOT_IMPLEMENTED.
+
+corefx-0004-csharp-dynamic-binds-com-objects.patch (sg34)
+    Microsoft.CSharp RuntimeBinder: "dynamic" on a COM object binds through IDispatch, as the
+      .NET Framework's binder does: calls, property get/set, indexers (DISPID_VALUE) and
+      invoking the object go to Type.InvokeMember on it (mono-0031). The binder looked for the
+      member on System.__ComObject and threw RuntimeBinderException.
+    Why: Mesen's first-run wizard (WScript.Shell CreateShortcut through dynamic) said "The
+      selected folder cannot be written to". From apps9. Gate: test/mono-fork-test.sh (sg34
+      section: Scripting.Dictionary through InvokeMember and dynamic, WScript.Shell
+      CreateShortcut/TargetPath/Save); sg33 NotImplementedException / RuntimeBinderException.
+      Mutant SG_MUTANT_NO_COM_DYNAMIC.

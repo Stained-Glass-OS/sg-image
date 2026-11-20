@@ -1,0 +1,234 @@
+--- a/mcs/class/corlib/System/__ComObject.cs
++++ b/mcs/class/corlib/System/__ComObject.cs
+@@ -226,6 +226,171 @@
+ 			}
+ 		}
+ 
++#if !SG_MUTANT_COM_INVOKEMEMBER_NOT_IMPLEMENTED
++		// Stained Glass OS (Wine Mono mono-0031): late binding to a COM object through its
++		// IDispatch, as the .NET Framework's Type.InvokeMember does for a COM target (and so
++		// the C# "dynamic" binder): GetIDsOfNames for the member and the named arguments, then
++		// Invoke. A name "[DISPID=n]" is that dispatch id (DISPID_VALUE for indexers).
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)]
++		delegate int GetIDsOfNamesFn (IntPtr self, ref Guid riid, IntPtr names, int count, int lcid, IntPtr ids);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)]
++		delegate int InvokeFn (IntPtr self, int dispid, ref Guid riid, int lcid, short flags, IntPtr dispparams,
++		                       IntPtr result, IntPtr excepinfo, IntPtr argerr);
++
++		[DllImport ("oleaut32.dll")]
++		static extern int VariantClear (IntPtr v);
++
++		const int DISPID_PROPERTYPUT = -3;
++		const int DISP_E_UNKNOWNNAME = unchecked ((int)0x80020006);
++		const int DISP_E_MEMBERNOTFOUND = unchecked ((int)0x80020003);
++		const int DISP_E_EXCEPTION = unchecked ((int)0x80020009);
++
++		static Delegate VtblFn (IntPtr itf, int slot, Type t)
++		{
++			IntPtr vtbl = Marshal.ReadIntPtr (itf);
++			return Marshal.GetDelegateForFunctionPointer (Marshal.ReadIntPtr (vtbl, slot * IntPtr.Size), t);
++		}
++
++		internal static object InvokeDispMember (string name, System.Reflection.BindingFlags flags, object target,
++		                                         object[] args, bool[] byref, int lcid, string[] named)
++		{
++			const System.Reflection.BindingFlags method = System.Reflection.BindingFlags.InvokeMethod;
++			const System.Reflection.BindingFlags get = System.Reflection.BindingFlags.GetProperty;
++			const System.Reflection.BindingFlags set = System.Reflection.BindingFlags.SetProperty |
++			                                           System.Reflection.BindingFlags.PutDispProperty;
++			const System.Reflection.BindingFlags setref = System.Reflection.BindingFlags.PutRefDispProperty;
++			__ComObject co = target as __ComObject;
++			if (co == null && System.Runtime.Remoting.RemotingServices.IsTransparentProxy (target)) {
++				ComInteropProxy proxy = System.Runtime.Remoting.RemotingServices.GetRealProxy (target) as ComInteropProxy;
++				if (proxy != null)
++					co = proxy.ComObject;
++			}
++			int nargs = args == null ? 0 : args.Length, nnamed = named == null ? 0 : named.Length;
++			int vsize = IntPtr.Size == 8 ? 24 : 16, i, hr, dispid;
++			bool put = (flags & (set | setref)) != 0;
++			short dflags = 0;
++			IntPtr disp, variants = IntPtr.Zero, byrefs = IntPtr.Zero, namedIds = IntPtr.Zero, dp = IntPtr.Zero;
++			IntPtr result = IntPtr.Zero, excep = IntPtr.Zero, nameArray = IntPtr.Zero, idArray = IntPtr.Zero;
++			Guid empty = Guid.Empty;
++			int[] ids;
++
++			if (co == null)
++				throw new ArgumentException ("The target is not a COM object.", "target");
++			disp = co.IDispatch;
++			if ((flags & method) != 0) dflags |= 1;
++			if ((flags & get) != 0) dflags |= 2;
++			if ((flags & set) != 0) dflags |= 4;
++			if ((flags & setref) != 0) dflags |= 8;
++			if (nnamed > nargs)
++				throw new ArgumentException ("More named parameters than arguments.");
++
++			ids = new int [1 + nnamed];
++			try {
++				if (name.StartsWith ("[DISPID=", StringComparison.OrdinalIgnoreCase) && name.EndsWith ("]")) {
++					ids [0] = int.Parse (name.Substring (8, name.Length - 9), System.Globalization.CultureInfo.InvariantCulture);
++					if (nnamed > 0)
++						throw new ArgumentException ("Named parameters with a DISPID name.");
++				} else {
++					nameArray = Marshal.AllocCoTaskMem ((1 + nnamed) * IntPtr.Size);
++					idArray = Marshal.AllocCoTaskMem ((1 + nnamed) * 4);
++					Marshal.WriteIntPtr (nameArray, 0, Marshal.StringToCoTaskMemUni (name));
++					for (i = 0; i < nnamed; i++)
++						Marshal.WriteIntPtr (nameArray, (i + 1) * IntPtr.Size, Marshal.StringToCoTaskMemUni (named [i]));
++					hr = ((GetIDsOfNamesFn)VtblFn (disp, 5, typeof (GetIDsOfNamesFn))) (disp, ref empty, nameArray, 1 + nnamed, lcid, idArray);
++					if (hr < 0) {
++						if (hr == DISP_E_UNKNOWNNAME || hr == DISP_E_MEMBERNOTFOUND)
++							throw new MissingMethodException ("COM target does not implement a member named '" + name + "'.");
++						Marshal.ThrowExceptionForHR (hr);
++					}
++					Marshal.Copy (idArray, ids, 0, 1 + nnamed);
++				}
++				dispid = ids [0];
++
++				/* arguments right to left; the named ones (the last nnamed) first, in the
++				 * order of their names; a property's new value is named DISPID_PROPERTYPUT */
++				int ncount = nnamed + (put ? 1 : 0);
++				if (nargs > 0) {
++					variants = Marshal.AllocCoTaskMem (nargs * vsize);
++					byrefs = Marshal.AllocCoTaskMem (nargs * vsize);
++					for (i = 0; i < nargs * vsize; i++) { Marshal.WriteByte (variants, i, 0); Marshal.WriteByte (byrefs, i, 0); }
++				}
++				if (ncount > 0)
++					namedIds = Marshal.AllocCoTaskMem (ncount * 4);
++				for (i = 0; i < nargs; i++) {
++					/* argument i goes to slot nargs - 1 - i */
++					IntPtr slot = new IntPtr (variants.ToInt64 () + (long)(nargs - 1 - i) * vsize);
++					if (byref != null && i < byref.Length && byref [i]) {
++						IntPtr inner = new IntPtr (byrefs.ToInt64 () + (long)i * vsize);
++						Marshal.GetNativeVariantForObject (args [i], inner);
++						Marshal.WriteInt16 (slot, 0, (short)(0x4000 | 12));   /* VT_BYREF | VT_VARIANT */
++						Marshal.WriteIntPtr (slot, 8, inner);
++					} else {
++						Marshal.GetNativeVariantForObject (args [i] is System.Reflection.Missing ? (object)new ErrorWrapper (unchecked ((int)0x80020004)) : args [i], slot);
++					}
++				}
++				/* named argument dispids: args[nargs - nnamed + k] has named[k]; in the
++				 * reversed array that argument sits at nnamed - 1 - k */
++				if (put) {
++					/* the value is the last argument, at slot 0 */
++					Marshal.WriteInt32 (namedIds, 0, DISPID_PROPERTYPUT);
++				}
++				for (i = 0; i < nnamed; i++) {
++					/* slots 0..nnamed-1 hold the named ones (reversed); a put's value would be
++					 * among them only without names */
++					Marshal.WriteInt32 (namedIds, ((put ? 1 : 0) + (nnamed - 1 - i)) * 4, ids [1 + i]);
++				}
++				dp = Marshal.AllocCoTaskMem (2 * IntPtr.Size + 8);
++				Marshal.WriteIntPtr (dp, 0, variants);
++				Marshal.WriteIntPtr (dp, IntPtr.Size, namedIds);
++				Marshal.WriteInt32 (dp, 2 * IntPtr.Size, nargs);
++				Marshal.WriteInt32 (dp, 2 * IntPtr.Size + 4, ncount);
++				result = Marshal.AllocCoTaskMem (vsize);
++				for (i = 0; i < vsize; i++) Marshal.WriteByte (result, i, 0);
++				excep = Marshal.AllocCoTaskMem (8 * IntPtr.Size + 16);
++				for (i = 0; i < 8 * IntPtr.Size + 16; i++) Marshal.WriteByte (excep, i, 0);
++
++				hr = ((InvokeFn)VtblFn (disp, 6, typeof (InvokeFn))) (disp, dispid, ref empty, lcid, dflags, dp,
++				                                                    put ? IntPtr.Zero : result, excep, IntPtr.Zero);
++				if (hr == DISP_E_EXCEPTION) {
++					/* EXCEPINFO: wCode, wReserved, bstrSource, bstrDescription, bstrHelpFile, dwHelpContext, pvReserved, pfnDeferredFillIn, scode */
++					int off = IntPtr.Size;   /* after the two WORDs, aligned */
++					IntPtr bsource = Marshal.ReadIntPtr (excep, off), bdesc = Marshal.ReadIntPtr (excep, off + IntPtr.Size);
++					string source = bsource == IntPtr.Zero ? null : Marshal.PtrToStringBSTR (bsource);
++					string desc = bdesc == IntPtr.Zero ? null : Marshal.PtrToStringBSTR (bdesc);
++					int scode = Marshal.ReadInt32 (excep, IntPtr.Size == 8 ? 56 : 28);
++					COMException inner = new COMException (desc ?? source ?? "Exception occurred.", scode != 0 ? scode : hr);
++					throw new System.Reflection.TargetInvocationException (inner);
++				}
++				if (hr < 0) {
++					if (hr == DISP_E_UNKNOWNNAME || hr == DISP_E_MEMBERNOTFOUND)
++						throw new MissingMethodException ("COM target does not implement a member named '" + name + "'.");
++					Marshal.ThrowExceptionForHR (hr);
++				}
++				for (i = 0; byref != null && i < nargs && i < byref.Length; i++)
++					if (byref [i])
++						args [i] = Marshal.GetObjectForNativeVariant (new IntPtr (byrefs.ToInt64 () + (long)i * vsize));
++				return put ? null : Marshal.GetObjectForNativeVariant (result);
++			} finally {
++				if (nameArray != IntPtr.Zero) {
++					for (i = 0; i < 1 + nnamed; i++) Marshal.FreeCoTaskMem (Marshal.ReadIntPtr (nameArray, i * IntPtr.Size));
++					Marshal.FreeCoTaskMem (nameArray);
++				}
++				if (idArray != IntPtr.Zero) Marshal.FreeCoTaskMem (idArray);
++				for (i = 0; i < nargs && variants != IntPtr.Zero; i++) {
++					IntPtr slot = new IntPtr (variants.ToInt64 () + (long)i * vsize);
++					if ((Marshal.ReadInt16 (slot) & 0x4000) == 0) VariantClear (slot);
++					VariantClear (new IntPtr (byrefs.ToInt64 () + (long)i * vsize));
++				}
++				if (variants != IntPtr.Zero) Marshal.FreeCoTaskMem (variants);
++				if (byrefs != IntPtr.Zero) Marshal.FreeCoTaskMem (byrefs);
++				if (namedIds != IntPtr.Zero) Marshal.FreeCoTaskMem (namedIds);
++				if (dp != IntPtr.Zero) Marshal.FreeCoTaskMem (dp);
++				if (result != IntPtr.Zero) { VariantClear (result); Marshal.FreeCoTaskMem (result); }
++				if (excep != IntPtr.Zero) Marshal.FreeCoTaskMem (excep);
++			}
++		}
++#endif
++
+ 		internal static Guid IID_IUnknown
+ 		{
+ 			get
+--- a/mcs/class/referencesource/mscorlib/system/rttype.cs
++++ b/mcs/class/referencesource/mscorlib/system/rttype.cs
+@@ -4682,7 +4682,13 @@
+ 
+             #region COM Interop
+ #if FEATURE_COMINTEROP && FEATURE_USE_LCID
++#if MONO && !SG_MUTANT_COM_INVOKEMEMBER_NOT_IMPLEMENTED
++            /* an IDispatch from a VARIANT is a bare System.__ComObject, whose type Mono does
++             * not call a COM object (mono-0031) */
++            if (target != null && (target.GetType().IsCOMObject || target is System.__ComObject))
++#else
+             if (target != null && target.GetType().IsCOMObject)
++#endif
+             {
+                 #region Preconditions
+                 if ((bindingFlags & ClassicBindingMask) == 0)
+@@ -4712,7 +4718,20 @@
+                     if (name == null)
+                         throw new ArgumentNullException("name");
+ #if MONO
++#if !SG_MUTANT_COM_INVOKEMEMBER_NOT_IMPLEMENTED
++                    /* Stained Glass OS (mono-0031): IDispatch late binding (System.__ComObject) */
++                    bool[] byRefArgs = null;
++                    if (modifiers != null && modifiers.Length > 0 && providedArgs != null)
++                    {
++                        byRefArgs = new bool[providedArgs.Length];
++                        try { for (int i = 0; i < byRefArgs.Length; i++) byRefArgs[i] = modifiers[0][i]; }
++                        catch (IndexOutOfRangeException) { }
++                    }
++                    return System.__ComObject.InvokeDispMember(name, bindingFlags, target, providedArgs, byRefArgs,
++                        culture == null ? 0x0409 : culture.LCID, namedParams);
++#else
+                     throw new NotImplementedException ();
++#endif
+ #else
+                     bool[] isByRef = modifiers == null ? null : modifiers[0].IsByRefArray;
+                     
+@@ -4727,7 +4746,22 @@
+                 else
+                 {
+ #if MONO
++#if !SG_MUTANT_COM_INVOKEMEMBER_NOT_IMPLEMENTED
++                    /* Mono's COM objects are ComInteropProxy transparent proxies (mono-0031) */
++                    if (name == null)
++                        throw new ArgumentNullException("name");
++                    bool[] byRefArgs = null;
++                    if (modifiers != null && modifiers.Length > 0 && providedArgs != null)
++                    {
++                        byRefArgs = new bool[providedArgs.Length];
++                        try { for (int i = 0; i < byRefArgs.Length; i++) byRefArgs[i] = modifiers[0][i]; }
++                        catch (IndexOutOfRangeException) { }
++                    }
++                    return System.__ComObject.InvokeDispMember(name, bindingFlags, target, providedArgs, byRefArgs,
++                        culture == null ? 0x0409 : culture.LCID, namedParams);
++#else
+                     throw new NotImplementedException ();
++#endif
+ #else
+                     #region TransparentProxy case
+                     return ((MarshalByRefObject)target).InvokeMember(name, bindingFlags, binder, providedArgs, modifiers, culture, namedParams);

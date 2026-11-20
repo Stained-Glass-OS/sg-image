@@ -1,0 +1,95 @@
+--- a/src/Microsoft.CSharp/src/Microsoft/CSharp/RuntimeBinder/BinderHelper.cs
++++ b/src/Microsoft.CSharp/src/Microsoft/CSharp/RuntimeBinder/BinderHelper.cs
+@@ -25,6 +25,15 @@
+                 IEnumerable<CSharpArgumentInfo> arginfos,
+                 DynamicMetaObject onBindingError)
+         {
++#if !SG_MUTANT_NO_COM_DYNAMIC
++            if (args.Length > 0 && args[0].HasValue && args[0].Value != null &&
++                System.Runtime.InteropServices.Marshal.IsComObject(args[0].Value))
++            {
++                DynamicMetaObject com = BindCom(action, args);
++                if (com != null)
++                    return com;
++            }
++#endif
+             Expression[] parameters = new Expression[args.Length];
+             BindingRestrictions restrictions = BindingRestrictions.Empty;
+             ICSharpInvokeOrInvokeMemberBinder callPayload = action as ICSharpInvokeOrInvokeMemberBinder;
+@@ -336,6 +345,76 @@
+ 
+         /////////////////////////////////////////////////////////////////////////////////
+ 
++#if !SG_MUTANT_NO_COM_DYNAMIC
++        // Stained Glass OS (Wine Mono mono-0031): "dynamic" on a COM object late-binds through its
++        // IDispatch, as the .NET Framework's binder does (its COM binder): a call, a property get
++        // or set, an indexer (DISPID_VALUE) or an invocation of the object itself go to
++        // Type.InvokeMember on the object, which Mono now implements for COM targets. Without it
++        // the binder looked for the member on System.__ComObject and threw RuntimeBinderException
++        // (Mesen: WScript.Shell's CreateShortcut).
++        private static DynamicMetaObject BindCom(ICSharpBinder action, DynamicMetaObject[] args)
++        {
++            string name;
++            System.Reflection.BindingFlags flags;
++
++            if (action is CSharpInvokeMemberBinder)
++            {
++                name = action.Name;
++                flags = System.Reflection.BindingFlags.InvokeMethod | System.Reflection.BindingFlags.GetProperty;
++            }
++            else if (action is CSharpGetMemberBinder)
++            {
++                name = action.Name;
++                flags = System.Reflection.BindingFlags.GetProperty;
++            }
++            else if (action is CSharpSetMemberBinder)
++            {
++                name = action.Name;
++                flags = System.Reflection.BindingFlags.SetProperty;
++            }
++            else if (action is CSharpGetIndexBinder)
++            {
++                name = "[DISPID=0]";
++                flags = System.Reflection.BindingFlags.GetProperty;
++            }
++            else if (action is CSharpSetIndexBinder)
++            {
++                name = "[DISPID=0]";
++                flags = System.Reflection.BindingFlags.SetProperty;
++            }
++            else if (action is CSharpInvokeBinder)
++            {
++                name = "[DISPID=0]";
++                flags = System.Reflection.BindingFlags.InvokeMethod;
++            }
++            else return null;
++
++            Expression target = Expression.Convert(args[0].Expression, typeof(object));
++            Expression[] values = new Expression[args.Length - 1];
++            for (int i = 1; i < args.Length; i++)
++                values[i - 1] = Expression.Convert(args[i].Expression, typeof(object));
++            MethodInfo invoke = typeof(Type).GetMethod("InvokeMember", new Type[] {
++                typeof(string), typeof(System.Reflection.BindingFlags), typeof(System.Reflection.Binder),
++                typeof(object), typeof(object[]) });
++            Expression call = Expression.Call(
++                Expression.Call(target, typeof(object).GetMethod("GetType")), invoke,
++                Expression.Constant(name), Expression.Constant(flags),
++                Expression.Constant(null, typeof(System.Reflection.Binder)), target,
++                Expression.NewArrayInit(typeof(object), values));
++            Type ret = action.ReturnType;
++            Expression result;
++            if (ret == typeof(void))
++                result = Expression.Block(typeof(void), call);
++            else if (action is CSharpSetMemberBinder || action is CSharpSetIndexBinder)
++                /* an assignment's value is the value assigned */
++                result = Expression.Block(call, Expression.Convert(values[values.Length - 1], ret));
++            else
++                result = Expression.Convert(call, ret);
++            return new DynamicMetaObject(result,
++                BindingRestrictions.GetTypeRestriction(args[0].Expression, args[0].Value.GetType()));
++        }
++#endif
++
+         private static bool IsIncrementOrDecrementActionOnLocal(ICSharpBinder action) =>
+             action is CSharpUnaryOperationBinder operatorPayload
+             && (operatorPayload.Operation == ExpressionType.Increment || operatorPayload.Operation == ExpressionType.Decrement);

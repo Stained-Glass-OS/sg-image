@@ -81,6 +81,10 @@
 #     Internet Settings key (mono-0022); Marshal.CreateAggregatedObject
 #     aggregates a managed object into a native COM object (Visual Studio's
 #     DTE.Solution threw NotImplementedException; mono-0023);
+#   - (sg34) late binding to COM objects: Type.InvokeMember on a COM object
+#     through its IDispatch (methods, properties, named arguments, [DISPID=n],
+#     the object's own errors), and C# "dynamic" on COM objects (Mesen's
+#     WScript.Shell CreateShortcut; mono-0031, corefx-0004);
 #   - (sg33) NetworkInterface.GetIPStatistics gives every interface's
 #     counters (.NET Framework 4.6+; LibreHardwareMonitor died at start), and
 #     MIB_IFROW's DWORD counters are read unsigned (mono-0030);
@@ -2066,4 +2070,55 @@ ifs=$(printf '%s' "$out" | sed -n 's/^ifs=\([0-9]*\).*/\1/p')
 [ -n "$ifs" ] && [ "$ifs" -gt 0 ] && printf '%s' "$out" | grep -q " ok=$ifs neg=0 err=none" \
     && pass "every interface's GetIPStatistics, counters unsigned ($out)" \
     || fail "GetIPStatistics: '$out' (sg32: err=NotImplementedException)"
+# (sg34) late binding to COM objects (mono-0031): Type.InvokeMember on a COM object goes through
+# its IDispatch (methods, property get/put, named arguments, [DISPID=0]), and C# "dynamic" on a
+# COM object binds through it, as the .NET Framework does: Mesen's WScript.Shell CreateShortcut
+# threw RuntimeBinderException ("System.__ComObject does not contain a definition"), and
+# InvokeMember threw NotImplementedException. sg33: both fail.
+# Mutants: -d:SG_MUTANT_COM_INVOKEMEMBER_NOT_IMPLEMENTED (corlib), -d:SG_MUTANT_NO_COM_DYNAMIC
+# (Microsoft.CSharp).
+cat > "$C/sg34.cs" <<'CS'
+using System; using System.IO; using System.Reflection;
+class P { static void Main() {
+  string r = "";
+  try {
+    object d = Activator.CreateInstance(Type.GetTypeFromProgID("Scripting.Dictionary"));
+    Type t = d.GetType();
+    t.InvokeMember("CompareMode", BindingFlags.SetProperty, null, d, new object[] { 1 });
+    t.InvokeMember("Add", BindingFlags.InvokeMethod, null, d, new object[] { "a", 7 });
+    t.InvokeMember("Add", BindingFlags.InvokeMethod, null, d, new object[] { "b", "two" });
+    object n = t.InvokeMember("Count", BindingFlags.GetProperty, null, d, null);
+    object v = t.InvokeMember("[DISPID=0]", BindingFlags.GetProperty, null, d, new object[] { "b" });
+    r += "invoke=" + n + ":" + v + ":" + t.InvokeMember("CompareMode", BindingFlags.GetProperty, null, d, null);
+    try { t.InvokeMember("NoSuchMember", BindingFlags.InvokeMethod, null, d, null); r += ":nomiss"; }
+    catch (MissingMethodException) { r += ":missing"; }
+    /* the object's own error (CompareMode of a dictionary that has items): TargetInvocationException */
+    try { t.InvokeMember("CompareMode", BindingFlags.SetProperty, null, d, new object[] { 0 }); r += ":noerror"; }
+    catch (TargetInvocationException e) { r += e.InnerException is System.Runtime.InteropServices.COMException ? ":tie" : ":tie?"; }
+  } catch (Exception e) { r += "invoke=" + e.GetType().Name; }
+  Console.WriteLine(r); r = "";
+  try {
+    dynamic d = Activator.CreateInstance(Type.GetTypeFromProgID("Scripting.Dictionary"));
+    d.Add("x", 40); d["y"] = 2;
+    int sum = (int)d.Item("x") + (int)d["y"];
+    r += "dynamic=" + d.Count + ":" + sum + ":" + d.Exists("y");
+    dynamic sh = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
+    string lnk = Path.Combine(Path.GetTempPath(), "sg34.lnk");
+    dynamic s = sh.CreateShortcut(lnk);
+    s.TargetPath = @"C:\windows\notepad.exe";
+    s.Save();
+    r += ":lnk=" + File.Exists(lnk);
+  } catch (Exception e) { r += "dynamic=" + e.GetType().Name; }
+  Console.WriteLine(r);
+} }
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -r:Microsoft.CSharp.dll -r:System.Core.dll -out:sg34.exe sg34.cs >"$T/mcs34.out" 2>&1)
+[ -f "$C/sg34.exe" ] || { fail "the sg34 probe did not compile: $(cat "$T/mcs34.out")"; exit 1; }
+out=$(cd "$C" && timeout -s KILL 120 "$WINE" sg34.exe 2>&1 | tr -d '\r')
+[ "$(v invoke)" = "2:two:1:missing:tie" ] \
+    && pass "Type.InvokeMember on a COM object: method, property get/put, [DISPID=0], a missing member, the object's own error" \
+    || fail "InvokeMember on COM: '$(v invoke)' (sg33: NotImplementedException)"
+[ "$(v dynamic)" = "2:42:True:lnk=True" ] \
+    && pass "C# dynamic on COM objects: calls, indexer, properties, WScript.Shell CreateShortcut (Mesen)" \
+    || fail "dynamic on COM: '$(v dynamic)' (sg33: RuntimeBinderException)"
 exit $RC
