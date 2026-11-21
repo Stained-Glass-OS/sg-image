@@ -19,7 +19,7 @@ SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 SG_MAIL     ?= ../sg-mail
 
-.PHONY: desktop-deb desktop-test keyring-test keyring-reset-test netlock-test firewall-test gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-deb apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test videodecode-test d3d9-test surface-handle-test keyedmutex-test d3d-patchrev upgrade-order-test clean distclean
+.PHONY: desktop-deb desktop-test keyring-test keyring-reset-test netlock-test firewall-test gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-deb apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test videodecode-test d3d9-test surface-handle-test keyedmutex-test d3d12share-test d3d-patchrev upgrade-order-test clean distclean
 
 all: image
 
@@ -328,6 +328,11 @@ surface-handle-test: d3d
 # black). Host test, as dcomp-test: lavapipe, and a hardware driver if any.
 keyedmutex-test: d3d
 	@test/keyedmutex-test.sh
+
+# A Direct3D 11 texture read by Direct3D 12 in another process (Qt's D3D12
+# renderer taking Chromium's frames): dxvk/patches/0014. Host test, as above.
+d3d12share-test: d3d
+	@test/d3d12share-test.sh
 
 # A new build sorts above the published one; publish refuses one that does not
 # (sg-d3d 616: a hash-only version apt took for a downgrade).
