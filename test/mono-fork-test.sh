@@ -85,6 +85,10 @@
 #     through its IDispatch (methods, properties, named arguments, [DISPID=n],
 #     the object's own errors), and C# "dynamic" on COM objects (Mesen's
 #     WScript.Shell CreateShortcut; mono-0031, corefx-0004);
+#   - (sg36) a configuration section may keep the reader DeserializeSection
+#     gets and read it later (GetRuntimeObject), as on .NET Framework: Mono
+#     closed it, and SyncTrayzor's settings section read as nothing
+#     (NullReferenceException at start; mono-0034);
 #   - (sg35) Windows Runtime classes named by the Windows SDK's contract
 #     assemblies (Windows.Foundation.UniversalApiContract, FoundationContract,
 #     Services.Store.StoreContract) resolve to the system's metadata, as the
@@ -2437,5 +2441,45 @@ else
     case "$(v nested)" in "ModuleLoadExceptionHandlerException:A nested exception occurred after the primary exception that caused the C++ module to fail to load.<primary")
         pass "C++/CLI ThrowNestedModuleLoadException raises ModuleLoadExceptionHandlerException" ;;
     *)  fail "ThrowNestedModuleLoadException: '$(v nested)'" ;; esac
+fi
+# (sg36) a configuration section keeps the reader it was given (mono-0034): .NET Framework leaves
+# the XmlReader it hands ConfigurationSection.DeserializeSection open, and a section may return it
+# from GetRuntimeObject for the program to read -- SyncTrayzor's XmlConfigurationSection does, and
+# deserializes its <settings> with XmlSerializer. Mono closed the reader after DeserializeSection:
+# the settings read as nothing (null) and SyncTrayzor stopped at start with a
+# NullReferenceException. sg35: reader=Closed, settings=null.
+# Mutant: -d:SG_MUTANT_SECTION_READER_CLOSED (System.Configuration).
+cat > "$C/sg36.cs" <<'CS'
+using System; using System.Configuration; using System.Xml; using System.Xml.Serialization;
+public class XmlSection : ConfigurationSection {
+  XmlReader reader;
+  protected override void DeserializeSection(XmlReader r) { reader = r; }
+  protected override object GetRuntimeObject() { return reader; }
+}
+public class Settings { public string Url { get; set; } public int Port { get; set; } }
+class P { static void Main() {
+  var r = ConfigurationManager.GetSection("settings") as XmlReader;
+  Console.WriteLine("reader=" + (r == null ? "null" : r.ReadState.ToString()));
+  try {
+    var s = (Settings)new XmlSerializer(typeof(Settings), new XmlRootAttribute("settings")).Deserialize(r);
+    Console.WriteLine("settings=" + (s == null ? "null" : s.Url + ":" + s.Port));
+  } catch (Exception e) { Console.WriteLine("settings=" + e.GetType().Name); }
+} }
+CS
+cat > "$C/sg36.exe.config" <<'XML'
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <configSections><section name="settings" type="XmlSection, sg36" /></configSections>
+  <settings><Url>https://example.invalid/check</Url><Port>2004</Port></settings>
+</configuration>
+XML
+(cd "$C" && timeout 300 "$WINE" "$mcs" -r:System.Configuration.dll -r:System.Xml.dll -out:sg36.exe sg36.cs >"$T/mcs36.out" 2>&1)
+if [ ! -f "$C/sg36.exe" ]; then
+    fail "the sg36 probe did not compile: $(cat "$T/mcs36.out")"
+else
+    out=$(cd "$C" && timeout -s KILL 120 "$WINE" sg36.exe 2>&1 | tr -d '\r')
+    [ "$(v reader)" = Initial ] && [ "$(v settings)" = "https://example.invalid/check:2004" ] \
+        && pass "a configuration section keeps the reader it was given and reads it later (SyncTrayzor's settings)" \
+        || fail "section reader: '$(v reader)' settings '$(v settings)' (sg35: Closed, null)"
 fi
 exit $RC

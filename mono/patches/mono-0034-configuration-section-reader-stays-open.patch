@@ -1,0 +1,18 @@
+diff --git a/mcs/class/System.Configuration/System.Configuration/Configuration.cs b/mcs/class/System.Configuration/System.Configuration/Configuration.cs
+--- a/mcs/class/System.Configuration/System.Configuration/Configuration.cs
++++ b/mcs/class/System.Configuration/System.Configuration/Configuration.cs
+@@ -307,7 +307,14 @@
+ 			if (xml != null) {
+ 				XmlTextReader r = new ConfigXmlTextReader (new StringReader (xml), FilePath);
+ 				sec.DeserializeSection (r);
++#if SG_MUTANT_SECTION_READER_CLOSED
+ 				r.Close ();
++#endif
++				// Stained Glass OS: the reader stays open, as .NET Framework leaves the one it
++				// hands DeserializeSection (over the section's XML, nothing to release): a
++				// section may keep it and read it later, from GetRuntimeObject (SyncTrayzor's
++				// XmlConfigurationSection gives it to XmlSerializer; a closed reader read as
++				// no settings at all and SyncTrayzor stopped with a NullReferenceException)
+ 
+ 				if (!String.IsNullOrEmpty (sec.SectionInformation.ConfigSource) && !String.IsNullOrEmpty (FilePath))
+ 					sec.DeserializeConfigSource (Path.GetDirectoryName (FilePath));

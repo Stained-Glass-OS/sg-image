@@ -684,3 +684,16 @@ mono-0033-cpp-cli-runtime-managed-helpers.patch (sg35)
       the uninitializer (checked by hand with AOO 4.1.15's DLLs). Ledger i0020 / gdata.
     Gate: test/mono-fork-test.sh (sg35 C++/CLI section, imports declared as cli_uno declares
       them); sg34 EntryPointNotFoundException. Mutant SG_MUTANT_MSVCM_HELPERS_NATIVE.
+
+mono-0034-configuration-section-reader-stays-open.patch (sg36)
+    System.Configuration (Configuration.GetSectionInstance): the XmlReader a section's
+      DeserializeSection gets stays open, as .NET Framework leaves it (a reader over the
+      section's XML; nothing to release). A section may keep it and read it later -- return it
+      from GetRuntimeObject for the program to deserialize. Mono closed it right after
+      DeserializeSection, so such a section's settings read as nothing.
+    Why: SyncTrayzor 1.1.29 (runtime census set 7, gaps15): its XmlConfigurationSection hands
+      the reader to XmlSerializer; AppSettings.Instance was null and SyncTrayzor stopped at
+      start ("An unexpected exception occurred during startup: NullReferenceException at
+      SyncTrayzor.Bootstrapper.ConfigureIoC"). With sg36 it starts and runs Syncthing.
+    Gate: test/mono-fork-test.sh (sg36 section); sg35: reader Closed, settings null.
+      Mutant SG_MUTANT_SECTION_READER_CLOSED.
