@@ -85,6 +85,16 @@
 #     through its IDispatch (methods, properties, named arguments, [DISPID=n],
 #     the object's own errors), and C# "dynamic" on COM objects (Mesen's
 #     WScript.Shell CreateShortcut; mono-0031, corefx-0004);
+#   - (sg35) Windows Runtime classes named by the Windows SDK's contract
+#     assemblies (Windows.Foundation.UniversalApiContract, FoundationContract,
+#     Services.Store.StoreContract) resolve to the system's metadata, as the
+#     CLR resolves them by namespace (Cyberduck died at start); the toast,
+#     XML, package, application data, Store and ApiInformation classes are the
+#     system's (Wine's) objects, events and IAsyncOperation included, and
+#     System.Runtime.WindowsRuntime bridges them to tasks (mono-0032,
+#     wine-mono-0005); the C++/CLI runtime's RegisterModuleUninitializer and
+#     ThrowModuleLoadException are managed, as msvcm80/90's are (Apache
+#     OpenOffice's cli_uno; mono-0033);
 #   - (sg33) NetworkInterface.GetIPStatistics gives every interface's
 #     counters (.NET Framework 4.6+; LibreHardwareMonitor died at start), and
 #     MIB_IFROW's DWORD counters are read unsigned (mono-0030);
@@ -2121,4 +2131,311 @@ out=$(cd "$C" && timeout -s KILL 120 "$WINE" sg34.exe 2>&1 | tr -d '\r')
 [ "$(v dynamic)" = "2:42:True:lnk=True" ] \
     && pass "C# dynamic on COM objects: calls, indexer, properties, WScript.Shell CreateShortcut (Mesen)" \
     || fail "dynamic on COM: '$(v dynamic)' (sg33: RuntimeBinderException)"
+# (sg35) Windows Runtime classes by contract name, projected onto the system's classes
+# (mono-0032, wine-mono-0005): a program built against the Windows SDK's contract
+# assemblies (Microsoft.Windows.SDK.Contracts) references "Windows.Foundation.
+# UniversalApiContract", "Windows.Foundation.FoundationContract", "Windows.Services.Store.
+# StoreContract" (ContentType=WindowsRuntime), which the CLR resolves by namespace in the
+# system's metadata whatever the name: Cyberduck 9.6 died at start with FileNotFoundException
+# Windows.Foundation.UniversalApiContract 14.0. The probe is compiled against stand-ins of the
+# three contracts (and of System.Runtime.WindowsRuntime 4.0.14.0, the NuGet reference version),
+# which are then removed: only WinMetadata/Windows.winmd and the image's
+# System.Runtime.WindowsRuntime can serve it. Its toast is the system's (Wine's
+# Windows.UI.Notifications): it shows, a click raises Activated (registered through
+# WindowsRuntimeMarshal.AddEventHandler, as compiled code does) with the launch arguments and the
+# same toast object; Package.Current / ApplicationData.Current without package identity are
+# InvalidOperationException 0x80073D54; the Store's app licence comes through IAsyncOperation:
+# Completed, AsTask and await (System.Runtime.WindowsRuntime), and a Task back as IAsyncAction.
+# sg34: FileNotFoundException. Mutants: -d:SG_MUTANT_WINRT_CONTRACTS_UNRESOLVED (assembly.c),
+# -d:SG_MUTANT_WINRT_HRESULTS_AS_COMEXCEPTION, -d:SG_MUTANT_WINRT_PIID_NO_VERSION (Wine does not
+# check the ids it is handed; the id check catches it),
+# -d:SG_MUTANT_TOAST_SHOW_NOT_PROJECTED (Windows.winmd).
+csc=$("$WINE" winepath -w "$MONO/lib/mono/4.5/csc.exe" | tr -d '\r')
+W35="$C/sg35"; mkdir -p "$W35"
+printf '\000\000\000\000\000\000\000\000\004\000\000\000\000\000\000\000' > "$W35/ecma.pub"
+cat > "$W35/foundation.cs" <<'CS'
+using System; using System.Reflection;
+#pragma warning disable 618
+[assembly: AssemblyVersion("4.0.0.0")] [assembly: AssemblyFlags(0x200)]
+namespace Windows.Foundation {
+  public enum AsyncStatus { Started = 0, Completed = 1, Canceled = 2, Error = 3 }
+  public interface IAsyncInfo { Exception ErrorCode { get; } uint Id { get; } AsyncStatus Status { get; } void Cancel(); void Close(); }
+  public delegate void AsyncOperationCompletedHandler<TResult>(IAsyncOperation<TResult> asyncInfo, AsyncStatus asyncStatus);
+  public interface IAsyncOperation<TResult> : IAsyncInfo { AsyncOperationCompletedHandler<TResult> Completed { get; set; } TResult GetResults(); }
+  public delegate void AsyncActionCompletedHandler(IAsyncAction asyncInfo, AsyncStatus asyncStatus);
+  public interface IAsyncAction : IAsyncInfo { AsyncActionCompletedHandler Completed { get; set; } void GetResults(); }
+  public delegate void TypedEventHandler<TSender, TResult>(TSender sender, TResult args);
+}
+namespace Windows.Foundation.Metadata {
+  public static class ApiInformation { public static bool IsApiContractPresent(string contractName, ushort majorVersion) { throw null; } }
+}
+CS
+cat > "$W35/universal.cs" <<'CS'
+using System; using System.Collections.Generic; using System.Reflection;
+using System.Runtime.InteropServices.WindowsRuntime; using Windows.Foundation;
+#pragma warning disable 618
+[assembly: AssemblyVersion("14.0.0.0")] [assembly: AssemblyFlags(0x200)]
+namespace Windows.Data.Xml.Dom {
+  public sealed class XmlDocument { public XmlDocument() { } public void LoadXml(string xml) { } public string GetXml() { throw null; } }
+}
+namespace Windows.UI.Notifications {
+  using Windows.Data.Xml.Dom;
+  public enum NotificationSetting { Enabled = 0, DisabledForApplication = 1, DisabledForUser = 2, DisabledByGroupPolicy = 3, DisabledByManifest = 4 }
+  public sealed class ToastActivatedEventArgs { public string Arguments { get { throw null; } } }
+  public sealed class ToastNotification {
+    public ToastNotification(XmlDocument content) { }
+    public string Tag { get { throw null; } } public void put_Tag(string value) { }
+    public string Group { get { throw null; } } public void put_Group(string value) { }
+    public EventRegistrationToken add_Activated(TypedEventHandler<ToastNotification, object> handler) { throw null; }
+    public void remove_Activated(EventRegistrationToken token) { }
+  }
+  public sealed class ToastNotifier { public void Show(ToastNotification notification) { } public NotificationSetting Setting { get { throw null; } } }
+  public sealed class ToastNotificationHistory { public void Clear(string applicationId) { } public IReadOnlyList<ToastNotification> GetHistory() { throw null; } }
+  public static class ToastNotificationManager {
+    public static ToastNotifier CreateToastNotifier(string applicationId) { throw null; }
+    public static ToastNotificationHistory History { get { throw null; } }
+  }
+}
+namespace Windows.ApplicationModel { public sealed class Package { public static Package Current { get { throw null; } } } }
+namespace Windows.Storage { public sealed class ApplicationData { public static ApplicationData Current { get { throw null; } } } }
+CS
+cat > "$W35/store.cs" <<'CS'
+using System.Reflection; using Windows.Foundation;
+#pragma warning disable 618
+[assembly: AssemblyVersion("4.0.0.0")] [assembly: AssemblyFlags(0x200)]
+namespace Windows.Services.Store {
+  public sealed class StoreAppLicense { public bool IsActive { get { throw null; } } public bool IsTrial { get { throw null; } } }
+  public sealed class StoreContext {
+    public static StoreContext GetDefault() { throw null; }
+    public IAsyncOperation<StoreAppLicense> GetAppLicenseAsync() { throw null; }
+  }
+}
+CS
+cat > "$W35/srwr.cs" <<'CS'
+using System.Reflection; using System.Runtime.CompilerServices; using System.Threading.Tasks; using Windows.Foundation;
+[assembly: AssemblyVersion("4.0.14.0")] [assembly: AssemblyDelaySign(true)]
+namespace System {
+  public static class WindowsRuntimeSystemExtensions {
+    public static Task<TResult> AsTask<TResult>(this IAsyncOperation<TResult> source) { throw null; }
+    public static TaskAwaiter<TResult> GetAwaiter<TResult>(this IAsyncOperation<TResult> source) { throw null; }
+    public static IAsyncAction AsAsyncAction(this Task source) { throw null; }
+  }
+}
+CS
+cat > "$W35/sg35.cs" <<'CS'
+using System; using System.Runtime.InteropServices; using System.Runtime.InteropServices.WindowsRuntime;
+using System.Threading; using System.Threading.Tasks;
+using Windows.Foundation; using Windows.UI.Notifications; using Windows.Data.Xml.Dom; using Windows.Services.Store;
+class P {
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindowExW(IntPtr p, IntPtr a, string c, string t);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern bool PostMessageW(IntPtr h, int m, IntPtr w, IntPtr l);
+  static void Say(string k, Func<string> f) {
+    string v; try { v = f(); } catch (Exception e) { v = (e is InvalidOperationException ? "InvalidOperationException" : e.GetType().Name) + ":" + e.HResult.ToString("X8"); }
+    Console.WriteLine(k + "=" + v);
+  }
+  static IntPtr FindToast() {
+    for (int t = 0; t < 10000; t += 50) {
+      IntPtr h = IntPtr.Zero;
+      while ((h = FindWindowExW(IntPtr.Zero, h, "WineToastNotification", null)) != IntPtr.Zero) if (IsWindowVisible(h)) return h;
+      Thread.Sleep(50);
+    }
+    return IntPtr.Zero;
+  }
+  static string Xml() {
+    var d = new XmlDocument();
+    d.LoadXml("<toast launch=\"from-body\"><visual><binding template=\"ToastGeneric\"><text>sg35</text><text>From .NET</text></binding></visual></toast>");
+    return d.GetXml();
+  }
+  static string Toast() {
+    var d = new XmlDocument();
+    d.LoadXml("<toast launch=\"from-body\"><visual><binding template=\"ToastGeneric\"><text>sg35</text><text>From .NET</text></binding></visual></toast>");
+    var n = ToastNotificationManager.CreateToastNotifier("SG.MonoFork.Gate");
+    var t = new ToastNotification(d);
+    t.put_Tag("tag1"); t.put_Group("grp1");
+    var fired = new ManualResetEvent(false); string args = null; object sender = null;
+    WindowsRuntimeMarshal.AddEventHandler<TypedEventHandler<ToastNotification, object>>(t.add_Activated, t.remove_Activated,
+      (s, a) => { sender = s; var e = a as ToastActivatedEventArgs; args = e == null ? "noargs" : e.Arguments; fired.Set(); });
+    n.Show(t);
+    IntPtr hw = FindToast();
+    string r = n.Setting + ":" + t.Tag + "/" + t.Group + ":shown=" + (hw != IntPtr.Zero);
+    if (hw != IntPtr.Zero) {
+      PostMessageW(hw, 0x0202 /* WM_LBUTTONUP */, IntPtr.Zero, (IntPtr)((45 << 16) | 60));
+      r += ":activated=" + fired.WaitOne(10000) + ":" + args + ":" + (ReferenceEquals(sender, t) ? "same" : "other");
+    }
+    return r;
+  }
+  static string History() {
+    ToastNotificationManager.History.Clear("SG.MonoFork.Gate");
+    return "" + ToastNotificationManager.History.GetHistory().Count;
+  }
+  static string Package() { return "" + Windows.ApplicationModel.Package.Current; }
+  static string AppData() { return "" + Windows.Storage.ApplicationData.Current; }
+  static string Contract() {
+    return Windows.Foundation.Metadata.ApiInformation.IsApiContractPresent("Windows.Foundation.UniversalApiContract", 1)
+      + ":" + Windows.Foundation.Metadata.ApiInformation.IsApiContractPresent("SG.Nonexistent.Contract", 1);
+  }
+  static string License() {
+    var op = StoreContext.GetDefault().GetAppLicenseAsync();
+    var done = new ManualResetEvent(false); AsyncStatus st = AsyncStatus.Started;
+    op.Completed = (o, s) => { st = s; done.Set(); };
+    done.WaitOne(10000);
+    return st + ":" + op.GetResults().IsActive + ":" + op.GetResults().IsTrial;
+  }
+  // the interface ids the system's delegates and operations are asked for (QueryInterface), from
+  // the Windows Runtime type signatures: TypedEventHandler<ToastNotification, Object> (as the
+  // Windows SDK headers have it) and IAsyncOperation<StoreAppLicense> (as Wine's Store has it)
+  static string Piid() {
+    var m = typeof(XmlDocument).Assembly.GetType("Windows.Internal.Rt").GetMethod("ParameterizedIid",
+      System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+    return m.Invoke(null, new object[] { "pinterface({9de1c534-6ae1-11e0-84e1-18a905bcc53f};rc(Windows.UI.Notifications.ToastNotification;{997e2675-059e-4e60-8b06-1760917c8b80});cinterface(IInspectable))" })
+      + ":" + m.Invoke(null, new object[] { "pinterface({9fc2b0bb-e446-44e2-aa61-9cab8f636af2};rc(Windows.Services.Store.StoreAppLicense;{f389f9de-73c0-45ce-9bab-b2fe3e5eafd3}))" });
+  }
+  static string AsTask() { return "" + StoreContext.GetDefault().GetAppLicenseAsync().AsTask().Result.IsActive; }
+  static async Task<string> Awaited() { var l = await StoreContext.GetDefault().GetAppLicenseAsync(); return "" + l.IsTrial; }
+  static string AsAction() {
+    IAsyncAction a = Task.Delay(20).AsAsyncAction();
+    var done = new ManualResetEvent(false); AsyncStatus st = AsyncStatus.Started;
+    a.Completed = (o, s) => { st = s; done.Set(); };
+    done.WaitOne(10000);
+    return st + ":" + typeof(WindowsRuntimeSystemExtensions).Assembly.GetName().Version;
+  }
+  static void Main() {
+    Say("winrtxml", Xml);
+    Say("toast", Toast);
+    Say("history", History);
+    Say("package", Package);
+    Say("appdata", AppData);
+    Say("contract", Contract);
+    Say("license", License);
+    Say("astask", AsTask);
+    Say("await", () => Awaited().Result);
+    Say("asaction", AsAction);
+    Say("piid", Piid);
+  }
+}
+CS
+(cd "$W35" && timeout 300 "$WINE" "$csc" -nologo -t:library -out:Windows.Foundation.FoundationContract.dll foundation.cs \
+  && timeout 300 "$WINE" "$csc" -nologo -t:library -r:Windows.Foundation.FoundationContract.dll -out:Windows.Foundation.UniversalApiContract.dll universal.cs \
+  && timeout 300 "$WINE" "$csc" -nologo -t:library -r:Windows.Foundation.FoundationContract.dll -out:Windows.Services.Store.StoreContract.dll store.cs \
+  && timeout 300 "$WINE" "$csc" -nologo -t:library -keyfile:ecma.pub -r:Windows.Foundation.FoundationContract.dll -out:System.Runtime.WindowsRuntime.dll srwr.cs \
+  && timeout 300 "$WINE" "$csc" -nologo -r:Windows.Foundation.FoundationContract.dll -r:Windows.Foundation.UniversalApiContract.dll \
+       -r:Windows.Services.Store.StoreContract.dll -r:System.Runtime.WindowsRuntime.dll -out:sg35.exe sg35.cs) >"$T/csc35.out" 2>&1
+if [ ! -f "$W35/sg35.exe" ]; then
+    fail "the sg35 probe did not compile: $(tail -5 "$T/csc35.out")"
+else
+    rm -f "$W35"/*.dll   # the stand-ins go: the image must serve the references
+    # the compilers ran without a display: let that wineserver (and its desktop, which has no
+    # display driver) go, so the probe's desktop has the display
+    "$WINESERVER" -w
+    D35=${SG_MONOFORK_DISPLAY:-}; XP35=
+    if [ -z "$D35" ] && command -v Xvfb >/dev/null; then
+        n=780; while [ $n -lt 810 ] && { [ -e "/tmp/.X$n-lock" ] || [ -e "/tmp/.X11-unix/X$n" ]; }; do n=$((n + 1)); done
+        Xvfb ":$n" -screen 0 1280x1024x24 -nolisten tcp >/dev/null 2>&1 & XP35=$!; D35=":$n"
+        i=0; while [ $i -lt 50 ] && [ ! -e "/tmp/.X11-unix/X$n" ]; do python3 -c "import time; time.sleep(0.1)"; i=$((i + 1)); done
+    fi
+    out=$(cd "$W35" && DISPLAY=$D35 timeout -s KILL 180 "$WINE" sg35.exe 2>&1 | tr -d '\r')
+    [ -n "$XP35" ] && kill "$XP35" 2>/dev/null
+    [ "$(v winrtxml)" = '<toast launch="from-body"><visual><binding template="ToastGeneric"><text>sg35</text><text>From .NET</text></binding></visual></toast>' ] \
+        && pass "references to the Windows SDK's contract assemblies resolve to the system's metadata; XmlDocument is the system's" \
+        || fail "WinRT by contract name: '$(v winrtxml)' $(printf '%s' "$out" | grep -m1 -i 'could not load\|exception') (sg34: FileNotFoundException)"
+    [ "$(v toast)" = "Enabled:tag1/grp1:shown=True:activated=True:from-body:same" ] \
+        && pass "a toast through the system's ToastNotifier shows; a click raises Activated (WindowsRuntimeMarshal) with its launch arguments" \
+        || fail "toast: '$(v toast)'"
+    [ "$(v history)" = 0 ] && pass "ToastNotificationManager.History clears and lists" || fail "toast history: '$(v history)'"
+    [ "$(v package)" = "InvalidOperationException:80073D54" ] && [ "$(v appdata)" = "InvalidOperationException:80073D54" ] \
+        && pass "Package.Current and ApplicationData.Current without package identity: InvalidOperationException 0x80073D54, as on Windows" \
+        || fail "no package identity: '$(v package)' / '$(v appdata)'"
+    [ "$(v contract)" = "True:False" ] && pass "ApiInformation.IsApiContractPresent is the system's answer" || fail "ApiInformation: '$(v contract)'"
+    [ "$(v license)" = "Completed:False:False" ] && [ "$(v astask)" = False ] && [ "$(v await)" = False ] \
+        && pass "the Store's app licence through IAsyncOperation: Completed, AsTask and await (System.Runtime.WindowsRuntime)" \
+        || fail "IAsyncOperation: '$(v license)' / '$(v astask)' / '$(v await)'"
+    [ "$(v piid)" = "ab54de2d-97d9-5528-b6ad-105afe156530:3866370b-afc6-5d01-84c2-4574628de539" ] \
+        && pass "parameterized interface ids from the type signatures (the system asks delegates and operations by them)" \
+        || fail "parameterized interface ids: '$(v piid)'"
+    [ "$(v asaction)" = "Completed:4.0.0.0" ] \
+        && pass "a Task as IAsyncAction; System.Runtime.WindowsRuntime 4.0.14.0 binds to the framework's 4.0.0.0" \
+        || fail "AsAsyncAction / System.Runtime.WindowsRuntime: '$(v asaction)'"
+fi
+# (sg35) the C++/CLI runtime's managed helpers (mono-0033): a mixed-mode assembly built by Visual
+# C++ 2005/2008 (/clr: Apache OpenOffice's cli_uno.dll, cli_cppuhelper.dll) imports
+# <CrtImplementationDetails>.RegisterModuleUninitializer(EventHandler), ThrowModuleLoadException
+# (string[, Exception]) and ThrowNestedModuleLoadException(Exception, Exception) from msvcm80/90
+# as native methods of its <Module>; on Windows they are msvcm's managed functions. The runtime
+# calls corlib's own: the uninitializers (C++ static destructors) run once at process exit, the
+# module registered last first, and a failed module initialization raises ModuleLoadException.
+# Wine's native msvcm only printed "stub" (the destructors never ran) and returned. The probe
+# declares the imports as cli_uno.dll does (pinvokeimpl msvcm90.dll; ilasm writes no native code, so they are plain imports).
+# sg34: MissingMethodException / EntryPointNotFoundException. Mutant:
+# -d:SG_MUTANT_MSVCM_HELPERS_NATIVE (marshal.c).
+cat > "$C/crtimpl.il" <<'IL'
+.assembly extern mscorlib { .publickeytoken = (B7 7A 5C 56 19 34 E0 89) .ver 4:0:0:0 }
+.assembly crtimpl { .ver 1:0:0:0 }
+.module crtimpl.dll
+.method public static pinvokeimpl("msvcm90.dll" lasterr cdecl) void '<CrtImplementationDetails>.RegisterModuleUninitializer'(class [mscorlib]System.EventHandler A_0) cil managed preservesig { }
+.method public static pinvokeimpl("msvcm90.dll" lasterr cdecl) void '<CrtImplementationDetails>.ThrowModuleLoadException'(string A_0) cil managed preservesig { }
+.method public static pinvokeimpl("msvcm90.dll" lasterr cdecl) void '<CrtImplementationDetails>.ThrowModuleLoadException'(string A_0, class [mscorlib]System.Exception A_1) cil managed preservesig { }
+.method public static pinvokeimpl("msvcm90.dll" lasterr cdecl) void '<CrtImplementationDetails>.ThrowNestedModuleLoadException'(class [mscorlib]System.Exception A_0, class [mscorlib]System.Exception A_1) cil managed preservesig { }
+.class public auto ansi abstract sealed Crt extends [mscorlib]System.Object {
+  .method public static void Register(class [mscorlib]System.EventHandler h) cil managed {
+    ldarg.0
+    call void '<CrtImplementationDetails>.RegisterModuleUninitializer'(class [mscorlib]System.EventHandler)
+    ret
+  }
+  .method public static void Throw(string m) cil managed {
+    ldarg.0
+    call void '<CrtImplementationDetails>.ThrowModuleLoadException'(string)
+    ret
+  }
+  .method public static void Throw(string m, class [mscorlib]System.Exception e) cil managed {
+    ldarg.0
+    ldarg.1
+    call void '<CrtImplementationDetails>.ThrowModuleLoadException'(string, class [mscorlib]System.Exception)
+    ret
+  }
+  .method public static void ThrowNested(class [mscorlib]System.Exception a, class [mscorlib]System.Exception b) cil managed {
+    ldarg.0
+    ldarg.1
+    call void '<CrtImplementationDetails>.ThrowNestedModuleLoadException'(class [mscorlib]System.Exception, class [mscorlib]System.Exception)
+    ret
+  }
+}
+IL
+cat > "$C/crtprobe.cs" <<'CS'
+using System;
+class P {
+  static string Try(Action a) {
+    try { a(); return "returned"; }
+    catch (Exception e) { return e.GetType().Name + ":" + e.Message.Trim() + (e.InnerException != null ? "<" + e.InnerException.Message : ""); }
+  }
+  static void Main() {
+    Console.WriteLine("register=" + Try(() => {
+      Crt.Register((s, e) => Console.WriteLine("uninit=first"));
+      Crt.Register((s, e) => Console.WriteLine("uninit=second"));
+    }));
+    Console.WriteLine("load1=" + Try(() => Crt.Throw("The C++ module failed to load.")));
+    Console.WriteLine("load2=" + Try(() => Crt.Throw("The C++ module failed to load during native initialization.", new InvalidOperationException("cause"))));
+    Console.WriteLine("nested=" + Try(() => Crt.ThrowNested(new InvalidOperationException("primary"), new ArgumentException("handler"))));
+    Console.WriteLine("main=done");
+  }
+}
+CS
+ilasm=$("$WINE" winepath -w "$MONO/lib/mono/4.5/ilasm.exe" | tr -d '\r')
+(cd "$C" && timeout 300 "$WINE" "$ilasm" /dll /out:crtimpl.dll crtimpl.il && timeout 300 "$WINE" "$mcs" -r:crtimpl.dll -out:crtprobe.exe crtprobe.cs) >"$T/crt.out" 2>&1
+if [ ! -f "$C/crtprobe.exe" ]; then
+    fail "the C++/CLI probe did not build: $(tail -5 "$T/crt.out")"
+else
+    out=$(cd "$C" && timeout -s KILL 120 "$WINE" crtprobe.exe 2>&1 | tr -d '\r')
+    [ "$(v register)" = returned ] && [ "$(printf '%s\n' "$out" | grep '^uninit=' | tr '\n' ' ')" = "uninit=second uninit=first " ] \
+        && printf '%s\n' "$out" | grep -A2 '^main=done' | grep -q '^uninit=second' \
+        && pass "C++/CLI RegisterModuleUninitializer: the uninitializers run once at exit, the last registered first" \
+        || fail "RegisterModuleUninitializer: '$(v register)' / $(printf '%s\n' "$out" | grep '^uninit=' | tr '\n' ' ') (sg34: EntryPointNotFoundException)"
+    [ "$(v load1)" = "ModuleLoadException:The C++ module failed to load." ] \
+        && [ "$(v load2)" = "ModuleLoadException:The C++ module failed to load during native initialization.<cause" ] \
+        && pass "C++/CLI ThrowModuleLoadException raises ModuleLoadException (with its cause)" \
+        || fail "ThrowModuleLoadException: '$(v load1)' / '$(v load2)'"
+    case "$(v nested)" in "ModuleLoadExceptionHandlerException:A nested exception occurred after the primary exception that caused the C++ module to fail to load.<primary")
+        pass "C++/CLI ThrowNestedModuleLoadException raises ModuleLoadExceptionHandlerException" ;;
+    *)  fail "ThrowNestedModuleLoadException: '$(v nested)'" ;; esac
+fi
 exit $RC

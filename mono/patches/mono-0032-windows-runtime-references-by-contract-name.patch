@@ -1,0 +1,35 @@
+diff --git a/mono/metadata/assembly.c b/mono/metadata/assembly.c
+--- a/mono/metadata/assembly.c
++++ b/mono/metadata/assembly.c
+@@ -266,6 +266,7 @@ static const AssemblyVersionMap framework_assemblies [] = {
+ 	FACADE_ASSEMBLY ("System.Runtime.Serialization.Json"),
+ 	FACADE_ASSEMBLY ("System.Runtime.Serialization.Primitives"),
+ 	FACADE_ASSEMBLY ("System.Runtime.Serialization.Xml"),
++	{"System.Runtime.WindowsRuntime", 0},
+ 	{"System.Security", 0},
+ 	FACADE_ASSEMBLY ("System.Security.AccessControl"),
+ 	FACADE_ASSEMBLY ("System.Security.Claims"),
+@@ -4881,6 +4882,23 @@ mono_assembly_load_full_gac_base_default (MonoAssemblyName *aname,
+ 		g_free (winmd);
+ 		result = mono_assembly_request_open (fullpath, &req, status);
+ 		g_free (fullpath);
++		/* The CLR finds a Windows Runtime type by its namespace in the
++		 * system's metadata (RoResolveNamespace), whatever assembly name the
++		 * reference has: programs built against the Windows SDK's contract
++		 * assemblies (Microsoft.Windows.SDK.Contracts) name
++		 * "Windows.Foundation.UniversalApiContract, Version=14.0.0.0",
++		 * "Windows.Foundation.FoundationContract",
++		 * "Windows.Services.Store.StoreContract" and so on. Our system
++		 * metadata is the one Windows.winmd: every such reference is served
++		 * by it (Cyberduck died at start: FileNotFoundException
++		 * Windows.Foundation.UniversalApiContract). */
++#ifndef SG_MUTANT_WINRT_CONTRACTS_UNRESOLVED
++		if (!result && strcmp (aname->name, "Windows")) {
++			fullpath = g_build_filename (mono_assembly_getrootdir (), "mono", "4.5", "WinMetadata", "Windows.winmd", (const char*)NULL);
++			result = mono_assembly_request_open (fullpath, &req, status);
++			g_free (fullpath);
++		}
++#endif
+ 		if (result) {
+ 			result->in_gac = FALSE;
+ 			return result;

@@ -1,0 +1,2067 @@
+diff --git a/sg-winmd.make b/sg-winmd.make
+--- a/sg-winmd.make
++++ b/sg-winmd.make
+@@ -1,22 +1,35 @@
+ # Stained Glass OS: the "Windows" metadata assembly (sg-winmd/), our own
+-# implementation of Windows Runtime types .NET Framework programs call. The
+-# runtime looks for a reference marked WindowsRuntime in
+-# lib/mono/4.5/WinMetadata/<name>.winmd (mono/metadata/assembly.c), as the
+-# CLR in System32\WinMetadata.
++# projection of the Windows Runtime classes .NET Framework programs call onto
++# the system's classes, and System.Runtime.WindowsRuntime (its task bridge,
++# corefx's sources). The runtime looks for a reference marked WindowsRuntime
++# in lib/mono/4.5/WinMetadata/<name>.winmd, and for any other name (the
++# Windows SDK's contract assemblies) in WinMetadata/Windows.winmd
++# (mono/metadata/assembly.c), as the CLR resolves them in
++# System32\WinMetadata. Built with csc: mcs cannot compile an assembly that is
++# itself marked ContentType=WindowsRuntime.
+ SG_WINMD_SRCS=$(wildcard $(SRCDIR)/sg-winmd/*.cs)
++SG_SRWR_DIR=$(SRCDIR)/mono/external/corefx/src/System.Runtime.WindowsRuntime/src
++SG_SRWR_SRCS=$(addprefix $(SG_SRWR_DIR)/,$(shell cat $(SRCDIR)/sg-winmd/System.Runtime.WindowsRuntime/sources)) $(wildcard $(SRCDIR)/sg-winmd/System.Runtime.WindowsRuntime/*.cs)
+ 
+ $(SRCDIR)/sg-winmd/Windows.winmd: $(BUILDDIR)/mono-unix/.installed $(SG_WINMD_SRCS)
+-	$(MONO_ENV) mcs -target:library -noconfig -r:mscorlib.dll -r:System.dll -r:System.Core.dll -out:$@ $(SG_WINMD_SRCS)
++	$(MONO_ENV) csc -nologo -noconfig -target:library -unsafe -r:mscorlib.dll -r:System.dll -r:System.Core.dll -out:$@ $(SG_WINMD_SRCS)
+ 
+-IMAGEDIR_BUILD_TARGETS += $(SRCDIR)/sg-winmd/Windows.winmd
++$(SRCDIR)/sg-winmd/System.Runtime.WindowsRuntime.dll: $(SRCDIR)/sg-winmd/Windows.winmd $(SG_SRWR_SRCS) $(SRCDIR)/sg-winmd/System.Runtime.WindowsRuntime/sources
++	$(MONO_ENV) csc -nologo -noconfig -target:library -unsafe -nowarn:1698,0436 -keyfile:$(SRCDIR)/mono/mcs/class/ecma.pub -delaysign+ -r:mscorlib.dll -r:System.dll -r:System.Core.dll -r:$(SRCDIR)/sg-winmd/Windows.winmd -out:$@ $(SG_SRWR_SRCS)
+ 
+-Windows.winmd: $(SRCDIR)/sg-winmd/Windows.winmd
+-	mkdir -p $(IMAGEDIR)/lib/mono/4.5/WinMetadata
++IMAGEDIR_BUILD_TARGETS += $(SRCDIR)/sg-winmd/Windows.winmd $(SRCDIR)/sg-winmd/System.Runtime.WindowsRuntime.dll
++
++SG_SRWR_GAC=$(IMAGEDIR)/lib/mono/gac/System.Runtime.WindowsRuntime/4.0.0.0__b77a5c561934e089
++
++Windows.winmd: $(SRCDIR)/sg-winmd/Windows.winmd $(SRCDIR)/sg-winmd/System.Runtime.WindowsRuntime.dll
++	mkdir -p $(IMAGEDIR)/lib/mono/4.5/WinMetadata $(SG_SRWR_GAC)
+ 	cp $(SRCDIR)/sg-winmd/Windows.winmd $(IMAGEDIR)/lib/mono/4.5/WinMetadata/Windows.winmd
++	cp $(SRCDIR)/sg-winmd/System.Runtime.WindowsRuntime.dll $(SG_SRWR_GAC)/System.Runtime.WindowsRuntime.dll
++	cp $(SRCDIR)/sg-winmd/System.Runtime.WindowsRuntime.dll $(IMAGEDIR)/lib/mono/4.5/System.Runtime.WindowsRuntime.dll
+ .PHONY: Windows.winmd
+ imagedir-targets: Windows.winmd
+ 
+ clean-sg-winmd:
+-	rm -f $(SRCDIR)/sg-winmd/Windows.winmd
++	rm -f $(SRCDIR)/sg-winmd/Windows.winmd $(SRCDIR)/sg-winmd/System.Runtime.WindowsRuntime.dll
+ .PHONY: clean-sg-winmd
+ clean: clean-sg-winmd
+diff --git a/sg-winmd/AssemblyInfo.cs b/sg-winmd/AssemblyInfo.cs
+--- a/sg-winmd/AssemblyInfo.cs
++++ b/sg-winmd/AssemblyInfo.cs
+@@ -2,3 +2,8 @@ using System.Reflection;
+ // the version a Windows Runtime reference names ("Windows, Version=255.255.255.255")
+ [assembly: AssemblyVersion ("255.255.255.255")]
+ [assembly: AssemblyTitle ("Windows")]
++// ContentType=WindowsRuntime, as the system's metadata: an assembly compiled
++// against this one references it as Windows Runtime metadata
++#pragma warning disable 618
++[assembly: AssemblyFlags (0x200)]
++#pragma warning restore 618
+diff --git a/sg-winmd/WinRT.Interop.cs b/sg-winmd/WinRT.Interop.cs
+new file mode 100644
+--- /dev/null
++++ b/sg-winmd/WinRT.Interop.cs
+@@ -0,0 +1,590 @@
++// Stained Glass OS: how the types of the "Windows" metadata assembly reach
++// the system's Windows Runtime classes. On Windows the CLR projects a Windows
++// Runtime class as a runtime callable wrapper over the object the system
++// activates (RoGetActivationFactory / RoActivateInstance in combase); a
++// method call is a call through one of the object's interfaces, an HRESULT
++// becomes an exception, an HSTRING a string, a delegate passed for an event
++// or a completion a COM object the system calls back. Mono has no Windows
++// Runtime projection, so this assembly's classes do the same by hand: each
++// wraps the system object's interface pointer and calls its vtable.
++//
++// Copyright (C) 2026 Stained Glass OS contributors. MIT license, as Wine Mono.
++
++using System;
++using System.Collections.Generic;
++using System.Runtime.InteropServices;
++using System.Runtime.InteropServices.WindowsRuntime;
++using System.Security.Cryptography;
++using System.Text;
++
++namespace Windows.Internal
++{
++	// a reference to a Windows Runtime object's default interface, held by
++	// the projected class that wraps it and released when that is collected
++	internal sealed class RtRef
++	{
++		internal IntPtr Ptr;
++
++		internal RtRef (IntPtr ptr)
++		{
++			Ptr = ptr;
++		}
++
++		~RtRef ()
++		{
++			IntPtr p = Ptr;
++			Ptr = IntPtr.Zero;
++			if (p != IntPtr.Zero)
++				Marshal.Release (p);
++		}
++
++		// another interface of the object (AddRef'd), or zero when it has none
++		internal IntPtr As (Guid iid)
++		{
++			IntPtr r;
++			return Marshal.QueryInterface (Ptr, ref iid, out r) == 0 ? r : IntPtr.Zero;
++		}
++
++		// another interface the object must have: InvalidCastException
++		// otherwise, as a cast of a runtime callable wrapper that fails
++		internal IntPtr Must (Guid iid)
++		{
++			IntPtr r = As (iid);
++			if (r == IntPtr.Zero)
++				throw new InvalidCastException (string.Format (
++					"Unable to cast the Windows Runtime object to an interface it does not have ({0}).",
++					iid.ToString ("B")));
++			return r;
++		}
++	}
++
++	internal static class Rt
++	{
++		internal const int S_OK = 0;
++		internal const int E_NOINTERFACE = unchecked ((int)0x80004002);
++		internal const int CO_E_NOTINITIALIZED = unchecked ((int)0x800401F0);
++		internal const int REGDB_E_CLASSNOTREG = unchecked ((int)0x80040154);
++		internal static readonly Guid IID_IUnknown = new Guid ("00000000-0000-0000-C000-000000000046");
++		internal static readonly Guid IID_IInspectable = new Guid ("AF86E2E0-B12D-4c6a-9C5A-D7AA65101E90");
++		internal static readonly Guid IID_IAgileObject = new Guid ("94ea2b94-e9cc-49e0-c0ff-ee64ca8f5b90");
++		internal static readonly Guid IID_IActivationFactory = new Guid ("00000035-0000-0000-C000-000000000046");
++		internal static readonly Guid IID_IAsyncInfo = new Guid ("00000036-0000-0000-C000-000000000046");
++
++		// the first method after IUnknown's and IInspectable's
++		internal const int First = 6;
++
++		[DllImport ("combase.dll")]
++		static extern int RoGetActivationFactory (IntPtr activatableClassId, ref Guid iid, out IntPtr factory);
++		[DllImport ("combase.dll")]
++		static extern int RoActivateInstance (IntPtr activatableClassId, out IntPtr instance);
++		[DllImport ("combase.dll", CharSet = CharSet.Unicode)]
++		static extern int WindowsCreateString (string sourceString, int length, out IntPtr hstring);
++		[DllImport ("combase.dll")]
++		static extern int WindowsDeleteString (IntPtr hstring);
++		[DllImport ("combase.dll")]
++		static extern IntPtr WindowsGetStringRawBuffer (IntPtr hstring, out int length);
++		[DllImport ("ole32.dll")]
++		static extern int CoInitializeEx (IntPtr reserved, int coinit);
++
++		// ---- HSTRINGs ----
++
++		internal static IntPtr HString (string s)
++		{
++			if (string.IsNullOrEmpty (s))
++				return IntPtr.Zero;
++			IntPtr h;
++			Check (WindowsCreateString (s, s.Length, out h));
++			return h;
++		}
++
++		internal static void Free (IntPtr hstring)
++		{
++			if (hstring != IntPtr.Zero)
++				WindowsDeleteString (hstring);
++		}
++
++		// an HSTRING the callee gave us: read and deleted
++		internal static string TakeString (IntPtr hstring)
++		{
++			if (hstring == IntPtr.Zero)
++				return string.Empty;
++			int len;
++			IntPtr buf = WindowsGetStringRawBuffer (hstring, out len);
++			string s = buf == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUni (buf, len);
++			WindowsDeleteString (hstring);
++			return s;
++		}
++
++		// ---- activation ----
++
++		// a thread that has not initialized COM gets the multithreaded
++		// apartment, as the CLR gives a thread at its first COM call
++		static int Retry (int hr)
++		{
++			if (hr == CO_E_NOTINITIALIZED)
++				CoInitializeEx (IntPtr.Zero, 0 /* COINIT_MULTITHREADED */);
++			return hr;
++		}
++
++		internal static IntPtr Factory (string className, Guid iid)
++		{
++			IntPtr h = HString (className), f;
++			try {
++				int hr = RoGetActivationFactory (h, ref iid, out f);
++				if (Retry (hr) == CO_E_NOTINITIALIZED)
++					hr = RoGetActivationFactory (h, ref iid, out f);
++				Check (hr);
++				return f;
++			} finally {
++				Free (h);
++			}
++		}
++
++		internal static IntPtr Activate (string className)
++		{
++			IntPtr h = HString (className), o;
++			try {
++				int hr = RoActivateInstance (h, out o);
++				if (Retry (hr) == CO_E_NOTINITIALIZED)
++					hr = RoActivateInstance (h, out o);
++				Check (hr);
++				return o;
++			} finally {
++				Free (h);
++			}
++		}
++
++		internal static IntPtr QI (IntPtr p, Guid iid)
++		{
++			IntPtr r;
++			return p != IntPtr.Zero && Marshal.QueryInterface (p, ref iid, out r) == 0 ? r : IntPtr.Zero;
++		}
++
++		// ---- HRESULTs: the CLR's mapping, with the Windows Runtime's codes ----
++
++		sealed class RtInvalidOperationException : InvalidOperationException
++		{
++			public RtInvalidOperationException (string message, int hr) : base (message) { HResult = hr; }
++		}
++
++		sealed class RtObjectDisposedException : ObjectDisposedException
++		{
++			public RtObjectDisposedException (string message, int hr) : base (null, message) { HResult = hr; }
++		}
++
++		sealed class RtArgumentOutOfRangeException : ArgumentOutOfRangeException
++		{
++			public RtArgumentOutOfRangeException (string message, int hr) : base (null, message) { HResult = hr; }
++		}
++
++		internal static Exception ExceptionFor (int hr)
++		{
++			string msg = string.Format ("Exception from HRESULT: 0x{0:X8}", hr);
++#if SG_MUTANT_WINRT_HRESULTS_AS_COMEXCEPTION
++			return new COMException (msg, hr);
++#endif
++			switch ((uint)hr) {
++			case 0x80073D54: /* APPMODEL_ERROR_NO_PACKAGE */
++				return new RtInvalidOperationException ("The process has no package identity. (" + msg + ")", hr);
++			case 0x8000000D: /* E_ILLEGAL_STATE_CHANGE */
++			case 0x8000000E: /* E_ILLEGAL_METHOD_CALL */
++			case 0x80000018: /* E_ILLEGAL_DELEGATE_ASSIGNMENT */
++				return new RtInvalidOperationException (msg, hr);
++			case 0x80000013: /* RO_E_CLOSED */
++				return new RtObjectDisposedException (msg, hr);
++			case 0x8000000B: /* E_BOUNDS */
++				return new RtArgumentOutOfRangeException (msg, hr);
++			}
++			return Marshal.GetExceptionForHR (hr) ?? new COMException (msg, hr);
++		}
++
++		internal static void Check (int hr)
++		{
++			if (hr < 0)
++				throw ExceptionFor (hr);
++		}
++
++		// ---- vtable calls (slot numbers count IUnknown's and IInspectable's) ----
++
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int F0 (IntPtr self);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FP (IntPtr self, IntPtr a);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FPP (IntPtr self, IntPtr a, IntPtr b);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FPPP (IntPtr self, IntPtr a, IntPtr b, IntPtr c);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FB (IntPtr self, byte a);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FI (IntPtr self, int a);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FL (IntPtr self, long a);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FOP (IntPtr self, out IntPtr r);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FOB (IntPtr self, out byte r);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FOI (IntPtr self, out int r);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FOL (IntPtr self, out long r);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FPOP (IntPtr self, IntPtr a, out IntPtr r);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FPOB (IntPtr self, IntPtr a, out byte r);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FPOL (IntPtr self, IntPtr a, out long r);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FPPOB (IntPtr self, IntPtr a, IntPtr b, out byte r);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FPPOI (IntPtr self, IntPtr a, IntPtr b, out int r);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FPPPOI (IntPtr self, IntPtr a, IntPtr b, IntPtr c, out int r);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FPIOB (IntPtr self, IntPtr a, int b, out byte r);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FPPIOB (IntPtr self, IntPtr a, IntPtr b, int c, out byte r);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FPIIOB (IntPtr self, IntPtr a, int b, int c, out byte r);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FPLOP (IntPtr self, IntPtr a, long b, out IntPtr r);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FLOP (IntPtr self, long a, out IntPtr r);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] internal delegate int FIOP (IntPtr self, int a, out IntPtr r);
++
++		internal static T Fn<T> (IntPtr itf, int slot) where T : class
++		{
++			if (itf == IntPtr.Zero)
++				throw new NullReferenceException ();
++			IntPtr vtbl = Marshal.ReadIntPtr (itf);
++			IntPtr fn = Marshal.ReadIntPtr (vtbl, slot * IntPtr.Size);
++			return Marshal.GetDelegateForFunctionPointer<T> (fn);
++		}
++
++		internal static void Call (IntPtr itf, int slot)
++		{
++			Check (Fn<F0> (itf, slot) (itf));
++		}
++
++		internal static void CallP (IntPtr itf, int slot, IntPtr a)
++		{
++			Check (Fn<FP> (itf, slot) (itf, a));
++		}
++
++		internal static IntPtr GetP (IntPtr itf, int slot)
++		{
++			IntPtr r;
++			Check (Fn<FOP> (itf, slot) (itf, out r));
++			return r;
++		}
++
++		internal static bool GetBool (IntPtr itf, int slot)
++		{
++			byte r;
++			Check (Fn<FOB> (itf, slot) (itf, out r));
++			return r != 0;
++		}
++
++		internal static int GetInt (IntPtr itf, int slot)
++		{
++			int r;
++			Check (Fn<FOI> (itf, slot) (itf, out r));
++			return r;
++		}
++
++		internal static long GetLong (IntPtr itf, int slot)
++		{
++			long r;
++			Check (Fn<FOL> (itf, slot) (itf, out r));
++			return r;
++		}
++
++		internal static string GetString (IntPtr itf, int slot)
++		{
++			return TakeString (GetP (itf, slot));
++		}
++
++		internal static void PutString (IntPtr itf, int slot, string value)
++		{
++			IntPtr h = HString (value);
++			try {
++				CallP (itf, slot, h);
++			} finally {
++				Free (h);
++			}
++		}
++
++		internal static void PutBool (IntPtr itf, int slot, bool value)
++		{
++			Check (Fn<FB> (itf, slot) (itf, (byte)(value ? 1 : 0)));
++		}
++
++		// a call through another interface of the object, released after
++		internal static void With (RtRef o, Guid iid, Action<IntPtr> call)
++		{
++			IntPtr itf = o.Must (iid);
++			try {
++				call (itf);
++			} finally {
++				Marshal.Release (itf);
++			}
++		}
++
++		internal static T With<T> (RtRef o, Guid iid, Func<IntPtr, T> call)
++		{
++			IntPtr itf = o.Must (iid);
++			try {
++				return call (itf);
++			} finally {
++				Marshal.Release (itf);
++			}
++		}
++
++		// ---- wrappers: one per system object, as the CLR keeps one RCW per identity ----
++
++		static readonly Dictionary<IntPtr, WeakReference> wrappers = new Dictionary<IntPtr, WeakReference> ();
++
++		// ptr: a reference the caller hands over (kept by the wrapper, or released)
++		internal static T Wrap<T> (IntPtr ptr, Func<RtRef, T> make) where T : class
++		{
++			if (ptr == IntPtr.Zero)
++				return null;
++			IntPtr id = QI (ptr, IID_IUnknown);
++			if (id == IntPtr.Zero)
++				return make (new RtRef (ptr));
++			Marshal.Release (id); /* the identity lives as long as ptr does */
++			lock (wrappers) {
++				WeakReference w;
++				T old;
++				if (wrappers.TryGetValue (id, out w) && (old = w.Target as T) != null) {
++					Marshal.Release (ptr);
++					return old;
++				}
++				T made = make (new RtRef (ptr));
++				wrappers [id] = new WeakReference (made);
++				if (wrappers.Count > 256)
++					Prune ();
++				return made;
++			}
++		}
++
++		// a wrapper made by a constructor (activated or made by a factory)
++		internal static void Register (object wrapper, IntPtr ptr)
++		{
++			IntPtr id = QI (ptr, IID_IUnknown);
++			if (id == IntPtr.Zero)
++				return;
++			Marshal.Release (id);
++			lock (wrappers)
++				wrappers [id] = new WeakReference (wrapper);
++		}
++
++		static void Prune ()
++		{
++			var dead = new List<IntPtr> ();
++			foreach (var kv in wrappers)
++				if (!kv.Value.IsAlive)
++					dead.Add (kv.Key);
++			foreach (var k in dead)
++				wrappers.Remove (k);
++		}
++
++		// a wrapper's own reference, AddRef'd for a native caller
++		internal static IntPtr Ref (RtRef o)
++		{
++			if (o == null)
++				return IntPtr.Zero;
++			Marshal.AddRef (o.Ptr);
++			return o.Ptr;
++		}
++
++		// ---- Windows.Foundation.DateTime: 100 ns since 1601 (UTC), as a FILETIME ----
++
++		internal static DateTimeOffset ToDateTimeOffset (long winrtTime)
++		{
++			return DateTimeOffset.FromFileTime (winrtTime);
++		}
++
++		internal static long FromDateTimeOffset (DateTimeOffset value)
++		{
++			return value.UtcDateTime.ToFileTimeUtc ();
++		}
++
++		// ---- EventRegistrationToken: a 64-bit value the event source hands out ----
++
++		internal static unsafe EventRegistrationToken Token (long value)
++		{
++			EventRegistrationToken t = default (EventRegistrationToken);
++			*(long*)&t = value;
++			return t;
++		}
++
++		internal static unsafe long TokenValue (EventRegistrationToken t)
++		{
++			return *(long*)&t;
++		}
++
++		// ---- parameterized interface ids (the Windows Runtime's type signatures) ----
++
++		static readonly byte[] pinterfaceNamespace = { 0x11, 0xf4, 0x7a, 0xd5, 0x7b, 0x73, 0x42, 0xc0, 0xab, 0xae, 0x87, 0x8b, 0x1e, 0x16, 0xad, 0xee };
++
++		internal static Guid ParameterizedIid (string signature)
++		{
++			byte[] sig = Encoding.UTF8.GetBytes (signature);
++			byte[] data = new byte [pinterfaceNamespace.Length + sig.Length];
++			Buffer.BlockCopy (pinterfaceNamespace, 0, data, 0, pinterfaceNamespace.Length);
++			Buffer.BlockCopy (sig, 0, data, pinterfaceNamespace.Length, sig.Length);
++			byte[] h;
++			using (var sha = SHA1.Create ())
++				h = sha.ComputeHash (data);
++#if !SG_MUTANT_WINRT_PIID_NO_VERSION
++			h [6] = (byte)((h [6] & 0x0f) | 0x50);
++			h [8] = (byte)((h [8] & 0x3f) | 0x80);
++#endif
++			return new Guid ((h [0] << 24) | (h [1] << 16) | (h [2] << 8) | h [3], (short)((h [4] << 8) | h [5]),
++				(short)((h [6] << 8) | h [7]), h [8], h [9], h [10], h [11], h [12], h [13], h [14], h [15]);
++		}
++
++		internal static string Sig (Guid g)
++		{
++			return g.ToString ("B").ToLowerInvariant ();
++		}
++
++		// rc(Class;{default interface})
++		internal static string ClassSig (string name, Guid defaultIid)
++		{
++			return "rc(" + name + ";" + Sig (defaultIid) + ")";
++		}
++
++		internal static string PInterface (Guid generic, params string[] args)
++		{
++			return "pinterface(" + Sig (generic) + ";" + string.Join (";", args) + ")";
++		}
++
++		internal const string InspectableSig = "cinterface(IInspectable)";
++		internal static readonly Guid TypedEventHandler2 = new Guid ("9de1c534-6ae1-11e0-84e1-18a905bcc53f");
++		internal static readonly Guid IAsyncOperation1 = new Guid ("9fc2b0bb-e446-44e2-aa61-9cab8f636af2");
++		internal static readonly Guid AsyncOperationCompletedHandler1 = new Guid ("fcdcf02c-e5d8-4478-915a-4d90b74b83a5");
++		internal static readonly Guid IVectorView1 = new Guid ("bbe1fa4c-b0e3-4583-baef-1f1b2e483e56");
++		internal static readonly Guid IReference1 = new Guid ("61c17706-2d65-11e0-9ae8-d48564015472");
++		internal static readonly Guid IID_IAsyncAction = new Guid ("5a648006-843a-4da9-865b-9d26e5dfad7b");
++		internal static readonly Guid IID_AsyncActionCompletedHandler = new Guid ("a4ed5c81-76c9-40bd-8be6-b1d90fb20ae7");
++
++		// ---- IVectorView<T>: GetAt, get_Size, IndexOf, GetMany ----
++
++		internal static List<T> ReadVectorView<T> (IntPtr view, Func<IntPtr, T> item)
++		{
++			var list = new List<T> ();
++			if (view == IntPtr.Zero)
++				return list;
++			try {
++				int n = GetInt (view, First + 1);
++				var getAt = Fn<FIOP> (view, First);
++				for (int i = 0; i < n; i++) {
++					IntPtr p;
++					Check (getAt (view, i, out p));
++					list.Add (item (p));
++				}
++			} finally {
++				Marshal.Release (view);
++			}
++			return list;
++		}
++	}
++
++	// A delegate handed to the system as a Windows Runtime delegate: a COM
++	// object with IUnknown and Invoke, answering the delegate's interface id
++	// (and IAgileObject: it may be called from any thread, as the CLR's
++	// delegate wrappers may).
++	internal sealed class NativeDelegate
++	{
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] delegate int QIFn (IntPtr self, ref Guid iid, out IntPtr obj);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] delegate int RefFn (IntPtr self);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] delegate int InvokePP (IntPtr self, IntPtr a, IntPtr b);
++		[UnmanagedFunctionPointer (CallingConvention.StdCall)] delegate int InvokePI (IntPtr self, IntPtr a, int b);
++
++		static readonly QIFn qi = QueryInterface;
++		static readonly RefFn addref = AddRef, release = Release;
++		static readonly InvokePP invokePP = InvokeObjects;
++		static readonly InvokePI invokePI = InvokeStatus;
++		static readonly IntPtr vtblPP = MakeVtbl (Marshal.GetFunctionPointerForDelegate (invokePP));
++		static readonly IntPtr vtblPI = MakeVtbl (Marshal.GetFunctionPointerForDelegate (invokePI));
++
++		// layout: vtbl, refcount, GCHandle of the managed callback, the interface id
++		const int OffRef = 1, OffHandle = 2;
++		static int OffIid { get { return 3 * IntPtr.Size; } }
++
++		static IntPtr MakeVtbl (IntPtr invoke)
++		{
++			IntPtr v = Marshal.AllocHGlobal (4 * IntPtr.Size);
++			Marshal.WriteIntPtr (v, 0, Marshal.GetFunctionPointerForDelegate (qi));
++			Marshal.WriteIntPtr (v, IntPtr.Size, Marshal.GetFunctionPointerForDelegate (addref));
++			Marshal.WriteIntPtr (v, 2 * IntPtr.Size, Marshal.GetFunctionPointerForDelegate (release));
++			Marshal.WriteIntPtr (v, 3 * IntPtr.Size, invoke);
++			return v;
++		}
++
++		static IntPtr Make (IntPtr vtbl, Guid iid, object callback)
++		{
++			IntPtr p = Marshal.AllocHGlobal (3 * IntPtr.Size + 16);
++			Marshal.WriteIntPtr (p, 0, vtbl);
++			Marshal.WriteIntPtr (p, OffRef * IntPtr.Size, new IntPtr (1));
++			Marshal.WriteIntPtr (p, OffHandle * IntPtr.Size, GCHandle.ToIntPtr (GCHandle.Alloc (callback)));
++			Marshal.Copy (iid.ToByteArray (), 0, p + OffIid, 16);
++			return p;
++		}
++
++		// Invoke(sender, args): two objects (TypedEventHandler)
++		internal static IntPtr ForObjects (Guid iid, Action<IntPtr, IntPtr> callback)
++		{
++			return Make (vtblPP, iid, callback);
++		}
++
++		// Invoke(asyncInfo, status): an object and an AsyncStatus (completion handlers)
++		internal static IntPtr ForStatus (Guid iid, Action<IntPtr, int> callback)
++		{
++			return Make (vtblPI, iid, callback);
++		}
++
++		static object Target (IntPtr self)
++		{
++			return GCHandle.FromIntPtr (Marshal.ReadIntPtr (self, OffHandle * IntPtr.Size)).Target;
++		}
++
++		static int QueryInterface (IntPtr self, ref Guid iid, out IntPtr obj)
++		{
++			byte[] mine = new byte [16];
++			Marshal.Copy (self + OffIid, mine, 0, 16);
++			if (iid == Rt.IID_IUnknown || iid == Rt.IID_IAgileObject || iid == new Guid (mine)) {
++				AddRef (self);
++				obj = self;
++				return 0;
++			}
++			obj = IntPtr.Zero;
++			return Rt.E_NOINTERFACE;
++		}
++
++		static int AddRef (IntPtr self)
++		{
++			lock (vtblPP_lock) {
++				int n = (int)Marshal.ReadIntPtr (self, OffRef * IntPtr.Size) + 1;
++				Marshal.WriteIntPtr (self, OffRef * IntPtr.Size, new IntPtr (n));
++				return n;
++			}
++		}
++
++		static readonly object vtblPP_lock = new object ();
++
++		static int Release (IntPtr self)
++		{
++			int n;
++			lock (vtblPP_lock) {
++				n = (int)Marshal.ReadIntPtr (self, OffRef * IntPtr.Size) - 1;
++				Marshal.WriteIntPtr (self, OffRef * IntPtr.Size, new IntPtr (n));
++			}
++			if (n == 0) {
++				GCHandle.FromIntPtr (Marshal.ReadIntPtr (self, OffHandle * IntPtr.Size)).Free ();
++				Marshal.FreeHGlobal (self);
++			}
++			return n;
++		}
++
++		static int InvokeObjects (IntPtr self, IntPtr a, IntPtr b)
++		{
++			try {
++				((Action<IntPtr, IntPtr>)Target (self)) (a, b);
++				return 0;
++			} catch (Exception e) {
++				return e.HResult < 0 ? e.HResult : unchecked ((int)0x80004005);
++			}
++		}
++
++		static int InvokeStatus (IntPtr self, IntPtr a, int b)
++		{
++			try {
++				((Action<IntPtr, int>)Target (self)) (a, b);
++				return 0;
++			} catch (Exception e) {
++				return e.HResult < 0 ? e.HResult : unchecked ((int)0x80004005);
++			}
++		}
++	}
++}
+diff --git a/sg-winmd/Windows.Foundation.cs b/sg-winmd/Windows.Foundation.cs
+new file mode 100644
+--- /dev/null
++++ b/sg-winmd/Windows.Foundation.cs
+@@ -0,0 +1,322 @@
++// Stained Glass OS: Windows.Foundation (FoundationContract) for .NET
++// Framework programs: the asynchronous operation and event delegate types
++// their compiled code names, Metadata.ApiInformation (the system's answer)
++// and Collections.ValueSet. The asynchronous interfaces are the ones
++// System.Runtime.WindowsRuntime's AsTask/GetAwaiter bridge to tasks.
++//
++// Copyright (C) 2026 Stained Glass OS contributors. MIT license, as Wine Mono.
++
++using System;
++using System.Collections;
++using System.Collections.Generic;
++using System.Runtime.InteropServices;
++using Windows.Internal;
++
++namespace Windows.Foundation
++{
++	public enum AsyncStatus
++	{
++		Canceled = 2,
++		Completed = 1,
++		Error = 3,
++		Started = 0,
++	}
++
++	[Guid ("00000036-0000-0000-c000-000000000046")]
++	public interface IAsyncInfo
++	{
++		Exception ErrorCode { get; }
++		uint Id { get; }
++		AsyncStatus Status { get; }
++		void Cancel ();
++		void Close ();
++	}
++
++	[Guid ("a4ed5c81-76c9-40bd-8be6-b1d90fb20ae7")]
++	public delegate void AsyncActionCompletedHandler (IAsyncAction asyncInfo, AsyncStatus asyncStatus);
++
++	[Guid ("5a648006-843a-4da9-865b-9d26e5dfad7b")]
++	public interface IAsyncAction : IAsyncInfo
++	{
++		AsyncActionCompletedHandler Completed { get; set; }
++		void GetResults ();
++	}
++
++	[Guid ("fcdcf02c-e5d8-4478-915a-4d90b74b83a5")]
++	public delegate void AsyncOperationCompletedHandler<TResult> (IAsyncOperation<TResult> asyncInfo, AsyncStatus asyncStatus);
++
++	[Guid ("9fc2b0bb-e446-44e2-aa61-9cab8f636af2")]
++	public interface IAsyncOperation<TResult> : IAsyncInfo
++	{
++		AsyncOperationCompletedHandler<TResult> Completed { get; set; }
++		TResult GetResults ();
++	}
++
++	[Guid ("6d844858-0cff-4590-ae89-95a5a5c8b4b8")]
++	public delegate void AsyncActionProgressHandler<TProgress> (IAsyncActionWithProgress<TProgress> asyncInfo, TProgress progressInfo);
++
++	[Guid ("9c029f91-cc84-44fd-ac26-0a6c4e555281")]
++	public delegate void AsyncActionWithProgressCompletedHandler<TProgress> (IAsyncActionWithProgress<TProgress> asyncInfo, AsyncStatus asyncStatus);
++
++	[Guid ("1f6db258-e803-48a1-9546-eb7353398884")]
++	public interface IAsyncActionWithProgress<TProgress> : IAsyncInfo
++	{
++		AsyncActionWithProgressCompletedHandler<TProgress> Completed { get; set; }
++		AsyncActionProgressHandler<TProgress> Progress { get; set; }
++		void GetResults ();
++	}
++
++	[Guid ("55690902-0aab-421a-8778-f8ce5026d758")]
++	public delegate void AsyncOperationProgressHandler<TResult, TProgress> (IAsyncOperationWithProgress<TResult, TProgress> asyncInfo, TProgress progressInfo);
++
++	[Guid ("e85df41d-6aa7-46e3-a8e2-f009d840c627")]
++	public delegate void AsyncOperationWithProgressCompletedHandler<TResult, TProgress> (IAsyncOperationWithProgress<TResult, TProgress> asyncInfo, AsyncStatus asyncStatus);
++
++	[Guid ("b5d036d7-e297-498f-ba60-0289e76e23dd")]
++	public interface IAsyncOperationWithProgress<TResult, TProgress> : IAsyncInfo
++	{
++		AsyncOperationWithProgressCompletedHandler<TResult, TProgress> Completed { get; set; }
++		AsyncOperationProgressHandler<TResult, TProgress> Progress { get; set; }
++		TResult GetResults ();
++	}
++
++	[Guid ("9de1c534-6ae1-11e0-84e1-18a905bcc53f")]
++	public delegate void TypedEventHandler<TSender, TResult> (TSender sender, TResult args);
++
++	// a system asynchronous operation (IAsyncOperation<T> + IAsyncInfo)
++	// seen as the projected interface; result turns the result pointer the
++	// operation gives into its projected value
++	internal sealed class NativeAsyncOperation<TResult> : IAsyncOperation<TResult>
++	{
++		readonly RtRef op;
++		readonly Guid handlerIid;
++		readonly Func<IntPtr, TResult> result;
++		AsyncOperationCompletedHandler<TResult> completed;
++
++		// resultSig: the Windows Runtime type signature of TResult
++		internal NativeAsyncOperation (IntPtr ptr, string resultSig, Func<IntPtr, TResult> result)
++		{
++			op = new RtRef (ptr);
++			handlerIid = Rt.ParameterizedIid (Rt.PInterface (Rt.AsyncOperationCompletedHandler1, resultSig));
++			this.result = result;
++		}
++
++		public AsyncOperationCompletedHandler<TResult> Completed {
++			get { return completed; }
++			set {
++				// as on Windows, a completion handler may be set only once
++				if (completed != null)
++					throw Rt.ExceptionFor (unchecked ((int)0x80000018));
++				completed = value;
++				if (value == null)
++					return;
++				IntPtr h = NativeDelegate.ForStatus (handlerIid, (info, status) => value (this, (AsyncStatus)status));
++				try {
++					Rt.CallP (op.Ptr, Rt.First, h);
++				} finally {
++					Marshal.Release (h);
++				}
++			}
++		}
++
++		public TResult GetResults ()
++		{
++			return result (Rt.GetP (op.Ptr, Rt.First + 2));
++		}
++
++		public Exception ErrorCode {
++			get {
++				int hr = Rt.With (op, Rt.IID_IAsyncInfo, i => Rt.GetInt (i, Rt.First + 2));
++				return hr < 0 ? Rt.ExceptionFor (hr) : null;
++			}
++		}
++
++		public uint Id {
++			get { return (uint)Rt.With (op, Rt.IID_IAsyncInfo, i => Rt.GetInt (i, Rt.First)); }
++		}
++
++		public AsyncStatus Status {
++			get { return (AsyncStatus)Rt.With (op, Rt.IID_IAsyncInfo, i => Rt.GetInt (i, Rt.First + 1)); }
++		}
++
++		public void Cancel ()
++		{
++			Rt.With (op, Rt.IID_IAsyncInfo, i => Rt.Call (i, Rt.First + 3));
++		}
++
++		public void Close ()
++		{
++			Rt.With (op, Rt.IID_IAsyncInfo, i => Rt.Call (i, Rt.First + 4));
++		}
++	}
++}
++
++namespace Windows.Foundation.Metadata
++{
++	// the system's ApiInformation (what this Windows has), as on Windows
++	public static class ApiInformation
++	{
++		static readonly Guid IID_IApiInformationStatics = new Guid ("997439fe-f681-4a11-b416-c13a47e8ba36");
++
++		static IntPtr statics;
++
++		static IntPtr Statics {
++			get {
++				if (statics == IntPtr.Zero)
++					statics = Rt.Factory ("Windows.Foundation.Metadata.ApiInformation", IID_IApiInformationStatics);
++				return statics;
++			}
++		}
++
++		static bool Ask (int slot, string a)
++		{
++			if (a == null)
++				throw new ArgumentNullException ();
++			IntPtr ha = Rt.HString (a);
++			try {
++				byte r;
++				Rt.Check (Rt.Fn<Rt.FPOB> (Statics, slot) (Statics, ha, out r));
++				return r != 0;
++			} finally {
++				Rt.Free (ha);
++			}
++		}
++
++		static bool Ask (int slot, string a, string b)
++		{
++			if (a == null || b == null)
++				throw new ArgumentNullException ();
++			IntPtr ha = Rt.HString (a), hb = Rt.HString (b);
++			try {
++				byte r;
++				Rt.Check (Rt.Fn<Rt.FPPOB> (Statics, slot) (Statics, ha, hb, out r));
++				return r != 0;
++			} finally {
++				Rt.Free (ha);
++				Rt.Free (hb);
++			}
++		}
++
++		public static bool IsTypePresent (string typeName)
++		{
++			return Ask (Rt.First, typeName);
++		}
++
++		public static bool IsMethodPresent (string typeName, string methodName)
++		{
++			return Ask (Rt.First + 1, typeName, methodName);
++		}
++
++		public static bool IsMethodPresent (string typeName, string methodName, uint inputParameterCount)
++		{
++			if (typeName == null || methodName == null)
++				throw new ArgumentNullException ();
++			IntPtr ha = Rt.HString (typeName), hb = Rt.HString (methodName);
++			try {
++				byte r;
++				Rt.Check (Rt.Fn<Rt.FPPIOB> (Statics, Rt.First + 2) (Statics, ha, hb, (int)inputParameterCount, out r));
++				return r != 0;
++			} finally {
++				Rt.Free (ha);
++				Rt.Free (hb);
++			}
++		}
++
++		public static bool IsEventPresent (string typeName, string eventName)
++		{
++			return Ask (Rt.First + 3, typeName, eventName);
++		}
++
++		public static bool IsPropertyPresent (string typeName, string propertyName)
++		{
++			return Ask (Rt.First + 4, typeName, propertyName);
++		}
++
++		public static bool IsReadOnlyPropertyPresent (string typeName, string propertyName)
++		{
++			return Ask (Rt.First + 5, typeName, propertyName);
++		}
++
++		public static bool IsWriteablePropertyPresent (string typeName, string propertyName)
++		{
++			return Ask (Rt.First + 6, typeName, propertyName);
++		}
++
++		public static bool IsEnumNamedValuePresent (string enumTypeName, string valueName)
++		{
++			return Ask (Rt.First + 7, enumTypeName, valueName);
++		}
++
++		public static bool IsApiContractPresent (string contractName, ushort majorVersion)
++		{
++			if (contractName == null)
++				throw new ArgumentNullException ("contractName");
++			IntPtr h = Rt.HString (contractName);
++			try {
++				byte r;
++				Rt.Check (Rt.Fn<Rt.FPIOB> (Statics, Rt.First + 8) (Statics, h, majorVersion, out r));
++				return r != 0;
++			} finally {
++				Rt.Free (h);
++			}
++		}
++
++		public static bool IsApiContractPresent (string contractName, ushort majorVersion, ushort minorVersion)
++		{
++			if (contractName == null)
++				throw new ArgumentNullException ("contractName");
++			IntPtr h = Rt.HString (contractName);
++			try {
++				byte r;
++				Rt.Check (Rt.Fn<Rt.FPIIOB> (Statics, Rt.First + 9) (Statics, h, majorVersion, minorVersion, out r));
++				return r != 0;
++			} finally {
++				Rt.Free (h);
++			}
++		}
++	}
++}
++
++namespace Windows.Foundation.Collections
++{
++	public enum CollectionChange
++	{
++		Reset = 0,
++		ItemInserted = 1,
++		ItemRemoved = 2,
++		ItemChanged = 3,
++	}
++
++	// a property set of strings to values (IPropertySet: projected as
++	// IDictionary<string, object>); kept in the program, as the values a
++	// program builds and reads itself are
++	public sealed class ValueSet : IDictionary<string, object>
++	{
++		readonly Dictionary<string, object> d = new Dictionary<string, object> ();
++
++		public ValueSet ()
++		{
++		}
++
++		public object this [string key] {
++			get { return d [key]; }
++			set { d [key] = value; }
++		}
++
++		public ICollection<string> Keys { get { return d.Keys; } }
++		public ICollection<object> Values { get { return d.Values; } }
++		public int Count { get { return d.Count; } }
++		public bool IsReadOnly { get { return false; } }
++		public void Add (string key, object value) { d.Add (key, value); }
++		public bool ContainsKey (string key) { return d.ContainsKey (key); }
++		public bool Remove (string key) { return d.Remove (key); }
++		public bool TryGetValue (string key, out object value) { return d.TryGetValue (key, out value); }
++		public void Add (KeyValuePair<string, object> item) { ((ICollection<KeyValuePair<string, object>>)d).Add (item); }
++		public void Clear () { d.Clear (); }
++		public bool Contains (KeyValuePair<string, object> item) { return ((ICollection<KeyValuePair<string, object>>)d).Contains (item); }
++		public void CopyTo (KeyValuePair<string, object>[] array, int arrayIndex) { ((ICollection<KeyValuePair<string, object>>)d).CopyTo (array, arrayIndex); }
++		public bool Remove (KeyValuePair<string, object> item) { return ((ICollection<KeyValuePair<string, object>>)d).Remove (item); }
++		public IEnumerator<KeyValuePair<string, object>> GetEnumerator () { return d.GetEnumerator (); }
++		IEnumerator IEnumerable.GetEnumerator () { return d.GetEnumerator (); }
++	}
++}
+diff --git a/sg-winmd/Windows.UI.Notifications.cs b/sg-winmd/Windows.UI.Notifications.cs
+new file mode 100644
+--- /dev/null
++++ b/sg-winmd/Windows.UI.Notifications.cs
+@@ -0,0 +1,712 @@
++// Stained Glass OS: Windows.UI.Notifications and Windows.Data.Xml.Dom for
++// .NET Framework programs (toast notifications: Cyberduck, programs using
++// Microsoft.Toolkit.Uwp.Notifications / CommunityToolkit's ToastNotification-
++// ManagerCompat). Each class wraps the system's object (Wine's windows.ui),
++// as the CLR's projection does. What the system does not have (notification
++// data binding: NotificationData, ToastNotification.Data, ToastNotifier.Update;
++// ToastNotificationHistory.GetHistory) is kept here: data stays with the toast
++// it was given to, an update finds no toast to update, and the history the
++// program can read is empty.
++//
++// Copyright (C) 2026 Stained Glass OS contributors. MIT license, as Wine Mono.
++
++using System;
++using System.Collections.Generic;
++using System.Collections.ObjectModel;
++using System.Runtime.InteropServices;
++using System.Runtime.InteropServices.WindowsRuntime;
++using Windows.Foundation;
++using Windows.Internal;
++
++namespace Windows.Data.Xml.Dom
++{
++	public sealed class XmlDocument
++	{
++		static readonly Guid IID_IXmlDocumentIO = new Guid ("6cd0e74e-ee65-4489-9ebf-ca43e87ba637");
++		static readonly Guid IID_IXmlNodeSerializer = new Guid ("5cc5b382-e6dd-4991-abef-06d8d2e7bd0c");
++		internal readonly RtRef R;
++
++		public XmlDocument ()
++		{
++			R = new RtRef (Rt.Activate ("Windows.Data.Xml.Dom.XmlDocument"));
++			Rt.Register (this, R.Ptr);
++		}
++
++		XmlDocument (RtRef r)
++		{
++			R = r;
++		}
++
++		internal static XmlDocument Wrap (IntPtr p)
++		{
++			return Rt.Wrap (p, r => new XmlDocument (r));
++		}
++
++		public void LoadXml (string xml)
++		{
++			if (xml == null)
++				throw new ArgumentNullException ("xml");
++			Rt.With (R, IID_IXmlDocumentIO, i => Rt.PutString (i, Rt.First, xml));
++		}
++
++		public string GetXml ()
++		{
++			return Rt.With (R, IID_IXmlNodeSerializer, i => Rt.GetString (i, Rt.First));
++		}
++
++		public string InnerText {
++			get { return Rt.With (R, IID_IXmlNodeSerializer, i => Rt.GetString (i, Rt.First + 1)); }
++		}
++
++		public void put_InnerText (string value)
++		{
++			Rt.With (R, IID_IXmlNodeSerializer, i => Rt.PutString (i, Rt.First + 2, value));
++		}
++	}
++}
++
++namespace Windows.UI.Notifications
++{
++	using Windows.Data.Xml.Dom;
++
++	public enum NotificationSetting
++	{
++		Enabled = 0,
++		DisabledForApplication = 1,
++		DisabledForUser = 2,
++		DisabledByGroupPolicy = 3,
++		DisabledByManifest = 4,
++	}
++
++	public enum NotificationUpdateResult
++	{
++		Succeeded = 0,
++		Failed = 1,
++		NotificationNotFound = 2,
++	}
++
++	public enum ToastDismissalReason
++	{
++		UserCanceled = 0,
++		ApplicationHidden = 1,
++		TimedOut = 2,
++	}
++
++	public enum ToastNotificationPriority
++	{
++		Default = 0,
++		High = 1,
++	}
++
++	public enum ToastTemplateType
++	{
++		ToastImageAndText01 = 0,
++		ToastImageAndText02 = 1,
++		ToastImageAndText03 = 2,
++		ToastImageAndText04 = 3,
++		ToastText01 = 4,
++		ToastText02 = 5,
++		ToastText03 = 6,
++		ToastText04 = 7,
++	}
++
++	// data a toast's bindings are filled from; the system has no data
++	// binding, so it is the program's (see the top of this file)
++	public sealed class NotificationData
++	{
++		readonly Dictionary<string, string> values = new Dictionary<string, string> ();
++		uint sequence;
++
++		public NotificationData ()
++		{
++		}
++
++		public NotificationData (IEnumerable<KeyValuePair<string, string>> initialValues)
++			: this (initialValues, 0)
++		{
++		}
++
++		public NotificationData (IEnumerable<KeyValuePair<string, string>> initialValues, uint sequenceNumber)
++		{
++			if (initialValues == null)
++				throw new ArgumentNullException ("initialValues");
++			foreach (var kv in initialValues)
++				values [kv.Key] = kv.Value;
++			sequence = sequenceNumber;
++		}
++
++		public IDictionary<string, string> Values {
++			get { return values; }
++		}
++
++		public uint SequenceNumber {
++			get { return sequence; }
++		}
++
++		public void put_SequenceNumber (uint value)
++		{
++			sequence = value;
++		}
++	}
++
++	public sealed class ToastActivatedEventArgs
++	{
++		static readonly Guid IID = new Guid ("e3bf92f3-c197-436f-8265-0625824f8dac");
++		internal readonly RtRef R;
++
++		ToastActivatedEventArgs (RtRef r)
++		{
++			R = r;
++		}
++
++		internal static object Wrap (IntPtr p)
++		{
++			if (p == IntPtr.Zero)
++				return null;
++			IntPtr a = Rt.QI (p, IID);
++			if (a == IntPtr.Zero)
++				return null;
++			return Rt.Wrap (a, r => new ToastActivatedEventArgs (r));
++		}
++
++		public string Arguments {
++			get { return Rt.GetString (R.Ptr, Rt.First); }
++		}
++	}
++
++	public sealed class ToastDismissedEventArgs
++	{
++		static readonly Guid IID = new Guid ("3f89d935-d9cb-4538-a0f0-ffe7659938f8");
++		internal readonly RtRef R;
++
++		ToastDismissedEventArgs (RtRef r)
++		{
++			R = r;
++		}
++
++		internal static ToastDismissedEventArgs Wrap (IntPtr p)
++		{
++			IntPtr a = Rt.QI (p, IID);
++			return a == IntPtr.Zero ? null : Rt.Wrap (a, r => new ToastDismissedEventArgs (r));
++		}
++
++		public ToastDismissalReason Reason {
++			get { return (ToastDismissalReason)Rt.GetInt (R.Ptr, Rt.First); }
++		}
++	}
++
++	public sealed class ToastFailedEventArgs
++	{
++		static readonly Guid IID = new Guid ("35176862-cfd4-44f8-ad64-f500fd896c3b");
++		internal readonly RtRef R;
++
++		ToastFailedEventArgs (RtRef r)
++		{
++			R = r;
++		}
++
++		internal static ToastFailedEventArgs Wrap (IntPtr p)
++		{
++			IntPtr a = Rt.QI (p, IID);
++			return a == IntPtr.Zero ? null : Rt.Wrap (a, r => new ToastFailedEventArgs (r));
++		}
++
++		public Exception ErrorCode {
++			get {
++				int hr = Rt.GetInt (R.Ptr, Rt.First);
++				return hr < 0 ? Rt.ExceptionFor (hr) : null;
++			}
++		}
++	}
++
++	public sealed class ToastNotification
++	{
++		internal static readonly Guid IID = new Guid ("997e2675-059e-4e60-8b06-1760917c8b80");
++		static readonly Guid IID_IToastNotification2 = new Guid ("9dfb9fd1-143a-490e-90bf-b9fba7132de7");
++		static readonly Guid IID_IToastNotificationFactory = new Guid ("04124b20-82c6-4229-b109-fd9ed4662b53");
++		static readonly Guid IID_IPropertyValueStatics = new Guid ("629bdbc8-d932-4ff4-96b9-8d96c5c1e858");
++		internal const string ClassName = "Windows.UI.Notifications.ToastNotification";
++		static readonly string sig = Rt.ClassSig (ClassName, IID);
++		static readonly Guid IID_ActivatedHandler = Rt.ParameterizedIid (Rt.PInterface (Rt.TypedEventHandler2, sig, Rt.InspectableSig));
++		static readonly Guid IID_DismissedHandler = Rt.ParameterizedIid (Rt.PInterface (Rt.TypedEventHandler2, sig,
++			Rt.ClassSig ("Windows.UI.Notifications.ToastDismissedEventArgs", new Guid ("3f89d935-d9cb-4538-a0f0-ffe7659938f8"))));
++		static readonly Guid IID_FailedHandler = Rt.ParameterizedIid (Rt.PInterface (Rt.TypedEventHandler2, sig,
++			Rt.ClassSig ("Windows.UI.Notifications.ToastFailedEventArgs", new Guid ("35176862-cfd4-44f8-ad64-f500fd896c3b"))));
++		static readonly Guid IID_IReference_DateTime = Rt.ParameterizedIid (Rt.PInterface (Rt.IReference1, "struct(Windows.Foundation.DateTime;i8)"));
++
++		internal readonly RtRef R;
++		NotificationData data;
++		ToastNotificationPriority priority;
++		DateTimeOffset? expiration;
++
++		public ToastNotification (XmlDocument content)
++		{
++			if (content == null)
++				throw new ArgumentNullException ("content");
++			IntPtr f = Rt.Factory (ClassName, IID_IToastNotificationFactory);
++			try {
++				IntPtr t;
++				Rt.Check (Rt.Fn<Rt.FPOP> (f, Rt.First) (f, content.R.Ptr, out t));
++				R = new RtRef (t);
++				Rt.Register (this, t);
++			} finally {
++				Marshal.Release (f);
++			}
++		}
++
++		ToastNotification (RtRef r)
++		{
++			R = r;
++		}
++
++		internal static ToastNotification Wrap (IntPtr p)
++		{
++			return Rt.Wrap (p, r => new ToastNotification (r));
++		}
++
++		public XmlDocument Content {
++			get { return XmlDocument.Wrap (Rt.GetP (R.Ptr, Rt.First)); }
++		}
++
++		public DateTimeOffset? ExpirationTime {
++			get {
++				IntPtr r = Rt.GetP (R.Ptr, Rt.First + 2);
++				if (r == IntPtr.Zero)
++					return expiration;
++				try {
++					return Rt.ToDateTimeOffset (Rt.GetLong (r, Rt.First));
++				} finally {
++					Marshal.Release (r);
++				}
++			}
++		}
++
++		public void put_ExpirationTime (DateTimeOffset? value)
++		{
++			expiration = value;
++			IntPtr reference = IntPtr.Zero;
++			if (value.HasValue) {
++				// an IReference<DateTime> from the system's PropertyValue
++				IntPtr pv = IntPtr.Zero, statics = IntPtr.Zero;
++				try {
++					statics = Rt.Factory ("Windows.Foundation.PropertyValue", IID_IPropertyValueStatics);
++					Rt.Check (Rt.Fn<Rt.FLOP> (statics, Rt.First + 15) (statics, Rt.FromDateTimeOffset (value.Value), out pv));
++					reference = Rt.QI (pv, IID_IReference_DateTime);
++				} catch (Exception) {
++					/* the system cannot box a time: the toast keeps no expiration */
++				} finally {
++					if (pv != IntPtr.Zero) Marshal.Release (pv);
++					if (statics != IntPtr.Zero) Marshal.Release (statics);
++				}
++				if (reference == IntPtr.Zero)
++					return;
++			}
++			try {
++				Rt.CallP (R.Ptr, Rt.First + 1, reference);
++			} finally {
++				if (reference != IntPtr.Zero)
++					Marshal.Release (reference);
++			}
++		}
++
++		long AddHandler (int slot, Guid iid, Action<IntPtr, IntPtr> call)
++		{
++			IntPtr h = NativeDelegate.ForObjects (iid, call);
++			try {
++				long token;
++				Rt.Check (Rt.Fn<Rt.FPOL> (R.Ptr, slot) (R.Ptr, h, out token));
++				return token;
++			} finally {
++				Marshal.Release (h);
++			}
++		}
++
++		public EventRegistrationToken add_Activated (TypedEventHandler<ToastNotification, object> handler)
++		{
++			if (handler == null)
++				return default (EventRegistrationToken);
++			return Rt.Token (AddHandler (Rt.First + 5, IID_ActivatedHandler, (s, a) => {
++				Marshal.AddRef (s);
++				handler (Wrap (s), ToastActivatedEventArgs.Wrap (a));
++			}));
++		}
++
++		public void remove_Activated (EventRegistrationToken token)
++		{
++			Rt.Check (Rt.Fn<Rt.FL> (R.Ptr, Rt.First + 6) (R.Ptr, Rt.TokenValue (token)));
++		}
++
++		public EventRegistrationToken add_Dismissed (TypedEventHandler<ToastNotification, ToastDismissedEventArgs> handler)
++		{
++			if (handler == null)
++				return default (EventRegistrationToken);
++			return Rt.Token (AddHandler (Rt.First + 3, IID_DismissedHandler, (s, a) => {
++				Marshal.AddRef (s);
++				handler (Wrap (s), ToastDismissedEventArgs.Wrap (a));
++			}));
++		}
++
++		public void remove_Dismissed (EventRegistrationToken token)
++		{
++			Rt.Check (Rt.Fn<Rt.FL> (R.Ptr, Rt.First + 4) (R.Ptr, Rt.TokenValue (token)));
++		}
++
++		public EventRegistrationToken add_Failed (TypedEventHandler<ToastNotification, ToastFailedEventArgs> handler)
++		{
++			if (handler == null)
++				return default (EventRegistrationToken);
++			return Rt.Token (AddHandler (Rt.First + 7, IID_FailedHandler, (s, a) => {
++				Marshal.AddRef (s);
++				handler (Wrap (s), ToastFailedEventArgs.Wrap (a));
++			}));
++		}
++
++		public void remove_Failed (EventRegistrationToken token)
++		{
++			Rt.Check (Rt.Fn<Rt.FL> (R.Ptr, Rt.First + 8) (R.Ptr, Rt.TokenValue (token)));
++		}
++
++		// IToastNotification2
++		public string Tag {
++			get { return Rt.With (R, IID_IToastNotification2, i => Rt.GetString (i, Rt.First + 1)); }
++		}
++
++		public void put_Tag (string value)
++		{
++			Rt.With (R, IID_IToastNotification2, i => Rt.PutString (i, Rt.First, value));
++		}
++
++		public string Group {
++			get { return Rt.With (R, IID_IToastNotification2, i => Rt.GetString (i, Rt.First + 3)); }
++		}
++
++		public void put_Group (string value)
++		{
++			Rt.With (R, IID_IToastNotification2, i => Rt.PutString (i, Rt.First + 2, value));
++		}
++
++		public bool SuppressPopup {
++			get { return Rt.With (R, IID_IToastNotification2, i => Rt.GetBool (i, Rt.First + 5)); }
++		}
++
++		public void put_SuppressPopup (bool value)
++		{
++			Rt.With (R, IID_IToastNotification2, i => Rt.PutBool (i, Rt.First + 4, value));
++		}
++
++		// IToastNotification4 (data binding: the program's, see above)
++		public NotificationData Data {
++			get { return data; }
++		}
++
++		public void put_Data (NotificationData value)
++		{
++			data = value;
++		}
++
++		public ToastNotificationPriority Priority {
++			get { return priority; }
++		}
++
++		public void put_Priority (ToastNotificationPriority value)
++		{
++			priority = value;
++		}
++	}
++
++	public sealed class ScheduledToastNotification
++	{
++		internal static readonly Guid IID = new Guid ("79f577f8-0de7-48cd-9740-9b370490c838");
++		static readonly Guid IID_IScheduledToastNotification2 = new Guid ("a66ea09c-31b4-43b0-b5dd-7a40e85363b1");
++		static readonly Guid IID_IScheduledToastNotificationFactory = new Guid ("e7bed191-0bb9-4189-8394-31761b476fd7");
++		internal const string ClassName = "Windows.UI.Notifications.ScheduledToastNotification";
++		internal readonly RtRef R;
++
++		public ScheduledToastNotification (XmlDocument content, DateTimeOffset deliveryTime)
++		{
++			if (content == null)
++				throw new ArgumentNullException ("content");
++			IntPtr f = Rt.Factory (ClassName, IID_IScheduledToastNotificationFactory);
++			try {
++				IntPtr t;
++				Rt.Check (Rt.Fn<Rt.FPLOP> (f, Rt.First) (f, content.R.Ptr, Rt.FromDateTimeOffset (deliveryTime), out t));
++				R = new RtRef (t);
++				Rt.Register (this, t);
++			} finally {
++				Marshal.Release (f);
++			}
++		}
++
++		ScheduledToastNotification (RtRef r)
++		{
++			R = r;
++		}
++
++		internal static ScheduledToastNotification Wrap (IntPtr p)
++		{
++			return Rt.Wrap (p, r => new ScheduledToastNotification (r));
++		}
++
++		public XmlDocument Content {
++			get { return XmlDocument.Wrap (Rt.GetP (R.Ptr, Rt.First)); }
++		}
++
++		public DateTimeOffset DeliveryTime {
++			get { return Rt.ToDateTimeOffset (Rt.GetLong (R.Ptr, Rt.First + 1)); }
++		}
++
++		public uint MaximumSnoozeCount {
++			get { return (uint)Rt.GetInt (R.Ptr, Rt.First + 3); }
++		}
++
++		public string Id {
++			get { return Rt.GetString (R.Ptr, Rt.First + 5); }
++		}
++
++		public void put_Id (string value)
++		{
++			Rt.PutString (R.Ptr, Rt.First + 4, value);
++		}
++
++		public string Tag {
++			get { return Rt.With (R, IID_IScheduledToastNotification2, i => Rt.GetString (i, Rt.First + 1)); }
++		}
++
++		public void put_Tag (string value)
++		{
++			Rt.With (R, IID_IScheduledToastNotification2, i => Rt.PutString (i, Rt.First, value));
++		}
++
++		public string Group {
++			get { return Rt.With (R, IID_IScheduledToastNotification2, i => Rt.GetString (i, Rt.First + 3)); }
++		}
++
++		public void put_Group (string value)
++		{
++			Rt.With (R, IID_IScheduledToastNotification2, i => Rt.PutString (i, Rt.First + 2, value));
++		}
++
++		public bool SuppressPopup {
++			get { return Rt.With (R, IID_IScheduledToastNotification2, i => Rt.GetBool (i, Rt.First + 5)); }
++		}
++
++		public void put_SuppressPopup (bool value)
++		{
++			Rt.With (R, IID_IScheduledToastNotification2, i => Rt.PutBool (i, Rt.First + 4, value));
++		}
++	}
++
++	public sealed class ToastNotifier
++	{
++		internal readonly RtRef R;
++		static readonly Guid IID_IToastNotifier2 = new Guid ("354389c6-7c01-4bd5-9c20-604340cd2b74");
++
++		ToastNotifier (RtRef r)
++		{
++			R = r;
++		}
++
++		internal static ToastNotifier Wrap (IntPtr p)
++		{
++			return Rt.Wrap (p, r => new ToastNotifier (r));
++		}
++
++		static IntPtr Of (ToastNotification t)
++		{
++			if (t == null)
++				throw new ArgumentNullException ("notification");
++			return t.R.Ptr;
++		}
++
++		static IntPtr Of (ScheduledToastNotification t)
++		{
++			if (t == null)
++				throw new ArgumentNullException ("scheduledToast");
++			return t.R.Ptr;
++		}
++
++		public void Show (ToastNotification notification)
++		{
++#if SG_MUTANT_TOAST_SHOW_NOT_PROJECTED
++			return;
++#endif
++			Rt.CallP (R.Ptr, Rt.First, Of (notification));
++		}
++
++		public void Hide (ToastNotification notification)
++		{
++			Rt.CallP (R.Ptr, Rt.First + 1, Of (notification));
++		}
++
++		public NotificationSetting Setting {
++			get { return (NotificationSetting)Rt.GetInt (R.Ptr, Rt.First + 2); }
++		}
++
++		public void AddToSchedule (ScheduledToastNotification scheduledToast)
++		{
++			Rt.CallP (R.Ptr, Rt.First + 3, Of (scheduledToast));
++		}
++
++		public void RemoveFromSchedule (ScheduledToastNotification scheduledToast)
++		{
++			Rt.CallP (R.Ptr, Rt.First + 4, Of (scheduledToast));
++		}
++
++		public IReadOnlyList<ScheduledToastNotification> GetScheduledToastNotifications ()
++		{
++			return new ReadOnlyCollection<ScheduledToastNotification> (
++				Rt.ReadVectorView (Rt.GetP (R.Ptr, Rt.First + 5), ScheduledToastNotification.Wrap));
++		}
++
++		public NotificationUpdateResult Update (NotificationData data, string tag)
++		{
++			return Update (data, tag, null);
++		}
++
++		public NotificationUpdateResult Update (NotificationData data, string tag, string group)
++		{
++			if (data == null)
++				throw new ArgumentNullException ("data");
++			// no data binding in the system: there is no shown toast to update
++			// (see the top of this file)
++			return NotificationUpdateResult.NotificationNotFound;
++		}
++	}
++
++	public sealed class ToastNotificationHistory
++	{
++		internal readonly RtRef R;
++		static readonly Guid IID_IToastNotificationHistory2 = new Guid ("3bc3d253-2f31-4092-9129-8ad5abf067da");
++
++		ToastNotificationHistory (RtRef r)
++		{
++			R = r;
++		}
++
++		internal static ToastNotificationHistory Wrap (IntPtr p)
++		{
++			return Rt.Wrap (p, r => new ToastNotificationHistory (r));
++		}
++
++		void Strings (int slot, params string[] s)
++		{
++			var h = new IntPtr [s.Length];
++			try {
++				for (int i = 0; i < s.Length; i++)
++					h [i] = Rt.HString (s [i]);
++				switch (s.Length) {
++				case 0: Rt.Call (R.Ptr, slot); break;
++				case 1: Rt.Check (Rt.Fn<Rt.FP> (R.Ptr, slot) (R.Ptr, h [0])); break;
++				case 2: Rt.Check (Rt.Fn<Rt.FPP> (R.Ptr, slot) (R.Ptr, h [0], h [1])); break;
++				default: Rt.Check (Rt.Fn<Rt.FPPP> (R.Ptr, slot) (R.Ptr, h [0], h [1], h [2])); break;
++				}
++			} finally {
++				foreach (var x in h)
++					Rt.Free (x);
++			}
++		}
++
++		public void RemoveGroup (string group) { Strings (Rt.First, group); }
++		public void RemoveGroup (string group, string applicationId) { Strings (Rt.First + 1, group, applicationId); }
++		public void Remove (string tag, string group, string applicationId) { Strings (Rt.First + 2, tag, group, applicationId); }
++		public void Remove (string tag, string group) { Strings (Rt.First + 3, tag, group); }
++		public void Remove (string tag) { Strings (Rt.First + 4, tag); }
++		public void Clear () { Strings (Rt.First + 5); }
++		public void Clear (string applicationId) { Strings (Rt.First + 6, applicationId); }
++
++		IReadOnlyList<ToastNotification> History (string applicationId)
++		{
++			IntPtr h2 = R.As (IID_IToastNotificationHistory2);
++			if (h2 == IntPtr.Zero)
++				return new ReadOnlyCollection<ToastNotification> (new List<ToastNotification> ());
++			try {
++				IntPtr view;
++				if (applicationId == null) {
++					view = Rt.GetP (h2, Rt.First);
++				} else {
++					IntPtr a = Rt.HString (applicationId);
++					try {
++						Rt.Check (Rt.Fn<Rt.FPOP> (h2, Rt.First + 1) (h2, a, out view));
++					} finally {
++						Rt.Free (a);
++					}
++				}
++				return new ReadOnlyCollection<ToastNotification> (Rt.ReadVectorView (view, ToastNotification.Wrap));
++			} finally {
++				Marshal.Release (h2);
++			}
++		}
++
++		public IReadOnlyList<ToastNotification> GetHistory ()
++		{
++			return History (null);
++		}
++
++		public IReadOnlyList<ToastNotification> GetHistory (string applicationId)
++		{
++			if (applicationId == null)
++				throw new ArgumentNullException ("applicationId");
++			return History (applicationId);
++		}
++	}
++
++	public static class ToastNotificationManager
++	{
++		const string ClassName = "Windows.UI.Notifications.ToastNotificationManager";
++		static readonly Guid IID_IToastNotificationManagerStatics = new Guid ("50ac103f-d235-4598-bbef-98fe4d1a3ad4");
++		static readonly Guid IID_IToastNotificationManagerStatics2 = new Guid ("7ab93c52-0e48-4750-ba9d-1a4113981847");
++
++		static IntPtr Statics (Guid iid)
++		{
++			return Rt.Factory (ClassName, iid);
++		}
++
++		public static ToastNotifier CreateToastNotifier ()
++		{
++			IntPtr s = Statics (IID_IToastNotificationManagerStatics);
++			try {
++				return ToastNotifier.Wrap (Rt.GetP (s, Rt.First));
++			} finally {
++				Marshal.Release (s);
++			}
++		}
++
++		public static ToastNotifier CreateToastNotifier (string applicationId)
++		{
++			if (applicationId == null)
++				throw new ArgumentNullException ("applicationId");
++			IntPtr s = Statics (IID_IToastNotificationManagerStatics), a = Rt.HString (applicationId);
++			try {
++				IntPtr n;
++				Rt.Check (Rt.Fn<Rt.FPOP> (s, Rt.First + 1) (s, a, out n));
++				return ToastNotifier.Wrap (n);
++			} finally {
++				Rt.Free (a);
++				Marshal.Release (s);
++			}
++		}
++
++		public static XmlDocument GetTemplateContent (ToastTemplateType type)
++		{
++			IntPtr s = Statics (IID_IToastNotificationManagerStatics);
++			try {
++				IntPtr d;
++				Rt.Check (Rt.Fn<Rt.FIOP> (s, Rt.First + 2) (s, (int)type, out d));
++				return XmlDocument.Wrap (d);
++			} finally {
++				Marshal.Release (s);
++			}
++		}
++
++		public static ToastNotificationHistory History {
++			get {
++				IntPtr s = Statics (IID_IToastNotificationManagerStatics2);
++				try {
++					return ToastNotificationHistory.Wrap (Rt.GetP (s, Rt.First));
++				} finally {
++					Marshal.Release (s);
++				}
++			}
++		}
++	}
++}
+diff --git a/sg-winmd/Windows.ApplicationModel.cs b/sg-winmd/Windows.ApplicationModel.cs
+new file mode 100644
+--- /dev/null
++++ b/sg-winmd/Windows.ApplicationModel.cs
+@@ -0,0 +1,276 @@
++// Stained Glass OS: Windows.ApplicationModel.Package, Windows.Storage
++// (ApplicationData, StorageFolder), Windows.System (User,
++// KnownUserProperties) and Windows.Services.Store (StoreContext,
++// StoreAppLicense) for .NET Framework programs, over the system's classes
++// as the CLR projects them. A program without package identity (any program
++// installed the classic way) gets what Windows gives it: Package.Current and
++// ApplicationData.Current throw InvalidOperationException "The process has
++// no package identity" (0x80073D54); the Store context answers for a store
++// with no account.
++//
++// Copyright (C) 2026 Stained Glass OS contributors. MIT license, as Wine Mono.
++
++using System;
++using System.Runtime.InteropServices;
++using Windows.Foundation;
++using Windows.Internal;
++
++namespace Windows.Storage
++{
++	public sealed class StorageFolder
++	{
++		static readonly Guid IID_IStorageItem = new Guid ("4207a996-ca2f-42f7-bde8-8b10457a7f30");
++		internal readonly RtRef R;
++
++		StorageFolder (RtRef r)
++		{
++			R = r;
++		}
++
++		internal static StorageFolder Wrap (IntPtr p)
++		{
++			return Rt.Wrap (p, r => new StorageFolder (r));
++		}
++
++		// IStorageItem: RenameAsync x2, DeleteAsync x2, GetBasicPropertiesAsync, Name, Path
++		public string Name {
++			get { return Rt.With (R, IID_IStorageItem, i => Rt.GetString (i, Rt.First + 5)); }
++		}
++
++		public string Path {
++			get { return Rt.With (R, IID_IStorageItem, i => Rt.GetString (i, Rt.First + 6)); }
++		}
++	}
++
++	public sealed class ApplicationData
++	{
++		static readonly Guid IID_IApplicationDataStatics = new Guid ("5612147b-e843-45e3-94d8-06169e3c8e17");
++		static readonly Guid IID_IApplicationData2 = new Guid ("9e65cd69-0ba3-4e32-be29-b02de6607638");
++		internal readonly RtRef R;
++
++		ApplicationData (RtRef r)
++		{
++			R = r;
++		}
++
++		public static ApplicationData Current {
++			get {
++				IntPtr s = Rt.Factory ("Windows.Storage.ApplicationData", IID_IApplicationDataStatics);
++				try {
++					return Rt.Wrap (Rt.GetP (s, Rt.First), r => new ApplicationData (r));
++				} finally {
++					Marshal.Release (s);
++				}
++			}
++		}
++
++		// IApplicationData: Version, SetVersionAsync, ClearAsync x2, LocalSettings,
++		// RoamingSettings, LocalFolder, RoamingFolder, TemporaryFolder
++		public uint Version {
++			get { return (uint)Rt.GetInt (R.Ptr, Rt.First); }
++		}
++
++		public StorageFolder LocalFolder {
++			get { return StorageFolder.Wrap (Rt.GetP (R.Ptr, Rt.First + 6)); }
++		}
++
++		public StorageFolder RoamingFolder {
++			get { return StorageFolder.Wrap (Rt.GetP (R.Ptr, Rt.First + 7)); }
++		}
++
++		public StorageFolder TemporaryFolder {
++			get { return StorageFolder.Wrap (Rt.GetP (R.Ptr, Rt.First + 8)); }
++		}
++
++		public StorageFolder LocalCacheFolder {
++			get { return Rt.With (R, IID_IApplicationData2, i => StorageFolder.Wrap (Rt.GetP (i, Rt.First))); }
++		}
++	}
++}
++
++namespace Windows.ApplicationModel
++{
++	using Windows.Storage;
++
++	public struct PackageVersion
++	{
++		public ushort Major;
++		public ushort Minor;
++		public ushort Build;
++		public ushort Revision;
++	}
++
++	public sealed class PackageId
++	{
++		internal readonly RtRef R;
++
++		PackageId (RtRef r)
++		{
++			R = r;
++		}
++
++		internal static PackageId Wrap (IntPtr p)
++		{
++			return Rt.Wrap (p, r => new PackageId (r));
++		}
++
++		// IPackageId: Name, Version, Architecture, ResourceId, Publisher,
++		// PublisherId, FullName, FamilyName
++		public string Name { get { return Rt.GetString (R.Ptr, Rt.First); } }
++
++		public PackageVersion Version {
++			get {
++				long v = Rt.GetLong (R.Ptr, Rt.First + 1);
++				return new PackageVersion { Major = (ushort)v, Minor = (ushort)(v >> 16), Build = (ushort)(v >> 32), Revision = (ushort)(v >> 48) };
++			}
++		}
++
++		public string ResourceId { get { return Rt.GetString (R.Ptr, Rt.First + 3); } }
++		public string Publisher { get { return Rt.GetString (R.Ptr, Rt.First + 4); } }
++		public string PublisherId { get { return Rt.GetString (R.Ptr, Rt.First + 5); } }
++		public string FullName { get { return Rt.GetString (R.Ptr, Rt.First + 6); } }
++		public string FamilyName { get { return Rt.GetString (R.Ptr, Rt.First + 7); } }
++	}
++
++	public sealed class Package
++	{
++		static readonly Guid IID_IPackageStatics = new Guid ("4e534bdf-2960-4878-97a4-9624deb72f2d");
++		internal readonly RtRef R;
++
++		Package (RtRef r)
++		{
++			R = r;
++		}
++
++		public static Package Current {
++			get {
++				IntPtr s = Rt.Factory ("Windows.ApplicationModel.Package", IID_IPackageStatics);
++				try {
++					return Rt.Wrap (Rt.GetP (s, Rt.First), r => new Package (r));
++				} finally {
++					Marshal.Release (s);
++				}
++			}
++		}
++
++		// IPackage: Id, InstalledLocation, IsFramework, Dependencies
++		public PackageId Id {
++			get { return PackageId.Wrap (Rt.GetP (R.Ptr, Rt.First)); }
++		}
++
++		public StorageFolder InstalledLocation {
++			get { return StorageFolder.Wrap (Rt.GetP (R.Ptr, Rt.First + 1)); }
++		}
++
++		public bool IsFramework {
++			get { return Rt.GetBool (R.Ptr, Rt.First + 2); }
++		}
++	}
++}
++
++namespace Windows.System
++{
++	public static class KnownUserProperties
++	{
++		// the property names the system's KnownUserProperties gives
++		public static string DisplayName { get { return "DisplayName"; } }
++		public static string FirstName { get { return "FirstName"; } }
++		public static string LastName { get { return "LastName"; } }
++		public static string ProviderName { get { return "ProviderName"; } }
++		public static string AccountName { get { return "AccountName"; } }
++		public static string GuestHost { get { return "GuestHost"; } }
++		public static string PrincipalName { get { return "PrincipalName"; } }
++		public static string DomainName { get { return "DomainName"; } }
++		public static string SessionInitiationProtocolUri { get { return "SessionInitiationProtocolUri"; } }
++	}
++
++	public sealed class User
++	{
++		internal readonly RtRef R;
++
++		User (RtRef r)
++		{
++			R = r;
++		}
++
++		// the system's User statics; a system without them says the class is
++		// not registered, as Windows does for a class it lacks
++		public static User GetDefault ()
++		{
++			IntPtr f = Rt.Factory ("Windows.System.User", Rt.IID_IActivationFactory);
++			Marshal.Release (f);
++			throw Rt.ExceptionFor (Rt.E_NOINTERFACE);
++		}
++
++		public IAsyncOperation<object> GetPropertyAsync (string value)
++		{
++			throw Rt.ExceptionFor (Rt.E_NOINTERFACE);
++		}
++	}
++}
++
++namespace Windows.Services.Store
++{
++	public sealed class StoreAppLicense
++	{
++		internal static readonly Guid IID = new Guid ("f389f9de-73c0-45ce-9bab-b2fe3e5eafd3");
++		internal const string ClassName = "Windows.Services.Store.StoreAppLicense";
++		static readonly Guid IID_IStoreAppLicense2 = new Guid ("b4666e91-4443-40b3-993f-28904435bdc6");
++		internal readonly RtRef R;
++
++		StoreAppLicense (RtRef r)
++		{
++			R = r;
++		}
++
++		internal static StoreAppLicense Wrap (IntPtr p)
++		{
++			return Rt.Wrap (p, r => new StoreAppLicense (r));
++		}
++
++		// IStoreAppLicense: SkuStoreId, IsActive, IsTrial, ExpirationDate,
++		// ExtendedJsonData, AddOnLicenses, TrialTimeRemaining,
++		// IsTrialOwnedByThisUser, TrialUniqueId
++		public string SkuStoreId { get { return Rt.GetString (R.Ptr, Rt.First); } }
++		public bool IsActive { get { return Rt.GetBool (R.Ptr, Rt.First + 1); } }
++		public bool IsTrial { get { return Rt.GetBool (R.Ptr, Rt.First + 2); } }
++		public DateTimeOffset ExpirationDate { get { return Rt.ToDateTimeOffset (Rt.GetLong (R.Ptr, Rt.First + 3)); } }
++		public string ExtendedJsonData { get { return Rt.GetString (R.Ptr, Rt.First + 4); } }
++		public TimeSpan TrialTimeRemaining { get { return new TimeSpan (Rt.GetLong (R.Ptr, Rt.First + 6)); } }
++		public bool IsTrialOwnedByThisUser { get { return Rt.GetBool (R.Ptr, Rt.First + 7); } }
++		public string TrialUniqueId { get { return Rt.GetString (R.Ptr, Rt.First + 8); } }
++
++		public bool IsDiscLicense {
++			get { return Rt.With (R, IID_IStoreAppLicense2, i => Rt.GetBool (i, Rt.First)); }
++		}
++	}
++
++	public sealed class StoreContext
++	{
++		static readonly Guid IID_IStoreContextStatics = new Guid ("9c06ee5f-15c0-4e72-9330-d6191cebd19c");
++		internal readonly RtRef R;
++
++		StoreContext (RtRef r)
++		{
++			R = r;
++		}
++
++		public static StoreContext GetDefault ()
++		{
++			IntPtr s = Rt.Factory ("Windows.Services.Store.StoreContext", IID_IStoreContextStatics);
++			try {
++				return Rt.Wrap (Rt.GetP (s, Rt.First), r => new StoreContext (r));
++			} finally {
++				Marshal.Release (s);
++			}
++		}
++
++		// IStoreContext: User, add/remove OfflineLicensesChanged,
++		// GetCustomerPurchaseIdAsync, GetCustomerCollectionsIdAsync, GetAppLicenseAsync
++		public IAsyncOperation<StoreAppLicense> GetAppLicenseAsync ()
++		{
++			return new NativeAsyncOperation<StoreAppLicense> (Rt.GetP (R.Ptr, Rt.First + 5),
++				Rt.ClassSig (StoreAppLicense.ClassName, StoreAppLicense.IID), StoreAppLicense.Wrap);
++		}
++	}
++}
+diff --git a/sg-winmd/System.Runtime.WindowsRuntime/AssemblyInfo.cs b/sg-winmd/System.Runtime.WindowsRuntime/AssemblyInfo.cs
+new file mode 100644
+--- /dev/null
++++ b/sg-winmd/System.Runtime.WindowsRuntime/AssemblyInfo.cs
+@@ -0,0 +1,12 @@
++// Stained Glass OS: System.Runtime.WindowsRuntime for .NET Framework programs
++// that call Windows Runtime asynchronous methods (AsTask, await on
++// IAsyncOperation, AsAsyncAction): .NET Framework's assembly of that name,
++// built from corefx's sources (MIT) against our Windows.winmd. Strong-named
++// with the ECMA key, as Mono's framework assemblies, so mscorlib's
++// InternalsVisibleTo applies and programs' references bind to it.
++using System.Reflection;
++[assembly: AssemblyVersion ("4.0.0.0")]
++[assembly: AssemblyFileVersion ("4.0.0.0")]
++[assembly: AssemblyTitle ("System.Runtime.WindowsRuntime")]
++[assembly: AssemblyDelaySign (true)]
++[assembly: System.CLSCompliant (true)]
+diff --git a/sg-winmd/System.Runtime.WindowsRuntime/RestrictedErrorInfoHelper.cs b/sg-winmd/System.Runtime.WindowsRuntime/RestrictedErrorInfoHelper.cs
+new file mode 100644
+--- /dev/null
++++ b/sg-winmd/System.Runtime.WindowsRuntime/RestrictedErrorInfoHelper.cs
+@@ -0,0 +1,12 @@
++// Stained Glass OS: the asynchronous operation's own error, as it is: Wine's
++// operations set no restricted error information on the thread.
++namespace System.Runtime.InteropServices.WindowsRuntime
++{
++	internal static class RestrictedErrorInfoHelper
++	{
++		internal static Exception AttachRestrictedErrorInfo (Exception e)
++		{
++			return e;
++		}
++	}
++}
+diff --git a/sg-winmd/System.Runtime.WindowsRuntime/SR.cs b/sg-winmd/System.Runtime.WindowsRuntime/SR.cs
+new file mode 100644
+--- /dev/null
++++ b/sg-winmd/System.Runtime.WindowsRuntime/SR.cs
+@@ -0,0 +1,32 @@
++// Stained Glass OS: the messages corefx's System.Runtime.WindowsRuntime
++// (Resources/Strings.resx) uses, for the sources built here.
++namespace System
++{
++	internal static class SR
++	{
++		internal const string InvalidOperation_InvalidAsyncCompletion = "The asynchronous operation could not be completed.";
++		internal const string InvalidOperation_CannotGetResultsFromIncompleteOperation = "Cannot call GetResults on this asynchronous info because the underlying operation has not completed.";
++		internal const string WinRtCOM_Error = "An error has occurred.";
++		internal const string ObjectDisposed_AsyncInfoIsClosed = "The requested invocation is not permitted because this IAsyncInfo instance has already been closed.";
++		internal const string NullReference_TaskProviderReturnedNull = "The task provider delegate used to create this asynchronous operation returned null, but a valid Task object was expected.";
++		internal const string InvalidOperation_UnstartedTaskSpecified = "The specified underlying Task is not started. Task instances must be run immediately upon creation.";
++		internal const string InvalidOperation_TaskProviderReturnedUnstartedTask = "The Task provider delegate specified for this IAsyncInfo instance returned a Task object that was not started. Task instances must be run immediately upon creation.";
++		internal const string InvalidOperation_IllegalStateChange = "The specified state transition is illegal for the current state of this object.";
++		internal const string InvalidOperation_CannotSetCompletionHanlderMoreThanOnce = "The 'Completed' handler delegate cannot be set more than once, but this handler has already been set.";
++	}
++
++	// the HRESULTs the sources use (mscorlib's own __HResults lacks the
++	// Windows Runtime ones)
++	internal static class __HResults
++	{
++		internal const int S_OK = 0;
++		internal const int E_BOUNDS = unchecked ((int)0x8000000B);
++		internal const int E_ILLEGAL_STATE_CHANGE = unchecked ((int)0x8000000D);
++		internal const int E_ILLEGAL_METHOD_CALL = unchecked ((int)0x8000000E);
++		internal const int RO_E_CLOSED = unchecked ((int)0x80000013);
++		internal const int E_ILLEGAL_DELEGATE_ASSIGNMENT = unchecked ((int)0x80000018);
++		internal const int E_NOTIMPL = unchecked ((int)0x80004001);
++		internal const int E_FAIL = unchecked ((int)0x80004005);
++		internal const int E_INVALIDARG = unchecked ((int)0x80070057);
++	}
++}
+diff --git a/sg-winmd/System.Runtime.WindowsRuntime/sources b/sg-winmd/System.Runtime.WindowsRuntime/sources
+new file mode 100644
+--- /dev/null
++++ b/sg-winmd/System.Runtime.WindowsRuntime/sources
+@@ -0,0 +1,11 @@
++System/VoidTypeParameter.cs
++System/WindowsRuntimeSystemExtensions.CoreCLR.cs
++System/Threading/Tasks/AsyncInfoToTaskBridge.CoreCLR.cs
++System/Threading/Tasks/TaskToAsyncActionAdapter.cs
++System/Threading/Tasks/TaskToAsyncActionWithProgressAdapter.cs
++System/Threading/Tasks/TaskToAsyncInfoAdapter.cs
++System/Threading/Tasks/TaskToAsyncOperationAdapter.cs
++System/Threading/Tasks/TaskToAsyncOperationWithProgressAdapter.cs
++System/Threading/Tasks/AsyncInfoIdGenerator.cs
++System/Threading/Tasks/ExceptionDispatchHelper.cs
++System/Runtime/InteropServices/WindowsRuntime/AsyncInfo.cs

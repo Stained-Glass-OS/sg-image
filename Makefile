@@ -423,9 +423,9 @@ apps-deb: staged-debs apps
 # upstream tarball (dl.winehq.org, sha256 fd772219...bf13858) is what it
 # replaces; test/mono-fork-test.sh tells them apart.
 MONO_VERSION       := 9.4.0
-MONO_BUILD         := sg34
+MONO_BUILD         := sg35
 MONO_URL           := https://freesoft.page/addons/wine-mono-$(MONO_VERSION)-$(MONO_BUILD)-x86.tar.xz
-MONO_SHA256        := 6e2ffd6208e48d68e8119ca6c63c928d5f12f293b8e5c33a898256f9842408e1
+MONO_SHA256        := 18f49008d5f1648f7332713eda72b3620a13e46fac5e96f056415098b0dafb73
 GECKO_VERSION      := 2.47.4
 GECKO_X86_SHA256   := 2cfc8d5c948602e21eff8a78613e1826f2d033df9672cace87fed56e8310afb6
 GECKO_X64_SHA256   := fd88fc7e537d058d7a8abf0c1ebc90c574892a466de86706a26d254710a82814

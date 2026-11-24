@@ -618,3 +618,69 @@ corefx-0004-csharp-dynamic-binds-com-objects.patch (sg34)
       section: Scripting.Dictionary through InvokeMember and dynamic, WScript.Shell
       CreateShortcut/TargetPath/Save); sg33 NotImplementedException / RuntimeBinderException.
       Mutant SG_MUTANT_NO_COM_DYNAMIC.
+
+mono-0032-windows-runtime-references-by-contract-name.patch (sg35)
+    mono/metadata/assembly.c: a reference marked ContentType=WindowsRuntime whose name has no
+      WinMetadata/<name>.winmd of its own is served by WinMetadata/Windows.winmd. The CLR finds
+      a Windows Runtime type by its namespace in the system's metadata (RoResolveNamespace),
+      whatever assembly name the reference has; programs built against the Windows SDK's
+      contract assemblies (Microsoft.Windows.SDK.Contracts) name
+      "Windows.Foundation.UniversalApiContract, Version=14.0.0.0", "...FoundationContract",
+      "Windows.Services.Store.StoreContract". System.Runtime.WindowsRuntime joins the framework
+      assemblies whose references are bound to the runtime's version (the NuGet reference
+      assemblies are 4.0.14.0; .NET Framework's is 4.0.0.0).
+    Why: Cyberduck 9.6 died at start (StructureMap 207 -> SharedSettings cctor ->
+      FileNotFoundException Windows.Foundation.UniversalApiContract 14.0). With it Cyberduck gets
+      past its preferences into its first window (the next wall is Wine's GDI+ GIF encoder:
+      ledger i0468). From gmono2 (ledger i0465). Gate: test/mono-fork-test.sh (sg35 section,
+      probe compiled against stand-ins of the three contracts which are then removed); sg34
+      FileNotFoundException. Mutant SG_MUTANT_WINRT_CONTRACTS_UNRESOLVED.
+
+wine-mono-0005-windows-runtime-projection-and-task-bridge.patch (sg35)
+    sg-winmd (WinMetadata/Windows.winmd): the Windows Runtime classes .NET Framework programs
+      call, as the CLR projects them: each wraps the system's object (Wine's windows.ui,
+      wintypes, windows.applicationmodel, windows.storage, windows.services.store) and calls its
+      interfaces (WinRT.Interop.cs: activation through combase, HSTRINGs, HRESULTs to the CLR's
+      exceptions -- 0x80073D54 is InvalidOperationException "The process has no package
+      identity" --, parameterized interface ids from the type signatures, one wrapper per
+      object, delegates handed to the system as agile COM delegates).
+      Windows.Foundation: IAsyncInfo/IAsyncAction/IAsyncOperation(WithProgress) and their
+      handlers, TypedEventHandler, Metadata.ApiInformation (the system's answers),
+      Collections.ValueSet. Windows.UI.Notifications: ToastNotificationManager (notifiers for an
+      AppUserModelID, History, templates), ToastNotifier (Show, Hide, Setting, schedules),
+      ToastNotification (Tag, Group, SuppressPopup, ExpirationTime, Activated/Dismissed/Failed
+      events), ScheduledToastNotification, ToastActivatedEventArgs, NotificationData;
+      Windows.Data.Xml.Dom.XmlDocument (LoadXml, GetXml); Windows.ApplicationModel.Package/
+      PackageId; Windows.Storage.ApplicationData/StorageFolder; Windows.System.User/
+      KnownUserProperties; Windows.Services.Store.StoreContext/StoreAppLicense. Windows.winmd is
+      itself marked ContentType=WindowsRuntime and built with csc (mcs cannot).
+      What Wine's classes do not have is kept by the projection: data binding (NotificationData,
+      ToastNotification.Data, ToastNotifier.Update says NotificationNotFound) and
+      ToastNotificationHistory.GetHistory (empty without IToastNotificationHistory2).
+    System.Runtime.WindowsRuntime 4.0.0.0 (GAC and lib/mono/4.5): AsTask, GetAwaiter,
+      AsAsyncAction/AsAsyncOperation and AsyncInfo.Run, from corefx's sources (MIT) built
+      against Windows.winmd, ECMA-key strong name.
+    Why: Cyberduck.Core.Native and Microsoft.Toolkit.Uwp.Notifications (toasts) call these.
+    Gate: test/mono-fork-test.sh (sg35 section: XmlDocument round trip, a toast shown and
+      clicked -- Activated through WindowsRuntimeMarshal.AddEventHandler with the launch
+      arguments and the same toast object --, History, Package/ApplicationData without package
+      identity, ApiInformation, the Store's app licence by Completed/AsTask/await, a Task as
+      IAsyncAction). Mutants SG_MUTANT_WINRT_HRESULTS_AS_COMEXCEPTION,
+      SG_MUTANT_WINRT_PIID_NO_VERSION, SG_MUTANT_TOAST_SHOW_NOT_PROJECTED.
+
+mono-0033-cpp-cli-runtime-managed-helpers.patch (sg35)
+    mono/metadata/marshal.c + corlib Mono.Interop/CrtImplementationDetails.cs: a C++/CLI
+      mixed-mode assembly built by Visual C++ 2005/2008 imports
+      <CrtImplementationDetails>.RegisterModuleUninitializer(EventHandler),
+      ThrowModuleLoadException(string[, Exception]) and ThrowNestedModuleLoadException(
+      Exception, Exception) from msvcm80/90 as native methods of its <Module>; they are managed
+      functions of msvcm on Windows, and Wine's native msvcm80/90 only printed "stub". Calls to
+      them go to corlib's own: the uninitializers (the module's C++ static destructors) run once
+      when the domain unloads or the process exits, the last registered first;
+      ModuleLoadException / ModuleLoadExceptionHandlerException are raised with their cause.
+    Why: Apache OpenOffice's CLI-UNO bridge (cli_uno.dll, cli_cppuhelper.dll, VC9 /clr):
+      loading cli_uno.dll and running its module initializer, sg34 prints
+      "fixme:msvcm:CrtImplementationDetails_RegisterModuleUninitializer stub"; sg35 registers
+      the uninitializer (checked by hand with AOO 4.1.15's DLLs). Ledger i0020 / gdata.
+    Gate: test/mono-fork-test.sh (sg35 C++/CLI section, imports declared as cli_uno declares
+      them); sg34 EntryPointNotFoundException. Mutant SG_MUTANT_MSVCM_HELPERS_NATIVE.

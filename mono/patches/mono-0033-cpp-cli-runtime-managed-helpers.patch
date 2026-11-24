@@ -1,0 +1,219 @@
+diff --git a/mono/metadata/marshal.c b/mono/metadata/marshal.c
+--- a/mono/metadata/marshal.c
++++ b/mono/metadata/marshal.c
+@@ -3633,6 +3633,58 @@ mono_marshal_get_adjust_sig_wrapper (MonoMethod *method, GHashTable *cache, gboo
+  * Generates IL code for the pinvoke wrapper. The generated method
+  * calls the unmanaged code in \c piinfo->addr.
+  */
++/*
++ * Stained Glass OS: the C++/CLI runtime's managed helpers. A mixed-mode
++ * assembly built by Visual C++ 2005/2008 (/clr) imports
++ * <CrtImplementationDetails>::RegisterModuleUninitializer(EventHandler^),
++ * ThrowModuleLoadException(String^[, Exception^]) and
++ * ThrowNestedModuleLoadException(Exception^, Exception^) from msvcm80/90.dll
++ * as native methods of its <Module>. They are managed functions of msvcm on
++ * Windows; Wine's msvcm80/90 are native, could only drop the handler and
++ * cannot raise the exception, so a call goes to corlib's
++ * Mono.Interop.CrtImplementationDetails with the managed arguments as they are.
++ */
++static MonoMethod *
++sg_crt_implementation_details_method (MonoMethod *method)
++{
++#ifndef SG_MUTANT_MSVCM_HELPERS_NATIVE
++	static const char prefix[] = "<CrtImplementationDetails>.";
++	MonoMethodSignature *sig;
++	MonoClass *klass;
++	const char *name;
++	gpointer iter = NULL;
++	MonoMethod *m;
++
++	/* a global method of the module (its native code is an import of msvcm) */
++	if (!(method->flags & METHOD_ATTRIBUTE_PINVOKE_IMPL) || m_class_get_type_token (method->klass) != (MONO_TOKEN_TYPE_DEF | 1))
++		return NULL;
++	if (strncmp (method->name, prefix, sizeof (prefix) - 1))
++		return NULL;
++	name = method->name + sizeof (prefix) - 1;
++	if (strcmp (name, "RegisterModuleUninitializer") && strcmp (name, "ThrowModuleLoadException") &&
++	    strcmp (name, "ThrowNestedModuleLoadException"))
++		return NULL;
++	sig = mono_method_signature_internal (method);
++	if (!sig || sig->hasthis || sig->ret->type != MONO_TYPE_VOID)
++		return NULL;
++	klass = mono_class_try_load_from_name (mono_defaults.corlib, "Mono.Interop", "CrtImplementationDetails");
++	if (!klass)
++		return NULL;
++	while ((m = mono_class_get_methods (klass, &iter))) {
++		MonoMethodSignature *msig = mono_method_signature_internal (m);
++		int i;
++		if (strcmp (m->name, name) || !msig || msig->param_count != sig->param_count)
++			continue;
++		for (i = 0; i < sig->param_count; i++)
++			if (mono_class_from_mono_type_internal (sig->params [i]) != mono_class_from_mono_type_internal (msig->params [i]))
++				break;
++		if (i == sig->param_count)
++			return m;
++	}
++#endif
++	return NULL;
++}
++
+ MonoMethod *
+ mono_marshal_get_native_wrapper (MonoMethod *method, gboolean check_exceptions, gboolean aot)
+ {
+@@ -3675,6 +3727,25 @@ mono_marshal_get_native_wrapper (MonoMethod *method, gboolean check_exceptions,
+ 	if ((res = mono_marshal_find_in_cache (cache, method)))
+ 		return res;
+ 
++	if (!aot) {
++		MonoMethod *crt = sg_crt_implementation_details_method (method);
++		if (crt) {
++			sig = mono_method_signature_internal (method);
++			csig = mono_metadata_signature_dup_full (get_method_image (method), sig);
++			csig->pinvoke = 0;
++			mb = mono_mb_new (method->klass, method->name, MONO_WRAPPER_MANAGED_TO_NATIVE);
++			for (i = 0; i < sig->param_count; i++)
++				mono_mb_emit_ldarg (mb, i);
++			mono_mb_emit_managed_call (mb, crt, NULL);
++			mono_mb_emit_byte (mb, CEE_RET);
++			info = mono_wrapper_info_create (mb, WRAPPER_SUBTYPE_NONE);
++			info->d.managed_to_native.method = method;
++			res = mono_mb_create_and_cache_full (cache, method, mb, csig, csig->param_count + 16, info, NULL);
++			mono_mb_free (mb);
++			return res;
++		}
++	}
++
+ 	if (mono_cominterop_is_rcw_method (method)) {
+ 		/* The COM code is not AOT compatible, it calls mono_custom_attrs_get_attr_checked () */
+ 		if (aot)
+diff --git a/mcs/class/corlib/corlib.dll.sources b/mcs/class/corlib/corlib.dll.sources
+--- a/mcs/class/corlib/corlib.dll.sources
++++ b/mcs/class/corlib/corlib.dll.sources
+@@ -41,6 +41,7 @@ Mono/DataConverter.cs
+ Mono.Interop/ComInteropProxy.cs
+ Mono.Interop/IDispatch.cs
+ Mono.Interop/IUnknown.cs
++Mono.Interop/CrtImplementationDetails.cs
+ ../Mono.Security/Mono.Math/BigInteger.cs
+ ../Mono.Security/Mono.Math.Prime/ConfidenceFactor.cs
+ ../Mono.Security/Mono.Math.Prime/PrimalityTests.cs
+diff --git a/mcs/class/corlib/Mono.Interop/CrtImplementationDetails.cs b/mcs/class/corlib/Mono.Interop/CrtImplementationDetails.cs
+new file mode 100644
+--- /dev/null
++++ b/mcs/class/corlib/Mono.Interop/CrtImplementationDetails.cs
+@@ -0,0 +1,115 @@
++//
++// Stained Glass OS: the managed half of the C++/CLI runtime (msvcm80/msvcm90)
++// a mixed-mode assembly built by Visual C++ 2005/2008 (/clr) calls. Its
++// module initialization code imports these from msvcm80/90.dll:
++//
++//   <CrtImplementationDetails>::RegisterModuleUninitializer(EventHandler^)
++//   <CrtImplementationDetails>::ThrowModuleLoadException(String^[, Exception^])
++//   <CrtImplementationDetails>::ThrowNestedModuleLoadException(Exception^, Exception^)
++//
++// On Windows those are managed functions of msvcm80/90 (a mixed-mode
++// assembly); Wine's msvcm80/90 are native and cannot take a managed handler
++// or raise a managed exception. The runtime (marshal.c) calls these instead,
++// as the CLR would reach msvcm's own:
++//   - a module's uninitializer (its C++ static destructors) is run once when
++//     the application domain unloads or the process exits, the modules
++//     registered last first;
++//   - a module whose initialization failed raises ModuleLoadException, with
++//     the error that caused it.
++//
++// Copyright (C) 2026 Stained Glass OS contributors. MIT license, as Wine Mono.
++//
++
++using System;
++using System.Collections.Generic;
++using System.Runtime.CompilerServices;
++
++namespace Mono.Interop
++{
++	internal static class CrtImplementationDetails
++	{
++		// per application domain, as each domain initializes its own copy
++		// of a mixed-mode module
++		static List<EventHandler> uninitializers;
++		static readonly object sync = new object ();
++
++		internal static void RegisterModuleUninitializer (EventHandler handler)
++		{
++			lock (sync) {
++				if (uninitializers == null) {
++					uninitializers = new List<EventHandler> ();
++					AppDomain.CurrentDomain.DomainUnload += RunUninitializers;
++					AppDomain.CurrentDomain.ProcessExit += RunUninitializers;
++				}
++				RuntimeHelpers.PrepareDelegate (handler);
++				uninitializers.Add (handler);
++			}
++		}
++
++		static void RunUninitializers (object source, EventArgs arguments)
++		{
++			EventHandler[] handlers;
++			lock (sync) {
++				if (uninitializers == null || uninitializers.Count == 0)
++					return;
++				handlers = uninitializers.ToArray ();
++				uninitializers.Clear ();
++				Array.Reverse (handlers); /* the last registered first */
++			}
++			foreach (EventHandler h in handlers)
++				h (source, arguments);
++		}
++
++		internal static void ThrowModuleLoadException (string errorMessage)
++		{
++			throw new ModuleLoadException (errorMessage);
++		}
++
++		internal static void ThrowModuleLoadException (string errorMessage, Exception innerException)
++		{
++			throw new ModuleLoadException (errorMessage, innerException);
++		}
++
++		internal static void ThrowNestedModuleLoadException (Exception innerException, Exception nestedException)
++		{
++			throw new ModuleLoadExceptionHandlerException (
++				"A nested exception occurred after the primary exception that caused the C++ module to fail to load.\n",
++				innerException, nestedException);
++		}
++	}
++
++	// <CrtImplementationDetails>.ModuleLoadException in msvcm80/90
++	[Serializable]
++	internal class ModuleLoadException : Exception
++	{
++		public const string Nested = "A nested exception occurred after the primary exception that caused the C++ module to fail to load.\n";
++
++		public ModuleLoadException (string message) : base (message)
++		{
++		}
++
++		public ModuleLoadException (string message, Exception innerException) : base (message, innerException)
++		{
++		}
++	}
++
++	// <CrtImplementationDetails>.ModuleLoadExceptionHandlerException
++	[Serializable]
++	internal sealed class ModuleLoadExceptionHandlerException : ModuleLoadException
++	{
++		public ModuleLoadExceptionHandlerException (string message, Exception innerException, Exception nestedException)
++			: base (message, innerException)
++		{
++			NestedException = nestedException;
++		}
++
++		public Exception NestedException { get; set; }
++
++		public override string ToString ()
++		{
++			string inner = InnerException != null ? InnerException.ToString () : string.Empty;
++			string nested = NestedException != null ? NestedException.ToString () : string.Empty;
++			return GetType ().ToString () + ": " + Message + "\n" + inner + "\n" + nested;
++		}
++	}
++}
