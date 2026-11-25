@@ -73,6 +73,16 @@ for m in fs/fat/fat fs/fat/vfat fs/exfat/exfat fs/ntfs3/ntfs3 fs/nls/nls_cp437 f
     [[ -n "$ko" ]] || { echo "build-iso: the image has no $m module" >&2; sudo umount "$MNT"; exit 1; }
     cp "$ko" "$W/initrd/usr/lib/sg-live/modules/"
 done
+# sg-session's nouveau guard, in the initrd too (nouveau loads there): an
+# NVIDIA card nouveau cannot run without missing firmware keeps the firmware
+# framebuffer instead of losing every display (sg-session's sg-nouveau-guard).
+if [[ -f "$MNT/usr/lib/modprobe.d/sg-nouveau-guard.conf" && -f "$MNT/usr/lib/stained-glass/sg-nouveau-guard" ]]; then
+    mkdir -p "$W/initrd/usr/lib/modprobe.d" "$W/initrd/usr/lib/stained-glass"
+    cp "$MNT/usr/lib/modprobe.d/sg-nouveau-guard.conf" "$W/initrd/usr/lib/modprobe.d/"
+    install -m 0755 "$MNT/usr/lib/stained-glass/sg-nouveau-guard" "$W/initrd/usr/lib/stained-glass/"
+else
+    log "warning: the image has no sg-nouveau-guard (sg-session older than 0.1.0-287)"
+fi
 sudo umount "$MNT"
 install -m 0644 "$HERE/sg-live-iso.service" "$W/initrd/usr/lib/systemd/system/sg-live-iso.service"
 ln -s ../sg-live-iso.service "$W/initrd/usr/lib/systemd/system/initrd-root-device.target.wants/sg-live-iso.service"
@@ -116,8 +126,11 @@ cp "$GRUB_PC"/*.mod "$GRUB_PC"/*.lst "$W/iso/boot/grub/i386-pc/"
 # This medium's own GRUB finds this medium (several ISOs on one machine): a
 # file named after the build.
 : > "$W/iso/boot/grub/$BUILD_ID.mark"
+# Floppies are searched too: a BIOS that boots a stick as USB-FDD/USB-ZIP
+# shows it to GRUB as a floppy, and --no-floppy left GRUB without its prefix
+# (the "grub rescue>" prompt).
 cat > "$W/early.cfg" <<EOF
-search --no-floppy --set=root --file /boot/grub/$BUILD_ID.mark
+search --set=root --file /boot/grub/$BUILD_ID.mark
 set prefix=(\$root)/boot/grub
 EOF
 grub-mkimage -O i386-pc-eltorito -c "$W/early.cfg" -p /boot/grub -o "$W/iso/boot/grub/i386-pc/eltorito.img" \
@@ -186,10 +199,15 @@ rm -f "$OUT"
 # El Torito: the BIOS image first (a BIOS boots the default entry), then the
 # UEFI one; the MBR boot code for a BIOS booting the stick as a disk. UEFI
 # boots exactly as before: the EFI El Torito entry, and the appended ESP.
+# --mbr-force-bootable: an MBR entry marked active beside the GPT's
+# protective one -- many legacy BIOSes (Lenovo's among them) pass over a
+# disk whose MBR has no active partition and start the next one: the
+# internal disk's own boot loader (grub rescue, emergency mode) instead of
+# this stick. Ubuntu's ISOs carry the same entry.
 xorriso -as mkisofs -quiet -iso-level 3 -full-iso9660-filenames -joliet -joliet-long -rational-rock \
     -volid SGLIVE -output "$OUT" \
     -b boot/grub/i386-pc/eltorito.img -no-emul-boot -boot-load-size 4 -boot-info-table --grub2-boot-info \
-    --grub2-mbr "$GRUB_PC/boot_hybrid.img" \
+    --grub2-mbr "$GRUB_PC/boot_hybrid.img" --mbr-force-bootable \
     -eltorito-alt-boot -e boot/efi.img -no-emul-boot \
     -append_partition 2 0xef "$W/iso/boot/efi.img" -appended_part_as_gpt \
     "$W/iso"

@@ -18,7 +18,20 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -u
-say() { echo "sg-live-iso: $*" > /dev/kmsg 2>/dev/null || echo "sg-live-iso: $*"; }
+LOG=/run/initramfs/sg-live-iso.log
+mkdir -p /run/initramfs
+say() {
+    echo "sg-live-iso: $*" >> "$LOG"
+    echo "sg-live-iso: $*" > /dev/kmsg 2>/dev/null || echo "sg-live-iso: $*"
+}
+# How long to look for the medium (seconds): sg.live.timeout= on the kernel
+# command line, else 150 -- inside systemd.default_device_timeout_sec (300),
+# so the failure screen below is shown before the initrd gives up on the root.
+TIMEOUT=150
+for w in $(cat /proc/cmdline 2>/dev/null); do
+    case "$w" in sg.live.timeout=*) TIMEOUT=${w#sg.live.timeout=} ;; esac
+done
+case "$TIMEOUT" in ''|*[!0-9]*) TIMEOUT=150 ;; esac
 
 for m in cdrom sr_mod isofs loop erofs usb-storage uas virtio_scsi virtio_blk \
          fat vfat exfat ntfs3 nls_cp437 nls_iso8859-1 nls_utf8; do
@@ -85,19 +98,98 @@ find_iso_file() {
     return 1
 }
 
+# No medium: say on the screen what was looked for and what was found -- the
+# boot otherwise ended in "emergency mode" with nothing to go on (user report
+# 2026-11-25) -- and offer to save that as a report on a USB stick.
+failed() {
+    {
+        echo "== sg-live-iso: $1"
+        echo "looked for: an ISO 9660 file system labelled SGLIVE with live/build-id $ID,"
+        echo "or a .iso file holding one on an exFAT, FAT, NTFS or ext4 partition"
+        echo "== block devices (blkid -p):"
+        for b in /sys/class/block/*; do
+            d=/dev/${b##*/}
+            case "${b##*/}" in loop*) continue ;; esac
+            echo "$d $(cat "$b/size" 2>/dev/null) sectors: $(blkid -p -o export "$d" 2>/dev/null | grep -E '^(TYPE|LABEL|PTTYPE)=' | tr '\n' ' ')"
+        done
+        echo "== kernel log (storage):"
+        dmesg 2>/dev/null | grep -iE 'usb|sd[a-z]|sr[0-9]|nvme|mmc|ata[0-9]|scsi|blk|I/O error|sg-live' | tail -60
+    } >> "$LOG" 2>&1
+    # critical: on the console (and a serial console) even with "quiet loglevel=3"
+    echo "<2>sg-live-iso: cannot start: $1" > /dev/kmsg 2>/dev/null
+    command -v plymouth >/dev/null 2>&1 && plymouth quit 2>/dev/null
+    c=/dev/console
+    {
+        printf '\033[2J\033[H'
+        echo "Stained Glass OS cannot start: $1"
+        echo
+        echo "It looked for its live medium: a DVD, or a USB stick written with an image"
+        echo "writer, labelled SGLIVE, from this very build ($ID);"
+        echo "or the .iso file on a stick's exFAT, FAT, NTFS or ext4 partition (Ventoy)."
+        echo
+        echo "Drives found:"
+        for b in /sys/class/block/*; do
+            d=${b##*/}
+            case "$d" in loop*|ram*) continue ;; esac
+            [ -e "$b/partition" ] && continue
+            echo "  /dev/$d  $(( $(cat "$b/size" 2>/dev/null || echo 0) / 2048 )) MB  $(blkid -p -o value -s TYPE "/dev/$d" 2>/dev/null) $(blkid -p -o value -s LABEL "/dev/$d" 2>/dev/null)"
+        done
+        grep 'from another build' "$LOG" 2>/dev/null | sed 's/^sg-live-iso: /  /'
+        echo
+        echo "Try: another USB port (a USB 2 port, not a hub); write the stick again and"
+        echo "check its SHA-256; on a Ventoy stick, copy the .iso again (or keep one"
+        echo "Stained Glass .iso on it)."
+        echo
+        echo "Press S to save a report of this for the developers to a USB stick"
+        echo "(FAT, exFAT or NTFS: plug it in first), or wait."
+    } > "$c" 2>/dev/null
+    if read -r -s -n 1 -t 120 key < "$c" 2>/dev/null && { [ "$key" = s ] || [ "$key" = S ]; }; then
+        save_report
+    fi
+}
+# The report on the first FAT, exFAT or NTFS file system that can be written.
+save_report() {
+    local b d t mp=/run/sg-report name
+    name="sg-boot-report-initrd-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo now).txt"
+    mkdir -p "$mp"
+    for b in /sys/class/block/*; do
+        d=/dev/${b##*/}
+        case "${b##*/}" in loop*|sr*) continue ;; esac
+        t=$(blkid -p -o value -s TYPE "$d" 2>/dev/null)
+        case "$t" in vfat|exfat) ;; ntfs) t=ntfs3 ;; *) continue ;; esac
+        umount "/run/initramfs/sg-host/${b##*/}" 2>/dev/null
+        mount -t "$t" -o rw "$d" "$mp" 2>/dev/null || continue
+        if { cat "$LOG"; echo "== dmesg"; dmesg; } > "$mp/$name" 2>/dev/null; then
+            sync; umount "$mp"
+            echo "Saved: $d /$name -- send it to the developers. Continuing in 10 s." > /dev/console
+            sleep 10
+            return 0
+        fi
+        umount "$mp"
+    done
+    echo "Not saved: no FAT, exFAT or NTFS file system that can be written was found." > /dev/console
+    sleep 10
+}
+
 dev=""
-for i in $(seq 1 240); do
+start=$(date +%s)
+while :; do
     dev=$(find_medium)
     [ -n "$dev" ] && break
     # A few seconds without one: look for the file too (a stick's partitions
     # appear about as late as the stick does, so keep looking at new ones).
-    if [ "$i" -ge 6 ]; then
+    if [ $(( $(date +%s) - start )) -ge 3 ]; then
         find_iso_file && break
     fi
+    [ $(( $(date +%s) - start )) -ge "$TIMEOUT" ] && break
     udevadm settle -t 1 2>/dev/null || :
     sleep 0.5
 done
-[ -n "$dev" ] || { say "no Stained Glass medium (label SGLIVE, or its .iso file on a partition) was found"; exit 1; }
+if [ -z "$dev" ]; then
+    say "no Stained Glass medium (label SGLIVE, build $ID, or its .iso file on a partition) was found in ${TIMEOUT}s"
+    failed "its live medium was not found."
+    exit 1
+fi
 
 # Everything the root image stands on is mounted under /run/initramfs, which
 # systemd leaves alone at shutdown (as it does the initrd's own mounts): the
@@ -108,9 +200,9 @@ done
 mkdir -p /run/initramfs/sg-iso /run/initramfs/sg-esp
 ln -sfn /run/initramfs/sg-iso /run/sg-iso
 ln -sfn /run/initramfs/sg-esp /run/sg-esp
-mount -t iso9660 -o ro "$dev" /run/initramfs/sg-iso || { say "cannot mount $dev"; exit 1; }
-[ -f /run/sg-iso/live/root.erofs ] || { say "$dev has no live/root.erofs"; exit 1; }
-loop=$(losetup -r -f --show /run/sg-iso/live/root.erofs) || { say "cannot attach the root image"; exit 1; }
+mount -t iso9660 -o ro "$dev" /run/initramfs/sg-iso || { say "cannot mount $dev"; failed "its live medium ($dev) cannot be read."; exit 1; }
+[ -f /run/sg-iso/live/root.erofs ] || { say "$dev has no live/root.erofs"; failed "its live medium ($dev) has no live/root.erofs."; exit 1; }
+loop=$(losetup -r -f --show /run/sg-iso/live/root.erofs) || { say "cannot attach the root image"; failed "the root image on its medium cannot be attached."; exit 1; }
 mount -t vfat -o ro /run/sg-iso/boot/efi.img /run/initramfs/sg-esp 2>/dev/null \
     || say "cannot mount the medium's system partition image (installing will not work)"
 say "live medium $dev, root image on $loop"

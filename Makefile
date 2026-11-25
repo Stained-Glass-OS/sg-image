@@ -928,6 +928,28 @@ iso-test:
 	ISO=$(ISO) test/ventoy-test.sh
 	SG_LIVE_ISO=$(ISO) test/bios-test.sh
 	SG_LIVE_ISO=$(ISO) test/bios-mbr-test.sh
+	SG_LIVE_ISO=$(ISO) test/bios-usb-test.sh
+	SG_LIVE_ISO=$(ISO) test/live-medium-test.sh
+	SG_LIVE_ISO=$(ISO) test/basic-display-test.sh
+
+# The ISO dd'ed to a USB stick: an active MBR entry (legacy BIOSes that pass
+# over a disk without one), boots SeaBIOS and OVMF from usb-storage.
+.PHONY: bios-usb-test
+bios-usb-test:
+	SG_LIVE_ISO=$(ISO) test/bios-usb-test.sh
+
+# The live medium is not found: the screen says what was looked for, and S
+# saves a report to a USB stick (instead of a silent emergency mode).
+.PHONY: live-medium-test
+live-medium-test:
+	SG_LIVE_ISO=$(ISO) test/live-medium-test.sh
+
+# No GPU driver (OVMF + ramfb): the login screen draws on the Basic Display
+# Adapter, Ctrl+Alt+F2 reaches a console, and when nothing can draw, tty1
+# shows the boot report screen and S saves the report to a USB stick.
+.PHONY: basic-display-test
+basic-display-test:
+	SG_LIVE_ISO=$(ISO) test/basic-display-test.sh
 
 # Legacy BIOS (SeaBIOS, no UEFI): the ISO boots; Setup installs a system with
 # GRUB a BIOS starts; kernel updates keep starting, with boot counting -- a
