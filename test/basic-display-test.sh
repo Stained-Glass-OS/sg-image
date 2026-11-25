@@ -120,7 +120,7 @@ for _ in $(seq 1 45); do
 done
 if (( n > 300 )); then pass "the screen draws with no GPU driver ($n colours)"
 else fail "the screen stays black or blank ($n colours) -- see $W/setup.png"; fi
-ssh_guest "journalctl -b --no-pager | grep -q 'trying the Basic Display Adapter' && journalctl -b -u sg-basic-display --no-pager | grep -q 'draws'" \
+ssh_guest "journalctl -b --no-pager | grep -q -e 'trying the Basic Display Adapter' -e 'the Basic Display Adapter at once' && journalctl -b -u sg-basic-display --no-pager | grep -q 'draws'" \
     && pass "the compositor draws in software on the firmware framebuffer (Basic Display Adapter)" \
     || fail "no basic display in the journal: $(ssh_guest 'journalctl -b -t sg-setup --no-pager | tail -4' 2>&1)"
 

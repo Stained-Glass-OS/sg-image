@@ -78,6 +78,10 @@ if [[ -f /usr/share/OVMF/OVMF_CODE_4M.secboot.fd ]]; then
     LIVE_CODE=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd LIVE_MACHINE="q35,smm=on,accel=__ACCEL__"
 fi
 
+# (OVMF's Secure Boot build resets at once with ramfb as the only display:
+# the Basic Display Adapter run boots the plain build.)
+if [[ "${SG_BASIC_DISPLAY:-0}" == 1 ]]; then LIVE_CODE=$OVMF_CODE LIVE_MACHINE="q35,accel=__ACCEL__"; fi
+
 rm -rf "$ARTIFACTS"; mkdir -p "$ARTIFACTS"
 # shellcheck disable=SC2317  # invoked via trap
 cleanup() { set +e; [[ -n "$QEMU_PID" ]] && kill "$QEMU_PID" 2>/dev/null; return 0; }
@@ -153,6 +157,12 @@ else
     else log "the target carries Windows' layout: ESP with a boot manager, MSR, data, 27 GB unallocated"; fi
 fi
 
+# SG_BASIC_DISPLAY=1: the live system, Setup, the installed machine's first
+# boot, its first-run setup, login screen and desktop all on the Basic Display
+# Adapter -- no GPU driver, only the firmware's framebuffer (OVMF's ramfb:
+# efifb, no DRM device), as on a PC whose GPU the kernel cannot drive.
+DISPLAY_ARGS=(-device virtio-vga -display none)
+[[ "${SG_BASIC_DISPLAY:-0}" == 1 ]] && DISPLAY_ARGS=(-vga none -device ramfb -display none)
 ssh_guest() {
     ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
         -o ConnectTimeout=5 -p "$SSH_PORT" root@127.0.0.1 "$@"
@@ -164,7 +174,7 @@ qemu_args=(
     -drive "if=pflash,format=raw,unit=0,readonly=on,file=$LIVE_CODE"
     -drive "if=pflash,format=raw,unit=1,file=$LIVE_VARS"
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" -device virtio-net-pci,netdev=net0
-    -device virtio-vga -display none -serial "file:$ARTIFACTS/live-serial.log" -no-reboot
+    "${DISPLAY_ARGS[@]}" -serial "file:$ARTIFACTS/live-serial.log" -no-reboot
     -qmp "unix:$QMP_SOCK,server,nowait"
 )
 if [[ -n "$LIVE_ISO" && "$LIVE_ISO_AS" == cdrom ]]; then
@@ -232,7 +242,9 @@ mok=$(ssh_guest "r=\$(mktemp -d); mkdir -p \$r/etc; echo mok-test > \$r/etc/host
     mokutil --list-new 2>/dev/null | grep -q 'Stained Glass OS mok-test' && echo requested
     mokutil --revoke-import >/dev/null 2>&1; rm -rf \$r" 2>&1)
 echo "$mok" > "$ARTIFACTS/secure-boot.txt"
-if [[ "$(printf '%s\n' "$mok" | paste -sd' ')" == "password private cert dkms requested" ]]; then
+if [[ "$LIVE_CODE" != *secboot* ]]; then
+    echo "SKIP  Secure Boot module signing: the firmware has no Secure Boot here (the Basic Display Adapter run)"
+elif [[ "$(printf '%s\n' "$mok" | paste -sd' ')" == "password private cert dkms requested" ]]; then
     pass "Secure Boot: a key of the machine's own, root-only, DKMS signing with it, enrollment requested with a one-time password"
 else fail "Secure Boot module signing: $mok"; fi
 if ssh_guest "grep -q 'non-free non-free-firmware' /etc/apt/sources.list.d/debian.sources && [ -x /usr/bin/nvidia-detect ]"; then
@@ -476,6 +488,16 @@ if timeout 300 apt-get -q update >/tmp/apt-update.log 2>&1; then
     rec=\$(SG_DRIVERS_PCI=/tmp/pci-current sg-drivers --recommended)
     apt-get -q -s install \$rec >/tmp/apt-sim.log 2>&1 && grep -q '^Inst nvidia-driver ' /tmp/apt-sim.log && grep -q '^Inst nvidia-kernel-dkms ' /tmp/apt-sim.log && echo \"PASS  apt resolves the NVIDIA set against the archive (\$rec; DKMS module included)\" || { echo 'FAIL  apt cannot resolve the NVIDIA set'; tail -15 /tmp/apt-sim.log; exit 1; }
 else echo 'SKIP  the archive is unreachable from the VM: apt resolution not checked'; fi"
+if [[ "${SG_BASIC_DISPLAY:-0}" == 1 ]]; then
+    # the installed machine on the Basic Display Adapter: no DRM device, the
+    # first-run setup, login screen and desktop drawn by sg-basic-displayd,
+    # and no compositor waited ten seconds for a GPU first (sg-session's
+    # sg_basic_display_env)
+    POST_CHECK="$POST_CHECK
+[ ! -e /dev/dri ] && [ -e /dev/fb0 ] && journalctl -b -u sg-basic-display --no-pager -o cat | grep -q draws && echo 'PASS  the installed machine draws on the firmware framebuffer (Basic Display Adapter), no DRM device' || { echo 'FAIL  not on the basic display'; ls /dev/dri; exit 1; }
+w=\$(journalctl -b --no-pager -o cat | grep -cE '[0-9]{2}:[0-9]{2}:([0-9][1-9]|[1-9][0-9])\\.[0-9]+ .*No GPU can be used' || true); a=\$(journalctl -b --no-pager -o cat | grep -c 'the Basic Display Adapter at once' || true)
+[ \"\$w\" = 0 ] && [ \"\$a\" -ge 1 ] && echo \"PASS  the first-run setup, the login screen and the session went to it at once (\$a starts, none waited ten seconds for a GPU)\" || { echo \"FAIL  compositors waited ten seconds for a GPU: \$w waits, \$a at once\"; journalctl -b --no-pager -o short-monotonic | grep -e 'No GPU can be used' -e 'at once' | head; exit 1; }"
+fi
 if [[ "$SCENARIO" != blank ]]; then
     POST_CHECK="$POST_CHECK
 ls /xbootldr >/dev/null; [ \"\$(lsblk -n -o PARTTYPE \"\$(findmnt -n -o SOURCE -t vfat /xbootldr)\")\" = bc13c2ff-59e6-4262-a352-b275fd6f7172 ] && grep -qx BOOT_ROOT=/xbootldr /etc/kernel/install.conf && echo 'PASS  the kernels are on its own boot partition (/xbootldr), not in Windows'\"'\"' system partition' || { echo 'FAIL  /xbootldr'; findmnt /xbootldr; exit 1; }

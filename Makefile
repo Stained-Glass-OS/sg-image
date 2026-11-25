@@ -931,6 +931,8 @@ iso-test:
 	SG_LIVE_ISO=$(ISO) test/bios-usb-test.sh
 	SG_LIVE_ISO=$(ISO) test/live-medium-test.sh
 	SG_LIVE_ISO=$(ISO) test/basic-display-test.sh
+	SG_LIVE_ISO=$(ISO) SG_LIVE_ISO_AS=cdrom SG_BASIC_DISPLAY=1 SG_INSTALL_SCENARIO=blank test/install-test.sh
+	test/nouveau-initrd-vm-test.sh
 
 # The ISO dd'ed to a USB stick: an active MBR entry (legacy BIOSes that pass
 # over a disk without one), boots SeaBIOS and OVMF from usb-storage.
@@ -950,6 +952,16 @@ live-medium-test:
 .PHONY: basic-display-test
 basic-display-test:
 	SG_LIVE_ISO=$(ISO) test/basic-display-test.sh
+
+# Setup on the Basic Display Adapter (no GPU driver: OVMF + ramfb), from the
+# live desktop to the installed machine's first-run setup, login screen,
+# desktop and sg-drivers; then, on that installed disk, the nouveau guard in
+# its initrds with a (fake) NVIDIA Ada card and no firmware.
+.PHONY: install-basic-display-test nouveau-initrd-vm-test
+install-basic-display-test:
+	SG_LIVE_ISO=$(ISO) SG_LIVE_ISO_AS=cdrom SG_BASIC_DISPLAY=1 SG_INSTALL_SCENARIO=blank test/install-test.sh
+nouveau-initrd-vm-test:
+	test/nouveau-initrd-vm-test.sh
 
 # Legacy BIOS (SeaBIOS, no UEFI): the ISO boots; Setup installs a system with
 # GRUB a BIOS starts; kernel updates keep starting, with boot counting -- a

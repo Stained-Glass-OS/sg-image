@@ -108,7 +108,12 @@ cp "$OVMF_VARS_SRC" "$RUN_VARS"
 log "booting: accel=$ACCEL mem=${MEM}M cpus=$CPUS ssh=localhost:$SSH_PORT"
 rm -f "$QMP_SOCK"
 
-if [[ "${SG_GPU:-}" == virgl ]]; then
+if [[ "${SG_BASIC_DISPLAY:-0}" == 1 ]]; then
+    # no GPU driver at all: the firmware's framebuffer (efifb, from OVMF's
+    # ramfb) and no DRM device -- the Basic Display Adapter (sg-compositor's
+    # software rendering through sg-basic-displayd)
+    SG_DISPLAY_ARGS=(-vga none -device ramfb -display none)
+elif [[ "${SG_GPU:-}" == virgl ]]; then
     SG_DISPLAY_ARGS=(-device virtio-vga-gl -display "egl-headless,rendernode=${SG_RENDER_NODE:-/dev/dri/renderD128}")
 elif [[ -n "${SG_DISPLAY_SIZE:-}" ]]; then
     # a screen of that size (WxH, e.g. a Surface Pro 7's 2736x1824): the
