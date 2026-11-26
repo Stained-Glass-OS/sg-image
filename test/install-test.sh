@@ -7,7 +7,8 @@
 #   blank     the hybrid path, as a person trying it first would take it:
 #             Setup's first screen -> "Try Stained Glass OS" -> the live
 #             desktop, whose own session gate must pass -> "Install Stained
-#             Glass OS" from its desktop shortcut, Setup in a window -> on the
+#             Glass OS" from its Start menu shortcut, Setup in a window, in front of
+#             the Notepad the session check left open -> on the
 #             blank disk, New (which also makes the system partition), then
 #             install onto the new partition.
 #   dualboot  a disk that already carries Windows' layout -- an EFI system
@@ -28,6 +29,10 @@
 # variables, no stick) and run the full boot gate as the owner -- sign in by
 # typing, session check, lock and unlock -- plus checks of what the installer
 # did.
+#
+# SG_INSTALL_LIVE_DEBS=DIR: DIR/*.deb installed into the live system first.
+# SG_INSTALL_CHECK_MUTANT=ANY_NOTEPAD: the live session check matches any
+# Notepad window (as before i0637): the window check after it must fail.
 #
 # Needs mtools, dosfstools, e2fsprogs, fdisk, and what boot-test.sh needs.
 set -euo pipefail
@@ -201,6 +206,17 @@ until ssh_guest true 2>/dev/null; do
     sleep 5
 done
 log "live system is up"
+# SG_INSTALL_LIVE_DEBS=DIR: packages not yet in the image, installed into the
+# live system first (its services left as they are: policy-rc.d says no).
+if [[ -n "${SG_INSTALL_LIVE_DEBS:-}" ]]; then
+    # shellcheck disable=SC2015  # log cannot fail
+    ssh_guest "mkdir -p /root/debs" && scp -q -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR -P "$SSH_PORT" "$SG_INSTALL_LIVE_DEBS"/*.deb root@127.0.0.1:/root/debs/ \
+        && ssh_guest "printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && chmod 755 /usr/sbin/policy-rc.d \
+            && dpkg -i --force-depends /root/debs/*.deb; r=\$?; rm -f /usr/sbin/policy-rc.d; exit \$r" > "$ARTIFACTS/live-debs.log" 2>&1 \
+        && log "installed into the live system: $(cd "$SG_INSTALL_LIVE_DEBS" && echo ./*.deb)" \
+        || { fail "installing $SG_INSTALL_LIVE_DEBS: $(tail -3 "$ARTIFACTS/live-debs.log")"; exit 1; }
+fi
 
 # --- the installer's own checks ----------------------------------------------
 # / is the overlay; the stick's root partition under it must be mounted
@@ -341,27 +357,53 @@ if [[ "$SCENARIO" == blank ]]; then
         (( t < BOOT_TIMEOUT )) || { fail "the live session never started"; shot stuck-try; break; }
         sleep 3; t=$(( t + 3 ))
     done
-    if ssh_guest "SG_CHECK_TIMEOUT=240 runuser -u live -- /usr/bin/sg-session-check" > "$ARTIFACTS/live-session-check.log" 2>&1; then
+    if ssh_guest "SG_CHECK_TIMEOUT=240 SG_CHECK_MUTANT=${SG_INSTALL_CHECK_MUTANT:-} runuser -u live -- /usr/bin/sg-session-check" \
+            > "$ARTIFACTS/live-session-check.log" 2>&1; then
         pass "'Try Stained Glass OS' signs in to a working live desktop"
     else fail "the live desktop's session check: $(tail -5 "$ARTIFACTS/live-session-check.log")"; fi
+    # The live session's windows, as the live user: "TITLE PID" for each
+    # window inside the desktop, the topmost first.
+    ssh_guest "cat > /tmp/sg-gate-windows.sh" <<'EOS'
+. /usr/lib/stained-glass/sg-common.sh
+. "$(sg_session_env)"
+export DISPLAY
+d=$(xwininfo -root -children | grep -i 'shell - wine desktop' | awk '{print $1}' | head -1)
+xwininfo -id "$d" -children | grep -o '^ *0x[0-9a-f]* "[^"]*"' | while read -r w t; do
+    echo "$t $(xprop -id "$w" _NET_WM_PID 2>/dev/null | awk '{print $3}')"
+done
+EOS
+    # The check leaves its 32-bit Notepad open, deliberately; its window must
+    # be up when the check returns. In next33 it came up seconds later, over
+    # the Setup opened next, and took the keys meant for Setup (i0637): the
+    # check had taken the closing 64-bit Notepad's window for it.
+    # (one ssh, the list kept: grep -q on the ssh's pipe ends it early, and
+    # pipefail took that for a failure)
+    wins=$(ssh_guest "pgrep -f 'syswow64.notepad\\.exe' | head -1; runuser -u live -- sh /tmp/sg-gate-windows.sh")
+    np32=$(head -1 <<< "$wins")
+    if [[ "$np32" =~ ^[0-9]+$ ]] && grep -q "Notepad\" $np32\$" <<< "$wins"; then
+        pass "the session check returns with its 32-bit Notepad's window up (pid $np32), none still to come"
+    else fail "the session check returned before its 32-bit Notepad's window was up (pid ${np32:-none}): $(grep -e Notepad -e Setup <<< "$wins" | tr '\n' ';')"; fi
     sleep 3; shot live-desktop
-    # What double-clicking the desktop shortcut runs: its target, as the live
-    # user, in the live session. (The shortcut itself is checked for that
-    # target; opening .lnk files through ShellExecute is the shell's.)
+    # Both shortcuts start Setup (the desktop's is checked for its target).
     lnk='/var/lib/stained-glass/prefix/drive_c/users/Public/Desktop/Install Stained Glass OS.lnk'
     if ssh_guest "grep -aqF 'Z:\\usr\\libexec\\stained-glass\\sg-setup64.exe' '$lnk'"; then
         pass "the desktop shortcut points at Setup"
     else fail "the desktop shortcut's target"; fi
-    ssh_guest "cat > /tmp/sg-open-setup.sh" <<'EOS'
-. /usr/lib/stained-glass/sg-common.sh
-. "$(sg_session_env)"
-export DISPLAY XDG_RUNTIME_DIR WAYLAND_DISPLAY WINEPREFIX
-sg_wine_env
-exec wine 'Z:\usr\libexec\stained-glass\sg-setup64.exe'
-EOS
-    ssh_guest "chmod 755 /tmp/sg-open-setup.sh; nohup runuser -u live -- sh /tmp/sg-open-setup.sh >/dev/null 2>&1 &"
-    if page welcome 2 90; then pass "Setup, opened from the live desktop, starts its bridge and opens in a window"; fi
+    # Setup opened the way a person opens it with Notepad in front: Start,
+    # "install", Enter -- the shell starts it from its shortcut, for the
+    # person who just typed, and it comes to the front. (Started from ssh it
+    # was a program nobody asked for at that moment; Windows would leave such
+    # a window behind the one being typed into.) The desktop icon itself is
+    # under Notepad, and Win+D does not give the desktop the keyboard yet.
+    qmp key meta_l; sleep 2
+    qmp type install; sleep 2; shot setup-start-search
+    qmp key ret
+    if page welcome 2 90; then pass "Setup, opened from the Start menu (its shortcut), starts its bridge and opens in a window"; fi
     sleep 3; shot setup-windowed
+    wins=$(ssh_guest "runuser -u live -- sh /tmp/sg-gate-windows.sh")
+    top=$(grep -m1 -e 'Notepad' -e 'Stained Glass OS Setup' <<< "$wins")
+    if [[ "$top" == '"Stained Glass OS Setup"'* ]]; then pass "Setup opens in front of the Notepad left open"
+    else fail "Setup opened behind another window: in front is $top"; fi
     qmp key shift; sleep 1
     press_until start 2
     to_disk
