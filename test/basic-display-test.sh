@@ -13,7 +13,8 @@
 #   1. The live system comes up (ssh), with no /dev/dri.
 #   2. The screen is not black: Setup draws (many colours in a screendump),
 #      and the compositor says it draws on the basic display.
-#   3. Ctrl+Alt+F2: tty2 is shown, a text console (a login prompt); then
+#   3. Ctrl+Alt+F2: tty2 is shown, a text console (a login prompt, within
+#      systemd's 5 s Type=idle hold while the boot finishes); then
 #      Ctrl+Alt+F1: Setup is drawn again, whole.
 #   4. No display even in software (sg-basic-displayd masked): the login
 #      screen fails at each start, and tty1 shows sg-boot-report's screen --
@@ -26,6 +27,8 @@
 #   SG_BASIC_MUTANT=NO_DAEMON: sg-basic-display.socket masked, the login
 #   screen started again: step 2 must fail.
 #   SG_BASIC_MUTANT=NO_REPORT: sg-boot-report.service masked: step 4 must fail.
+#   SG_BASIC_MUTANT=NO_GETTY: no getty on tty2 (masked): step 3 must fail -- the
+#   wait for the login prompt does not let a black console pass.
 # shellcheck disable=SC2015,SC2317  # pass || fail; cleanup via trap
 set -uo pipefail
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -112,11 +115,13 @@ if (( restart_login )); then
 fi
 
 # --- 2. the screen draws ------------------------------------------------------------
+# polled every second, so step 3's Ctrl+Alt+F2 comes as soon as the screen
+# draws -- while the boot is still finishing, the hardest case for the console
 n=0
-for _ in $(seq 1 45); do
+for _ in $(seq 1 180); do
     n=$(colours setup)
     (( n > 300 )) && break
-    sleep 4
+    sleep 1
 done
 if (( n > 300 )); then pass "the screen draws with no GPU driver ($n colours)"
 else fail "the screen stays black or blank ($n colours) -- see $W/setup.png"; fi
@@ -125,10 +130,29 @@ ssh_guest "journalctl -b --no-pager | grep -q -e 'trying the Basic Display Adapt
     || fail "no basic display in the journal: $(ssh_guest 'journalctl -b -t sg-setup --no-pager | tail -4' 2>&1)"
 
 # --- 3. a text console and back -------------------------------------------------------
-qmp key ctrl+alt+f2; sleep 3
-vt=$(active_vt); n2=$(colours console)
-if [[ "$vt" == tty2 ]] && (( n2 >= 2 && n2 < 16 )); then pass "Ctrl+Alt+F2 shows a text console (tty2)"
-else fail "Ctrl+Alt+F2: active $vt, $n2 colours -- see $W/console.png"; fi
+# The login prompt can take up to 5 s: getty@.service is Type=idle, so while
+# the boot is still finishing (Setup comes up before graphical.target) systemd
+# holds agetty back until its jobs are done, at most 5 s -- the VT is switched
+# at once and stays black until then (i0636: next33 pressed Ctrl+Alt+F2 within
+# a second of the compositor's start; agetty ran 2.8 s later, right after
+# "Startup finished"). So wait up to 12 s for the prompt; a console that never
+# draws (SG_BASIC_MUTANT=NO_GETTY) still fails.
+if [[ "${SG_BASIC_MUTANT:-}" == NO_GETTY ]]; then
+    ssh_guest "systemctl mask --runtime getty@tty2.service autovt@tty2.service" >/dev/null 2>&1 && log "MUTANT: no getty on tty2"
+fi
+# the worst case, every time: a boot job still running when Ctrl+Alt+F2 comes
+# (as when it is pressed while the boot finishes), so systemd holds the getty
+# for its whole 5 s
+ssh_guest "systemd-run --no-block --unit=sg-gate-boot-busy -p Type=oneshot sleep 30" >/dev/null 2>&1
+qmp key ctrl+alt+f2; t2=$SECONDS
+vt="" n2=0
+while (( SECONDS - t2 < 12 )); do
+    sleep 1
+    vt=$(active_vt); n2=$(colours console)
+    [[ "$vt" == tty2 ]] && (( n2 >= 2 && n2 < 16 )) && break
+done
+if [[ "$vt" == tty2 ]] && (( n2 >= 2 && n2 < 16 )); then pass "Ctrl+Alt+F2 shows a text console (tty2, a login prompt after $(( SECONDS - t2 )) s)"
+else fail "Ctrl+Alt+F2: active $vt, $n2 colours after $(( SECONDS - t2 )) s -- see $W/console.png"; fi
 qmp key ctrl+alt+f1; sleep 4
 vt=$(active_vt); n3=$(colours back)
 if [[ "$vt" == tty1 ]] && (( n3 > 300 )); then pass "Ctrl+Alt+F1 comes back to the graphical screen, drawn whole ($n3 colours)"
