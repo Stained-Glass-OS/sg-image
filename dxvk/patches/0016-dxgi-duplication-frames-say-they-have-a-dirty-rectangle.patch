@@ -1,0 +1,30 @@
+From: Stained Glass OS <ke7oxh@gmail.com>
+Subject: [PATCH] dxgi: a duplicated frame says it has a dirty rectangle (TotalMetadataBufferSize)
+
+0012's AcquireNextFrame left DXGI_OUTDUPL_FRAME_INFO's TotalMetadataBufferSize
+at 0 although GetFrameDirtyRects then gives the whole output. On Windows it
+is the size of the frame's move and dirty rectangles, and programs read the
+rectangles -- and copy the picture -- only when it is not 0: TightVNC's
+Desktop Duplication capture (UseD3D, its default) copied nothing, and its
+viewers saw a black screen (i0633; its GDI capture was fine). It is now one
+RECT: no move rectangle, the output as the dirty one.
+---
+diff --git a/src/dxgi/dxgi_output_dup.cpp b/src/dxgi/dxgi_output_dup.cpp
+index 50cf379..ffc38ca 100644
+--- a/src/dxgi/dxgi_output_dup.cpp
++++ b/src/dxgi/dxgi_output_dup.cpp
+@@ -177,6 +177,14 @@ namespace dxvk {
+         QueryPerformanceCounter(&now);
+         pFrameInfo->LastPresentTime   = now;
+         pFrameInfo->AccumulatedFrames = 1;
++        /* the bytes of this frame's move and dirty rectangles: no move
++         * rectangle, the whole output as the one dirty rectangle. A
++         * program reads the rectangles only when this says there are
++         * some -- TightVNC's duplication copied nothing, and its viewer
++         * stayed black, while it was 0 */
++#ifndef SG_MUTANT_DXVKDUP_NO_METADATA
++        pFrameInfo->TotalMetadataBufferSize = sizeof(RECT);
++#endif
+ 
+         HRESULT hr = m_texture->QueryInterface(__uuidof(IDXGIResource),
+           reinterpret_cast<void**>(ppDesktopResource));
