@@ -85,6 +85,10 @@
 #     through its IDispatch (methods, properties, named arguments, [DISPID=n],
 #     the object's own errors), and C# "dynamic" on COM objects (Mesen's
 #     WScript.Shell CreateShortcut; mono-0031, corefx-0004);
+#   - (sg37) GetIPv4Properties with an adapter of several name servers
+#     (mono-0035: GetPerAdapterInfo's buffer sized as it asks) is gated by
+#     wine-sg's test/tcpipreg-gate.sh with SG_MONO_DIR (it needs adapters
+#     whose servers the gate sets, in a network namespace of its own);
 #   - (sg36) a configuration section may keep the reader DeserializeSection
 #     gets and read it later (GetRuntimeObject), as on .NET Framework: Mono
 #     closed it, and SyncTrayzor's settings section read as nothing

@@ -697,3 +697,19 @@ mono-0034-configuration-section-reader-stays-open.patch (sg36)
       SyncTrayzor.Bootstrapper.ConfigureIoC"). With sg36 it starts and runs Syncthing.
     Gate: test/mono-fork-test.sh (sg36 section); sg35: reader Closed, settings null.
       Mutant SG_MUTANT_SECTION_READER_CLOSED.
+
+mono-0035-ipv4-interface-properties-per-adapter-info-sized-as-asked.patch (sg37)
+    System (Win32IPv4InterfaceProperties): GetPerAdapterInfo gets a buffer of the size its
+      first call asks for -- the adapter's IP_PER_ADAPTER_INFO with every one of its name
+      servers after it -- allocated again while the call says it grew (ERROR_BUFFER_OVERFLOW),
+      and the structure is read from it, as the .NET Framework's SystemIPv4InterfaceProperties
+      does; interface index 0 is not asked. Mono passed a fixed one-server structure whatever
+      size it was told, so an adapter with two or more IPv4 name servers overran it and
+      NetworkInterface.GetIPProperties().GetIPv4Properties() threw NullReferenceException.
+    Why: wine-sg 9462 makes GetPerAdapterInfo list each adapter's own servers (a DHCP lease
+      usually gives two or more), and a machine whose resolv.conf lists two or more servers hit
+      it already (ledger i0690).
+    Gate: wine-sg test/tcpipreg-gate.sh section 8 with SG_MONO_DIR=<this build's wine-mono-*>
+      (private network namespace, adapters with one and three servers: GetIPv4Properties of
+      every adapter, 200 rounds); sg34/sg36: NullReferenceException for every adapter with
+      several servers. Mutant -d:SG_MUTANT_PERADAPTER_FIXED_BUFFER (System.dll).

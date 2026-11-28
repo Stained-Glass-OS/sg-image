@@ -1,0 +1,57 @@
+diff --git a/mcs/class/System/System.Net.NetworkInformation/Win32IPv4InterfaceProperties.cs b/mcs/class/System/System.Net.NetworkInformation/Win32IPv4InterfaceProperties.cs
+--- a/mcs/class/System/System.Net.NetworkInformation/Win32IPv4InterfaceProperties.cs
++++ b/mcs/class/System/System.Net.NetworkInformation/Win32IPv4InterfaceProperties.cs
+@@ -34,7 +34,13 @@
+ 	sealed class Win32IPv4InterfaceProperties : IPv4InterfaceProperties
+ 	{
+ 		[DllImport ("iphlpapi.dll")]
+-		static extern int GetPerAdapterInfo (int IfIndex, Win32_IP_PER_ADAPTER_INFO pPerAdapterInfo, ref int pOutBufLen);
++		static extern int GetPerAdapterInfo (int IfIndex, IntPtr pPerAdapterInfo, ref int pOutBufLen);
++
++		const int ERROR_BUFFER_OVERFLOW = 111;
++#if SG_MUTANT_PERADAPTER_FIXED_BUFFER
++		[DllImport ("iphlpapi.dll", EntryPoint = "GetPerAdapterInfo")]
++		static extern int GetPerAdapterInfoFixed (int IfIndex, Win32_IP_PER_ADAPTER_INFO pPerAdapterInfo, ref int pOutBufLen);
++#endif
+ 
+ 		Win32_IP_ADAPTER_ADDRESSES addr;
+ 		Win32_IP_PER_ADAPTER_INFO painfo;
+@@ -46,10 +52,35 @@
+ 			this.mib = mib;
+ 
+ 			// get per-adapter info.
+-			int size = 0;
+-			GetPerAdapterInfo (mib.Index, null, ref size);
+ 			painfo = new Win32_IP_PER_ADAPTER_INFO ();
+-			int ret = GetPerAdapterInfo (mib.Index, painfo, ref size);
++			if (mib.Index == 0)
++				return;
++#if SG_MUTANT_PERADAPTER_FIXED_BUFFER
++			int size = 0;
++			GetPerAdapterInfoFixed (mib.Index, null, ref size);
++			int ret = GetPerAdapterInfoFixed (mib.Index, painfo, ref size);
++#else
++			// Stained Glass OS (i0690): the size the first call asks for is the adapter's
++			// structure with every one of its name servers after it (an IP_ADDR_STRING each);
++			// a buffer of that size is allocated, and again while the call says it grew, as
++			// the .NET Framework does. The structure was a fixed one-server one, and an
++			// adapter with two or more name servers overran it.
++			int size = 0;
++			int ret = GetPerAdapterInfo (mib.Index, IntPtr.Zero, ref size);
++			while (ret == ERROR_BUFFER_OVERFLOW) {
++				IntPtr buf = Marshal.AllocHGlobal (size);
++				try {
++					ret = GetPerAdapterInfo (mib.Index, buf, ref size);
++					if (ret == 0)
++						Marshal.PtrToStructure (buf, painfo);
++				} finally {
++					Marshal.FreeHGlobal (buf);
++				}
++			}
++			// the list's pointers were into the buffer
++			painfo.CurrentDnsServer = IntPtr.Zero;
++			painfo.DnsServerList.Next = IntPtr.Zero;
++#endif
+ 			if (ret != 0)
+ 				throw new NetworkInformationException (ret);
+ 		}
