@@ -1,0 +1,100 @@
+diff --git a/src/Microsoft.DotNet.Wpf/src/PresentationCore/Managed/TextFormatting/FullTextLine.cs b/src/Microsoft.DotNet.Wpf/src/PresentationCore/Managed/TextFormatting/FullTextLine.cs
+--- a/src/Microsoft.DotNet.Wpf/src/PresentationCore/Managed/TextFormatting/FullTextLine.cs
++++ b/src/Microsoft.DotNet.Wpf/src/PresentationCore/Managed/TextFormatting/FullTextLine.cs
+@@ -779,6 +779,12 @@
+ 
+ 						var runBoundingBox = embedded.ComputeBoundingBox((ordered.BidiLevel & 1) == 1, false);
+ 
++						// Stained Glass OS: an object with no ink (Rect.Empty: AvalonEdit's tabs and
++						// spaces) adds nothing to the line's bounds; Rect.Offset of the Empty rect throws
++						// (ILSpy crashed drawing any line with a tab).
++#if !SG_MUTANT_TF_EMPTY_EMBEDDED_OFFSET
++						if (!runBoundingBox.IsEmpty)
++#endif
+ 						boundingBox.Union(Rect.Offset(runBoundingBox, origin.X, origin.Y));
+ 
+ 						origin.X += EmbeddedMetrics(embedded, paragraphWidth - origin.X).Width;
+@@ -944,9 +950,83 @@
+ 				return new CharacterHit(index, length);
+ 			}
+ 
++			// Stained Glass OS: the distance of a caret position from the line's start -- the
++			// leading edge of the character, or its trailing edge with a trailing length --,
++			// the inverse of GetCharacterHitFromDistance, as WPF's line answers it (AvalonEdit
++			// places its caret and selection with it: ILSpy's text view threw
++			// NotImplementedException for every line holding a tab).
+ 			public override double GetDistanceFromCharacterHit(CharacterHit characterHit)
+ 			{
++#if SG_MUTANT_TF_NO_DISTANCE_FROM_HIT
+ 				throw new NotImplementedException("Managed.TextFormatting.FullTextLine.GetDistanceFromCharacterHit");
++#else
++				double distance = GetDistanceFromCharacterHitVisual(characterHit);
++				if (MirroredHits)
++					distance = (double)_paragraphWidth / TextFormatterImp.ToIdeal - distance;
++				return distance;
++#endif
++			}
++
++			private double GetDistanceFromCharacterHitVisual(CharacterHit characterHit)
++			{
++				int cp = characterHit.FirstCharacterIndex;
++				int trailing = characterHit.TrailingLength;
++				double x = GetOffsetToFirstRun().X;
++				double paragraphWidth = (double)_paragraphWidth / TextFormatterImp.ToIdeal;
++
++				if (cp < _fullText.TextStore.CpFirst)
++					return x;
++
++				foreach (var ordered in ReorderRuns())
++				{
++					if (ordered.TextRun is TextEndOfLine || ordered.TextRun is TextEndOfParagraph)
++					{
++						break;
++					}
++					else if (ordered.TextRun is TextCharacters)
++					{
++						var textChars = (TextCharacters)ordered.TextRun;
++						var formatted = GetFormattedTextSymbols(textChars, ordered.Range, ordered.BidiLevel);
++
++						if (cp >= ordered.CpFirst && cp < ordered.CpFirst + ordered.Length)
++						{
++							int glyphrun_start = ordered.CpFirst;
++							Point origin = new Point(0, 0);
++							foreach (var glyphrun in formatted.GetGlyphRuns(ref origin))
++							{
++								int glyphrun_length = glyphrun.Characters.Count;
++								if (cp < glyphrun_start + glyphrun_length)
++									return x + glyphrun.GetDistanceFromCaretCharacterHit(
++										new CharacterHit(cp - glyphrun_start, trailing));
++								x += glyphrun.ComputeAlignmentBox().Width;
++								glyphrun_start += glyphrun_length;
++							}
++							return x;
++						}
++
++						x += formatted.Width;
++					}
++					else if (ordered.TextRun is TextEmbeddedObject)
++					{
++						var width = EmbeddedMetrics((TextEmbeddedObject)ordered.TextRun, paragraphWidth - x).Width;
++
++						if (cp >= ordered.CpFirst && cp < ordered.CpFirst + ordered.Length)
++							return trailing > 0 ? x + width : x;
++
++						x += width;
++					}
++					else if (ordered.TextRun is TextHidden || ordered.TextRun is TextModifier || ordered.TextRun is TextEndOfSegment)
++					{
++						// no width
++					}
++					else
++					{
++						throw new NotImplementedException(String.Format("Managed.TextFormatting.FullTextLine.GetDistanceFromCharacterHit for {0}", ordered.TextRun.GetType().FullName));
++					}
++				}
++
++				// past the line's last character: its end
++				return x;
+ 			}
+ 
+ 			private bool GetRunContainingCp(int index, out OrderedTextRun run)

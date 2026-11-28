@@ -713,3 +713,17 @@ mono-0035-ipv4-interface-properties-per-adapter-info-sized-as-asked.patch (sg37)
       (private network namespace, adapters with one and three servers: GetIPv4Properties of
       every adapter, 200 rounds); sg34/sg36: NullReferenceException for every adapter with
       several servers. Mutant -d:SG_MUTANT_PERADAPTER_FIXED_BUFFER (System.dll).
+
+wpf-0008-text-lines-with-empty-embedded-objects-and-distance-from-character-hit.patch (sg38)
+    PresentationCore, our managed TextFormatter (Managed.TextFormatting.FullTextLine): an
+      embedded object whose ComputeBoundingBox is Rect.Empty (no ink: AvalonEdit's tab and
+      space elements) adds nothing to the line's bounds -- Rect.Offset of the Empty rect threw
+      InvalidOperationException from TextLine.Draw --, and GetDistanceFromCharacterHit is
+      answered (it threw NotImplementedException): the distance of a caret position from the
+      line's start, leading or trailing edge, through text runs and embedded objects, the line's
+      end past its last character, mirrored for a right-to-left line, the inverse of
+      GetCharacterHitFromDistance.
+    Why: ILSpy 5.0 (AvalonEdit) crashed ("Sorry, we crashed") drawing any decompiled line holding
+      a tab, then placing its caret; with sg38 it decompiles and browses.
+    Gate: test/mono-fork-test.sh (sg38 section, headless into a DrawingGroup); sg37 fails both
+      checks. Mutants SG_MUTANT_TF_EMPTY_EMBEDDED_OFFSET, SG_MUTANT_TF_NO_DISTANCE_FROM_HIT.

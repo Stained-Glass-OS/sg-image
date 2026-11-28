@@ -85,6 +85,9 @@
 #     through its IDispatch (methods, properties, named arguments, [DISPID=n],
 #     the object's own errors), and C# "dynamic" on COM objects (Mesen's
 #     WScript.Shell CreateShortcut; mono-0031, corefx-0004);
+#   - (sg38) our managed TextFormatter draws a line holding an embedded
+#     object with no ink and answers GetDistanceFromCharacterHit (ILSpy 5's
+#     AvalonEdit text view crashed; wpf-0008);
 #   - (sg37) GetIPv4Properties with an adapter of several name servers
 #     (mono-0035: GetPerAdapterInfo's buffer sized as it asks) is gated by
 #     wine-sg's test/tcpipreg-gate.sh with SG_MONO_DIR (it needs adapters
@@ -2485,5 +2488,93 @@ else
     [ "$(v reader)" = Initial ] && [ "$(v settings)" = "https://example.invalid/check:2004" ] \
         && pass "a configuration section keeps the reader it was given and reads it later (SyncTrayzor's settings)" \
         || fail "section reader: '$(v reader)' settings '$(v settings)' (sg35: Closed, null)"
+fi
+# (sg38) our managed TextFormatter (wpf-0008): a line holding an embedded object with no ink
+# (ComputeBoundingBox = Rect.Empty, as AvalonEdit's tab and space elements) is drawn -- Rect.Offset of
+# the Empty rect threw, and ILSpy 5 crashed drawing any line with a tab --, and FullTextLine answers
+# GetDistanceFromCharacterHit (the caret and selection: it threw NotImplementedException), the inverse
+# of GetCharacterHitFromDistance. Headless: drawn into a DrawingGroup. sg37: tfempty=Invalid-
+# OperationException, distance not reached. Mutants: -d:SG_MUTANT_TF_EMPTY_EMBEDDED_OFFSET,
+# -d:SG_MUTANT_TF_NO_DISTANCE_FROM_HIT (PresentationCore).
+cat > "$C/sg38.cs" <<'CS'
+// A text line holding an embedded object with no ink (ComputeBoundingBox = Rect.Empty, as
+// AvalonEdit's tab and space elements) is drawn: ILSpy 5 crashed with "Cannot call this
+// method on the Empty Rect" in FullTextLine.DrawTextLine.
+using System; using System.Globalization; using System.Windows; using System.Windows.Media;
+using System.Windows.Media.TextFormatting;
+class RunProps : TextRunProperties {
+  public override Typeface Typeface { get { return new Typeface("Arial"); } }
+  public override double FontRenderingEmSize { get { return 13; } }
+  public override double FontHintingEmSize { get { return 13; } }
+  public override TextDecorationCollection TextDecorations { get { return null; } }
+  public override Brush ForegroundBrush { get { return Brushes.Black; } }
+  public override Brush BackgroundBrush { get { return null; } }
+  public override CultureInfo CultureInfo { get { return CultureInfo.InvariantCulture; } }
+  public override TextEffectCollection TextEffects { get { return null; } }
+}
+class ParaProps : TextParagraphProperties {
+  public override FlowDirection FlowDirection { get { return FlowDirection.LeftToRight; } }
+  public override TextAlignment TextAlignment { get { return TextAlignment.Left; } }
+  public override double LineHeight { get { return 0; } }
+  public override bool FirstLineInParagraph { get { return true; } }
+  public override TextRunProperties DefaultTextRunProperties { get { return new RunProps(); } }
+  public override TextWrapping TextWrapping { get { return TextWrapping.NoWrap; } }
+  public override TextMarkerProperties TextMarkerProperties { get { return null; } }
+  public override double Indent { get { return 0; } }
+}
+class Tab : TextEmbeddedObject {
+  public override LineBreakCondition BreakBefore { get { return LineBreakCondition.BreakPossible; } }
+  public override LineBreakCondition BreakAfter { get { return LineBreakCondition.BreakRestrained; } }
+  public override bool HasFixedSize { get { return true; } }
+  public override CharacterBufferReference CharacterBufferReference { get { return new CharacterBufferReference(); } }
+  public override int Length { get { return 1; } }
+  public override TextRunProperties Properties { get { return new RunProps(); } }
+  public override TextEmbeddedObjectMetrics Format(double remainingParagraphWidth) { return new TextEmbeddedObjectMetrics(28, 13, 10); }
+  public override Rect ComputeBoundingBox(bool rightToLeft, bool sideways) { return Rect.Empty; }
+  public override void Draw(DrawingContext dc, Point origin, bool rightToLeft, bool sideways) { }
+}
+class Src : TextSource {
+  public override TextRun GetTextRun(int i) {
+    if (i < 3) return new TextCharacters("abc".Substring(i), new RunProps());
+    if (i == 3) return new Tab();
+    if (i < 7) return new TextCharacters("def".Substring(i - 4), new RunProps());
+    return new TextEndOfParagraph(1);
+  }
+  public override TextSpan<CultureSpecificCharacterBufferRange> GetPrecedingText(int i) { return null; }
+  public override int GetTextEffectCharacterIndexFromTextSourceCharacterIndex(int i) { return i; }
+}
+class P { [STAThread] static void Main() {
+  try {
+    var tf = TextFormatter.Create(TextFormattingMode.Display);
+    var line = tf.FormatLine(new Src(), 0, 500, new ParaProps(), null);
+    var v = new DrawingGroup();
+    using (var dc = v.Open()) line.Draw(dc, new Point(0, 0), InvertAxes.None);
+    Console.WriteLine("tfempty=ok len=" + line.Length + " width=" + (line.Width > 28 ? "ok" : line.Width.ToString()));
+    try {
+      double d0 = line.GetDistanceFromCharacterHit(new CharacterHit(0, 0));
+      double d3 = line.GetDistanceFromCharacterHit(new CharacterHit(3, 0));
+      double d3t = line.GetDistanceFromCharacterHit(new CharacterHit(3, 1));
+      double d4 = line.GetDistanceFromCharacterHit(new CharacterHit(4, 0));
+      double d5 = line.GetDistanceFromCharacterHit(new CharacterHit(5, 0));
+      double d6t = line.GetDistanceFromCharacterHit(new CharacterHit(6, 1));
+      var back = line.GetCharacterHitFromDistance(d5 + 0.1);
+      bool ok = d0 == 0 && d3 > 0 && Math.Abs(d3t - d3 - 28) < 0.01 && Math.Abs(d4 - d3t) < 0.01 && d5 > d4 && d6t > d5
+        && Math.Abs(d6t - line.WidthIncludingTrailingWhitespace) < 0.5 && back.FirstCharacterIndex + back.TrailingLength == 5;
+      Console.WriteLine("distance=" + (ok ? "ok" : string.Format("{0} {1} {2} {3} {4} {5} back {6}+{7} w {8}", d0, d3, d3t, d4, d5, d6t, back.FirstCharacterIndex, back.TrailingLength, line.WidthIncludingTrailingWhitespace)));
+    } catch (Exception e) { Console.WriteLine("distance=" + e.GetType().Name + ":" + e.Message); }
+  } catch (Exception e) { Console.WriteLine("tfempty=" + e.GetType().Name + ":" + e.Message); }
+} }
+CS
+(cd "$C" && timeout 300 "$WINE" "$mcs" -r:"$(gac PresentationCore)" -r:"$(gac WindowsBase)" -out:sg38.exe sg38.cs >"$T/mcs38.out" 2>&1)
+if [ ! -f "$C/sg38.exe" ]; then
+    fail "the sg38 probe did not compile: $(cat "$T/mcs38.out")"
+else
+    out=$(cd "$C" && timeout -s KILL 120 "$WINE" sg38.exe 2>&1 | tr -d '\r')
+    [ "$(v tfempty)" = "ok len=8 width=ok" ] \
+        && pass "a text line with an embedded object of no ink is drawn (AvalonEdit's tabs: ILSpy)" \
+        || fail "TextLine.Draw with an empty embedded object: '$(v tfempty)' (sg37: InvalidOperationException)"
+    [ "$(v distance)" = ok ] \
+        && pass "TextLine.GetDistanceFromCharacterHit: leading/trailing edges, embedded object, line end, round trip" \
+        || fail "GetDistanceFromCharacterHit: '$(v distance)' (sg37: NotImplementedException)"
 fi
 exit $RC
