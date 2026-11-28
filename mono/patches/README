@@ -778,3 +778,25 @@ wpf-0009-wpf-printing-through-the-printers-gdi-driver.patch (sg40)
       file, pages rendered with Ghostscript); sg39 fails every check. Mutants
       SG_MUTANT_GDI_NO_PAGE (System.Printing), SG_MUTANT_NO_WHOLE_FACE,
       SG_MUTANT_PINNED_FREE_TWICE (PresentationCore).
+
+wpf-0010-wpf-printed-text-is-text.patch (sg41)
+    System.Printing's SgGdiDevice prints text as text, as GDIExporter's
+      RenderTextThroughGDI: a glyph run in a solid colour, under a scale and
+      offset, unclipped (or wholly inside a rectangular clip) and not drawn
+      over by anything later on the page, is left out of the page image and
+      printed with the printer DC's font calls -- CreateFont on the run's
+      typeface at its device size (family and Win32 face names, weight,
+      style and simulations), checked to be the same font (glyph count, the
+      run's advances), then ExtTextOut at the glyphs' rounded device
+      positions (characters when they map to the run's glyphs through the
+      font's cmap, else glyph indices; runs split where the vertical offset
+      changes). Anything else stays in the image.
+    Why: WPF pages printed as up-to-300 dpi images (sg40), so a WPF
+      program's Print to PDF gave a PDF whose text could not be searched or
+      copied, and text on a printer was not the printer's sharp text.
+      With wine-sg 10.0-1234 (9759, glyphs say their characters) the PDF's
+      text can be searched in CFF fonts too.
+    Gate: test/wpf-print-test.sh's text checks (PrintVisual's line and a
+      FlowDocument's 90 paragraphs read back with pdftotext; the text drawn
+      where it was put on every page); sg40 fails them. Mutant
+      SG_MUTANT_GDI_TEXT_RASTER (System.Printing).

@@ -1,0 +1,424 @@
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/SgGdiDevice.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/SgGdiDevice.cs
+@@ -1,5 +1,7 @@
+ using System;
++using System.Collections.Generic;
+ using System.ComponentModel;
++using System.Globalization;
+ using System.Runtime.InteropServices;
+ using System.Windows;
+ using System.Windows.Media;
+@@ -16,7 +18,13 @@
+    draws the page's primitives with WPF itself and sends the page to the
+    printer as an image at the printer's resolution (at most RasterDpi), band
+    by band, white bands left out. Same pages, same coordinates (WPF's 1/96
+-   inch from the paper's corner; GDI's from the printable area). */
++   inch from the paper's corner; GDI's from the printable area).
++   Text is text (sg41): a glyph run in a solid colour, under a scale and
++   offset, not clipped and with nothing drawn over it later, is left out of
++   the image and printed with the printer's own font calls (CreateFont on
++   the run's typeface, ExtTextOut at its glyphs' positions), as
++   GDIExporter's RenderTextThroughGDI -- so a printed PDF can be searched
++   and the printer's fonts are sharp. Anything else stays in the image. */
+ internal sealed class SgGdiDevice : ILegacyDevice
+ {
+ 	const int RasterDpi = 300;
+@@ -27,6 +35,24 @@
+ 	DrawingGroup page;
+ 	DrawingContext dc;
+ 
++	/* the page's state as the flattener pushes it, and what was drawn where */
++	Matrix transform = Matrix.Identity;
++	readonly Stack<Matrix> transforms = new Stack<Matrix>();
++	readonly Stack<Rect?> clips = new Stack<Rect?>(); /* in page units; null: not a rectangle */
++	readonly List<Rect> drawn = new List<Rect>();     /* each primitive's bounds, in order */
++	readonly List<TextRun> runs = new List<TextRun>();
++
++	sealed class TextRun
++	{
++		public GlyphRun Run;
++		public SolidColorBrush Brush;
++		public Matrix Transform;
++		public Rect Bounds;
++		public int Index;           /* its place in drawn */
++		public DrawingGroup Holder; /* its place in the image, emptied when printed as text */
++		public IntPtr Font;
++	}
++
+ 	public int DpiX { get { return dpiX; } }
+ 	public int DpiY { get { return dpiY; } }
+ 
+@@ -96,6 +122,11 @@
+ 		if (StartPage(hdc) <= 0) ThrowLastError();
+ 		page = new DrawingGroup();
+ 		dc = page.Open();
++		transform = Matrix.Identity;
++		transforms.Clear();
++		clips.Clear();
++		drawn.Clear();
++		runs.Clear();
+ 	}
+ 
+ 	public void EndPage()
+@@ -105,7 +136,9 @@
+ 		{
+ 			dc.Close();
+ 			dc = null;
++			ChooseTextRuns();
+ 			SendPage(page);
++			SendTextRuns();
+ 			page = null;
+ 		}
+ 		if (EndPage(hdc) <= 0) ThrowLastError();
+@@ -115,22 +148,49 @@
+ 
+ 	public void PushClip(Geometry clipGeometry)
+ 	{
+-		if (dc != null) dc.PushClip(clipGeometry);
++		if (dc == null) return;
++		dc.PushClip(clipGeometry);
++		Rect? rect = null;
++		var r = clipGeometry as RectangleGeometry;
++		if (r != null && r.RadiusX == 0 && r.RadiusY == 0 && IsScaleOffset(transform) &&
++		    (r.Transform == null || r.Transform.Value.IsIdentity))
++		{
++			Rect b = r.Rect;
++			b.Transform(transform);
++			if (clips.Count > 0 && clips.Peek() != null) b.Intersect(clips.Peek().Value);
++			rect = b;
++		}
++		else if (clipGeometry == null && clips.Count > 0) rect = clips.Peek();
++		clips.Push(rect);
+ 	}
+ 
+ 	public void PopClip()
+ 	{
+-		if (dc != null) dc.Pop();
++		if (dc == null) return;
++		dc.Pop();
++		if (clips.Count > 0) clips.Pop();
+ 	}
+ 
+-	public void PushTransform(Matrix transform)
++	public void PushTransform(Matrix t)
+ 	{
+-		if (dc != null) dc.PushTransform(new MatrixTransform(transform));
++		if (dc == null) return;
++		dc.PushTransform(new MatrixTransform(t));
++		transforms.Push(transform);
++		transform = t * transform;
+ 	}
+ 
+ 	public void PopTransform()
+ 	{
+-		if (dc != null) dc.Pop();
++		if (dc == null) return;
++		dc.Pop();
++		if (transforms.Count > 0) transform = transforms.Pop();
++	}
++
++	void Drawn(Rect bounds)
++	{
++		if (bounds.IsEmpty) return;
++		bounds.Transform(transform);
++		drawn.Add(bounds);
+ 	}
+ 
+ 	public void DrawGeometry(Brush brush, Pen pen, Brush strokeBrush, Geometry geometry)
+@@ -142,16 +202,248 @@
+ 			pen.Brush = strokeBrush;
+ 		}
+ 		dc.DrawGeometry(brush, pen, geometry);
++		Drawn(geometry.GetRenderBounds(pen));
+ 	}
+ 
+ 	public void DrawImage(BitmapSource source, byte[] buffer, Rect rect)
+ 	{
+-		if (dc != null && source != null) dc.DrawImage(source, rect);
++		if (dc == null || source == null) return;
++		dc.DrawImage(source, rect);
++		Drawn(rect);
+ 	}
+ 
+ 	public void DrawGlyphRun(Brush brush, GlyphRun glyphRun)
+ 	{
+-		if (dc != null && glyphRun != null) dc.DrawGlyphRun(brush, glyphRun);
++		if (dc == null || glyphRun == null) return;
++		Rect ink = glyphRun.ComputeInkBoundingBox();
++		if (!ink.IsEmpty) ink.Offset(glyphRun.BaselineOrigin.X, glyphRun.BaselineOrigin.Y);
++		var solid = brush as SolidColorBrush;
++		if (TextAsText(solid, glyphRun, ink))
++		{
++			var run = new TextRun();
++			run.Run = glyphRun;
++			run.Brush = solid;
++			run.Transform = transform;
++			run.Bounds = ink;
++			run.Bounds.Transform(transform);
++			run.Holder = new DrawingGroup();
++			run.Holder.Children.Add(new GlyphRunDrawing(brush, glyphRun));
++			run.Index = drawn.Count;
++			dc.DrawDrawing(run.Holder);
++			runs.Add(run);
++		}
++		else dc.DrawGlyphRun(brush, glyphRun);
++		Drawn(ink);
++	}
++
++	/* ---- text as text ---- */
++
++	static bool IsScaleOffset(Matrix m)
++	{
++		return m.M12 == 0 && m.M21 == 0;
++	}
++
++	/* what the printer's font calls can print as WPF draws it (GDIExporter's
++	   RenderTextThroughGDI conditions; no world transform: scale and offset only) */
++	bool TextAsText(SolidColorBrush brush, GlyphRun run, Rect ink)
++	{
++#if SG_MUTANT_GDI_TEXT_RASTER
++		return false;
++#endif
++		if (brush == null || brush.Opacity < 1 || brush.Color.A != 255) return false;
++		if (run.GlyphIndices == null || run.GlyphIndices.Count == 0 || run.GlyphTypeface == null) return false;
++		if (run.IsSideways || (run.BidiLevel & 1) != 0) return false;
++		if (!IsScaleOffset(transform) || transform.M11 <= 0 || transform.M22 <= 0 ||
++		    Math.Abs(transform.M11 - transform.M22) > 1e-6 * transform.M22) return false;
++		if (ink.IsEmpty) return false;
++		if (clips.Count > 0)
++		{
++			/* clipped text stays in the image, unless the clip leaves it whole */
++			Rect? clip = clips.Peek();
++			Rect b = ink;
++			b.Transform(transform);
++			if (clip == null || !clip.Value.Contains(b)) return false;
++		}
++		return true;
++	}
++
++	/* a run drawn over by something later stays in the image (it would come
++	   out on top); one whose typeface the printer DC cannot have stays too */
++	void ChooseTextRuns()
++	{
++		foreach (var run in runs)
++		{
++			bool covered = false;
++			for (int i = run.Index + 1; i < drawn.Count && !covered; i++)
++				covered = drawn[i].IntersectsWith(run.Bounds);
++			if (covered) continue;
++			run.Font = CreateRunFont(run);
++			if (run.Font != IntPtr.Zero) run.Holder.Children.Clear();
++		}
++	}
++
++	void SendTextRuns()
++	{
++		double sx = dpiX / 96.0, sy = dpiY / 96.0;
++		int offsetX = GetDeviceCaps(hdc, PHYSICALOFFSETX), offsetY = GetDeviceCaps(hdc, PHYSICALOFFSETY);
++		foreach (var run in runs)
++		{
++			if (run.Font == IntPtr.Zero) continue;
++			var m = run.Transform;
++			var scale = new Point(m.M11 * sx, m.M22 * sy);
++			var translate = new Point(m.OffsetX * sx - offsetX, m.OffsetY * sy - offsetY);
++			IntPtr old = SelectObject(hdc, run.Font);
++			SetTextAlign(hdc, TA_BASELINE | TA_LEFT);
++			SetBkMode(hdc, TRANSPARENT);
++			var c = run.Brush.Color;
++			SetTextColor(hdc, c.R | (c.G << 8) | (c.B << 16));
++			RenderGlyphRun(run.Run, translate, scale);
++			SelectObject(hdc, old);
++			DeleteObject(run.Font);
++			run.Font = IntPtr.Zero;
++		}
++		runs.Clear();
++	}
++
++	/* GDIExporter's RenderUnicode: characters when they map to the run's
++	   glyphs through the font's own cmap (what GDI will do), else glyph indices */
++	static bool RenderCharacters(GlyphRun run)
++	{
++		var chars = run.Characters;
++		var glyphs = run.GlyphIndices;
++		if (chars == null || chars.Count != glyphs.Count || run.GlyphTypeface.Symbol) return false;
++		var map = run.GlyphTypeface.CharacterToGlyphMap;
++		for (int i = 0; i < chars.Count; i++)
++		{
++			ushort g;
++			if (glyphs[i] == 0 || char.IsSurrogate(chars[i]) || !map.TryGetValue(chars[i], out g) || g != glyphs[i])
++				return false;
++		}
++		return true;
++	}
++
++	/* GDIExporter's RenderGlyphRun, left to right: runs of glyphs with the same
++	   vertical offset, each at its rounded device position */
++	void RenderGlyphRun(GlyphRun run, Point translate, Point scale)
++	{
++		bool characters = RenderCharacters(run);
++		int count = run.GlyphIndices.Count;
++		var text = new char[count];
++		for (int i = 0; i < count; i++) text[i] = characters ? run.Characters[i] : (char)run.GlyphIndices[i];
++		var dx = new int[count];
++		var offsets = run.GlyphOffsets;
++		var advances = run.AdvanceWidths;
++		double baselineX = translate.X + run.BaselineOrigin.X * scale.X;
++		double baselineY = translate.Y + run.BaselineOrigin.Y * scale.Y;
++		double position = 0;
++		for (int i = 0; i < count; )
++		{
++			int j = i + 1;
++			Point offset = offsets != null ? offsets[i] : new Point();
++			int x = (int)Math.Round(baselineX + (offset.X + position) * scale.X);
++			int y = (int)Math.Round(baselineY - offset.Y * scale.Y);
++			int last = x;
++			position += advances[i];
++			for (; j < count; j++)
++			{
++				Point o = offsets != null ? offsets[j] : new Point();
++				if (Math.Abs(o.Y - offset.Y) > 1e-9) break;
++				int cur = (int)Math.Round(baselineX + (o.X + position) * scale.X);
++				dx[j - 1] = cur - last;
++				last = cur;
++				position += advances[j];
++			}
++			dx[j - 1] = 0;
++			var piece = new char[j - i];
++			var pieceDx = new int[j - i];
++			Array.Copy(text, i, piece, 0, j - i);
++			Array.Copy(dx, i, pieceDx, 0, j - i);
++			ExtTextOutW(hdc, x, y, characters ? 0 : ETO_GLYPH_INDEX, IntPtr.Zero, piece, j - i, j - i > 1 ? pieceDx : null);
++			i = j;
++		}
++	}
++
++	static string English(IDictionary<CultureInfo, string> names)
++	{
++		string name;
++		if (names == null || names.Count == 0) return null;
++		if (names.TryGetValue(CultureInfo.GetCultureInfo("en-us"), out name)) return name;
++		foreach (var pair in names) return pair.Value;
++		return null;
++	}
++
++	/* the printer DC's font for the run's typeface, at its device size
++	   (GDIExporter's CreateFont); IntPtr.Zero if GDI's font is not the same
++	   font (other glyphs, other widths): that run stays in the image */
++	IntPtr CreateRunFont(TextRun run)
++	{
++		var face = run.Run.GlyphTypeface;
++		string family = English(face.Win32FamilyNames), style = English(face.Win32FaceNames);
++		if (string.IsNullOrEmpty(family)) return IntPtr.Zero;
++		double size = run.Run.FontRenderingEmSize * run.Transform.M22 * dpiY / 96.0;
++		if (size < 1) return IntPtr.Zero;
++		var lf = new LOGFONTW();
++		lf.lfHeight = -(int)Math.Round(size);
++		lf.lfWeight = face.Weight.ToOpenTypeWeight();
++		lf.lfItalic = (byte)(face.Style != FontStyles.Normal ? 1 : 0);
++		lf.lfCharSet = (byte)(face.Symbol ? SYMBOL_CHARSET : DEFAULT_CHARSET);
++		lf.lfOutPrecision = (byte)(face.Symbol ? OUT_OUTLINE_PRECIS : OUT_TT_PRECIS);
++		lf.lfQuality = PROOF_QUALITY;
++		var sim = face.StyleSimulations;
++		if ((sim & StyleSimulations.ItalicSimulation) != 0)
++		{
++			if (lf.lfItalic != 0) return IntPtr.Zero;
++			lf.lfItalic = 1;
++		}
++		if ((sim & StyleSimulations.BoldSimulation) != 0)
++		{
++			lf.lfWeight += 300;
++			if (lf.lfWeight > 900) return IntPtr.Zero;
++		}
++		/* a style GDI names as its own family ("Segoe UI Semibold") */
++		string[] names = string.IsNullOrEmpty(style) || style == "Regular" || style == "Bold" ||
++			style == "Italic" || style == "Bold Italic" ? new[] { family } : new[] { family, family + " " + style };
++		foreach (var name in names)
++		{
++			lf.lfFaceName = name.Length < 32 ? name : name.Substring(0, 31);
++			IntPtr font = CreateFontIndirectW(ref lf);
++			if (font == IntPtr.Zero) continue;
++			if (SameFont(font, run)) return font;
++			DeleteObject(font);
++		}
++		return IntPtr.Zero;
++	}
++
++	/* the DC's font has the typeface's glyphs: as many glyphs, the same
++	   advances for the run's glyphs (to a device unit) */
++	bool SameFont(IntPtr font, TextRun run)
++	{
++		IntPtr old = SelectObject(hdc, font);
++		try
++		{
++			var face = run.Run.GlyphTypeface;
++			var maxp = new byte[6];
++			if (GetFontData(hdc, 0x7078616d /* 'maxp' */, 0, maxp, 6) != 6) return false;
++			if (((maxp[4] << 8) | maxp[5]) != face.GlyphCount) return false;
++			var glyphs = run.Run.GlyphIndices;
++			var widths = face.AdvanceWidths;
++			double em = run.Run.FontRenderingEmSize * run.Transform.M22 * dpiY / 96.0;
++			int checks = Math.Min(glyphs.Count, 32);
++			for (int i = 0; i < checks; i++)
++			{
++				var g = new ushort[] { glyphs[i] };
++				int[] abc = new int[3];
++				double want;
++				if (!widths.TryGetValue(glyphs[i], out want)) return false;
++				if (!GetCharABCWidthsI(hdc, 0, 1, g, abc)) return false;
++				if (Math.Abs(abc[0] + abc[1] + abc[2] - want * em) > 1.5 + em * 0.01) return false;
++			}
++			return true;
++		}
++		finally
++		{
++			SelectObject(hdc, old);
++		}
+ 	}
+ 
+ 	public void Comment(string message)
+@@ -224,6 +516,45 @@
+ 	const int HORZRES = 8, VERTRES = 10, LOGPIXELSX = 88, LOGPIXELSY = 90;
+ 	const int PHYSICALOFFSETX = 112, PHYSICALOFFSETY = 113;
+ 	const int DIB_RGB_COLORS = 0, SRCCOPY = 0x00CC0020;
++	const int TA_LEFT = 0, TA_BASELINE = 24, TRANSPARENT = 1, ETO_GLYPH_INDEX = 0x10;
++	const int DEFAULT_CHARSET = 1, SYMBOL_CHARSET = 2, OUT_TT_PRECIS = 4, OUT_OUTLINE_PRECIS = 8;
++	const byte PROOF_QUALITY = 2;
++
++	[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
++	struct LOGFONTW
++	{
++		public int lfHeight, lfWidth, lfEscapement, lfOrientation, lfWeight;
++		public byte lfItalic, lfUnderline, lfStrikeOut, lfCharSet, lfOutPrecision, lfClipPrecision, lfQuality, lfPitchAndFamily;
++		[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
++		public string lfFaceName;
++	}
++
++	[DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
++	static extern IntPtr CreateFontIndirectW(ref LOGFONTW lf);
++
++	[DllImport("gdi32.dll")]
++	static extern IntPtr SelectObject(IntPtr hdc, IntPtr obj);
++
++	[DllImport("gdi32.dll")]
++	static extern bool DeleteObject(IntPtr obj);
++
++	[DllImport("gdi32.dll")]
++	static extern int SetTextAlign(IntPtr hdc, int align);
++
++	[DllImport("gdi32.dll")]
++	static extern int SetBkMode(IntPtr hdc, int mode);
++
++	[DllImport("gdi32.dll")]
++	static extern int SetTextColor(IntPtr hdc, int color);
++
++	[DllImport("gdi32.dll")]
++	static extern uint GetFontData(IntPtr hdc, uint table, uint offset, byte[] buffer, uint size);
++
++	[DllImport("gdi32.dll")]
++	static extern bool GetCharABCWidthsI(IntPtr hdc, uint first, uint count, ushort[] glyphs, int[] abc);
++
++	[DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
++	static extern bool ExtTextOutW(IntPtr hdc, int x, int y, int options, IntPtr rect, char[] text, int count, int[] dx);
+ 
+ 	[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+ 	struct DOCINFOW

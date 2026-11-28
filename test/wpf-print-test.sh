@@ -19,18 +19,25 @@
 #   - an XPS file is written (XpsDocument.CreateXpsDocumentWriter: fonts
 #     embedded whole, PresentationCore had no subsetter), read back, and
 #     printed (Write(path)) without the program dying in a finalizer.
+#   - text is printed as text (sg41): PrintVisual's line and the FlowDocument's
+#     paragraphs come out of the printer's font calls, so the PDF ghostscript
+#     makes of the job can be searched (pdftotext reads them back); they were
+#     part of a page-sized image.
 #
 #   test/wpf-print-test.sh [WINE]      (needs make mono-deb first; Xvfb, gs, mingw-w64)
 # Mutation: sg39 fails every check (NotImplementedException); System.Printing
 # built with -d:SG_MUTANT_GDI_NO_PAGE (pages sent blank) fails the square
 # checks; PresentationCore with -d:SG_MUTANT_NO_WHOLE_FACE (no font for the XPS
-# file) or -d:SG_MUTANT_PINNED_FREE_TWICE fails the XPS checks.
+# file) or -d:SG_MUTANT_PINNED_FREE_TWICE fails the XPS checks; System.Printing
+# with -d:SG_MUTANT_GDI_TEXT_RASTER (text left in the image, sg40) fails the
+# text checks.
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -u
 HERE=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 WINE=${1:-/opt/wine-sg/bin/wine}
 WINESERVER="$(dirname "$WINE")/wineserver"
+[ -x "$WINESERVER" ] || WINESERVER="$(dirname "$WINE")/server/wineserver"   # a build tree
 MONO=$(ls -d "${SG_MONO_DIR:-$HERE/build/mono-deb-root/usr/share/wine/mono}"/wine-mono-* 2>/dev/null | head -1)
 [ -x "$WINE" ] || { echo "SKIP: no wine at $WINE"; exit 77; }
 [ -n "$MONO" ] || { echo "SKIP: no packaged Wine Mono (make mono-deb)"; exit 77; }
@@ -125,7 +132,8 @@ mcs=$(w "$MONO/lib/mono/4.5/mcs.exe")
 (cd "$C" && timeout 300 "$WINE" "$mcs" $refs -out:probe.exe probe.cs >"$T/mcs.out" 2>&1)
 [ -f "$C/probe.exe" ] || { fail "the probe did not compile: $(cat "$T/mcs.out")"; exit 1; }
 
-# check FILE.ps: its page count, and page 1 rendered at 20 dpi -- blue at (3 in, 3 in), white at (1 in, 4 in)
+# check FILE.ps: its page count, and page 1 rendered at 20 dpi -- blue at (3 in, 3 in), white at (1 in, 4 in),
+# the line of text at (2 in, 1 in)
 cat > "$T/check.py" <<'PY'
 import subprocess, sys, os
 ps, ppm = sys.argv[1], sys.argv[2]
@@ -147,8 +155,10 @@ try:
     w = int(fields[1]); data = b[pos + 1:]
     px = lambda x, y: tuple(data[(y * w + x) * 3:(y * w + x) * 3 + 3])
     blue, white = px(60, 60), px(20, 80)
+    # the line of text 1 in from the top, from 2 in: ink there, where it was put
+    ink = sum(1 for y in range(19, 28) for x in range(40, 70) if max(px(x, y)) < 128)
     res = ('blue' if blue[2] > 200 and blue[0] < 60 and blue[1] < 60 else 'noblue%s' % (blue,)) + '+' + \
-          ('white' if min(white) > 230 else 'nowhite%s' % (white,))
+          ('white' if min(white) > 230 else 'nowhite%s' % (white,)) + '+' + ('text' if ink >= 5 else 'notext%d' % ink)
 except Exception as e:
     res = 'error ' + str(e)
 print('%d %s' % (pages, res))
@@ -159,31 +169,48 @@ run() {
     printed=$([ -s "$PS" ] && python3 "$T/check.py" "$PS" "$T/page.ppm" || echo "0 nothing")
 }
 v() { printf '%s\n' "$out" | sed -n "s/^$1=//p" | head -1; }
+# the job's text as a PDF reader sees it (ghostscript makes the PDF, as CUPS's Print to PDF does)
+text() {
+    rm -f "$T/printed.pdf"
+    [ -s "$PS" ] && gs -q -dSAFER -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -sOutputFile="$T/printed.pdf" "$PS" >/dev/null 2>&1
+    [ -s "$T/printed.pdf" ] && command -v pdftotext >/dev/null && pdftotext "$T/printed.pdf" - 2>/dev/null | tr -s ' \n' '  '
+}
 
 run visual
-[ "$(v visual)" = ok ] && [ "$printed" = "1 blue+white" ] \
+[ "$(v visual)" = ok ] && [ "$printed" = "1 blue+white+text" ] \
     && pass "PrintDialog.PrintVisual prints one page, the square where it was put" \
     || fail "PrintVisual: '$(v visual)', printed '$printed' (sg39: NotImplementedException)"
+if command -v pdftotext >/dev/null; then
+    words=$(text)
+    case "$words" in *"Stained Glass WPF print"*) pass "PrintVisual's text is text (the PDF can be searched)" ;;
+        *) fail "PrintVisual's text is not text: pdftotext read '$(printf '%.80s' "$words")'" ;; esac
+fi
 run writer
-[ "$(v writer)" = "ok FixedDocumentSequence1 FixedDocument1 FixedPage1" ] && [ "$printed" = "1 blue+white" ] \
+[ "$(v writer)" = "ok FixedDocumentSequence1 FixedDocument1 FixedPage1" ] && [ "$printed" = "1 blue+white+text" ] \
     && pass "XpsDocumentWriter.Write(Visual) asks for the sequence's, document's and page's tickets and prints" \
     || fail "Write(Visual): '$(v writer)', printed '$printed'"
 run flow
 [ "$(v flow)" = ok ] && [ "${printed%% *}" = 4 ] \
     && pass "PrintDialog.PrintDocument prints a FlowDocument's 4 pages" || fail "PrintDocument: '$(v flow)', printed '$printed'"
+if command -v pdftotext >/dev/null; then
+    words=$(text)
+    case "$words" in *"Paragraph 1 of a FlowDocument."*"Paragraph 90 of a FlowDocument."*)
+        pass "a FlowDocument's paragraphs are text, first to last" ;;
+        *) fail "the FlowDocument's text is not text: pdftotext read '$(printf '%.80s' "$words")'" ;; esac
+fi
 run fixed
-[ "$(v fixed)" = ok ] && [ "$printed" = "3 blue+white" ] \
+[ "$(v fixed)" = ok ] && [ "$printed" = "3 blue+white+text" ] \
     && pass "a FixedDocument's 3 pages" || fail "FixedDocument: '$(v fixed)', printed '$printed'"
 run collator
-[ "$(v collator)" = ok ] && [ "$printed" = "2 blue+white" ] \
+[ "$(v collator)" = ok ] && [ "$printed" = "2 blue+white+text" ] \
     && pass "a visuals collator's 2 pages" || fail "collator: '$(v collator)', printed '$printed'"
 run async
-[ "$(v async)" = "ok state progress" ] && [ "$printed" = "2 blue+white" ] \
+[ "$(v async)" = "ok state progress" ] && [ "$printed" = "2 blue+white+text" ] \
     && pass "WriteAsync: progress, WritingCompleted with the program's state, 2 pages" \
     || fail "WriteAsync: '$(v async)', printed '$printed'"
 run xps
 [ "$(v xpsfile)" = 2 ] && pass "an XPS file is written and read back (2 pages)" || fail "XPS file: '$(v xpsfile)' $(v xps)"
-[ "$(v xps)" = ok ] && [ "$printed" = "2 blue+white" ] && ! printf '%s\n' "$out" | grep -q 'Unhandled Exception' \
+[ "$(v xps)" = ok ] && [ "$printed" = "2 blue+white+text" ] && ! printf '%s\n' "$out" | grep -q 'Unhandled Exception' \
     && pass "and printed (XpsDocumentWriter.Write(path)), the program ending cleanly" \
     || fail "XPS print: '$(v xps)', printed '$printed' $(printf '%s\n' "$out" | grep -m1 Exception)"
 [ "$RC" = 0 ] && echo "RESULT: PASS" || { echo "RESULT: FAIL"; printf '%s\n' "$out" | head -20; }
