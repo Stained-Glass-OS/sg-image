@@ -746,3 +746,35 @@ mono-0036-types-of-an-assembly-that-is-not-there-load-as-on-the-clr.patch (sg39)
     Gate: test/mono-fork-test.sh (sg39 section: a probe compiled against an assembly then
       deleted); sg38 fails the field and signature checks. Mutants SG_MUTANT_FIELD_TYPE_EAGER
       (class.c), SG_MUTANT_VTABLE_SIG_EAGER (class-setup-vtable.c, object.c).
+
+wpf-0009-wpf-printing-through-the-printers-gdi-driver.patch (sg40)
+    System.Printing: XpsDocumentWriter and VisualsToXpsDocument as System.Printing's
+      (XPSDocumentWriter.cpp, ported to C#): Write/WriteAsync of a Visual, DocumentPaginator,
+      FixedDocument(Sequence), FixedPage and an XPS file, the visuals collator, CancelAsync,
+      and the WritingPrintTicketRequired/ProgressChanged/Completed/Cancelled events per
+      document sequence, document and page. To a PrintQueue the writer prints as the .NET
+      Framework does for a printer that is not an XPS device: ReachFramework's NGC
+      serialization manager flattens each page and draws it on PrintQueue.GetLegacyDevice()
+      -- SgGdiDevice, our GDI device (System.Printing's GDIExporter): a GDI job on the
+      printer's DC (CreateDC with the ticket's DEVMODE, StartDoc with the job's description,
+      ResetDC per page ticket, a printing-cancelled StartDoc -- Save Print Output As's Cancel --
+      as PrintingCanceledException/WritingCancelled). Where GDIExporter turns each primitive
+      into GDI paths and glyphs, SgGdiDevice draws the flattened page with WPF and sends it as
+      an image at the printer's resolution (at most 300 dpi), band by band, white bands left
+      out. PrintQueue: CreateXpsDocumentWriter (all overloads; the dialog ones show WPF's
+      PrintDialog and give the PrintDocumentImageableArea), CurrentJobSettings,
+      MergeAndValidatePrintTicket (prntvpt through ReachFramework's PrintTicketManager),
+      Pause/Resume/Purge (SetPrinter PRINTER_CONTROL_*), InPartialTrust settable (the print
+      dialog's OK threw), the internals ReachFramework calls. SafeMemoryHandle (the print
+      ticket provider's DEVMODE and stream memory) implemented: no ticket could become a
+      DEVMODE. XpsWriterException's messages from System.Printing's resources.
+    PresentationCore: TrueTypeFontDriver.ComputeFontSubset embeds the whole face (no native
+      TrueType subsetter here; a TTC face becomes a font file of its own), so an XPS file can
+      be written; FontSource's pinned font stream frees its handle once (an XPS file's
+      embedded font read back ended the program in a finalizer).
+    Why: every WPF program's Print threw NotImplementedException (PrintDialog.PrintVisual,
+      PrintDocument, DocumentViewer's Print, XpsDocumentWriter; ledger i0896).
+    Gate: test/wpf-print-test.sh (private Xvfb, a Wine PostScript printer whose port is a
+      file, pages rendered with Ghostscript); sg39 fails every check. Mutants
+      SG_MUTANT_GDI_NO_PAGE (System.Printing), SG_MUTANT_NO_WHOLE_FACE,
+      SG_MUTANT_PINNED_FREE_TWICE (PresentationCore).

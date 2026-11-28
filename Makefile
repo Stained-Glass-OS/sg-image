@@ -19,7 +19,7 @@ SG_SHELL    ?= ../sg-shell
 SG_OFFICE   ?= ../sg-office
 SG_MAIL     ?= ../sg-mail
 
-.PHONY: desktop-deb desktop-test keyring-test keyring-reset-test netlock-test firewall-test gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-deb apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test videodecode-test d3d9-test surface-handle-test keyedmutex-test d3d12share-test d3d-patchrev upgrade-order-test clean distclean
+.PHONY: desktop-deb desktop-test keyring-test keyring-reset-test netlock-test firewall-test gtk-scale-debs gtk-scale-test surface-test boot-layout-test image-deps-test thunderbird-deb thunderbird-test thunderbird-test-mutants davmail-deb davmail-pkg davmail-test davmail-test-mutants mono-config-test mono-fork-test wpf-flow-test wpf-dpi-test wpf-print-test mono-deb gecko-deb gecko-test gtk-deb gtk-theme-test dymo-deb dymo-print-test splash boot-time-test print-test net-test fileaccess-test token-test procagent-test elevate-test elevated-test policy-test privilege-test addons speech apps apps-deb apps-test update-test repo repo-check publish lab-password compositor-deb shell-deb office-deb mail-deb all image boot-test multiuser-test d3d-test test deps sshkey staged-debs session-deb wine-deb d3d d3d-deb dcomp-test dcomp-refresh-test ctxstate-test videodecode-test d3d9-test surface-handle-test keyedmutex-test d3d12share-test d3d-patchrev upgrade-order-test clean distclean
 
 all: image
 
@@ -423,9 +423,9 @@ apps-deb: staged-debs apps
 # upstream tarball (dl.winehq.org, sha256 fd772219...bf13858) is what it
 # replaces; test/mono-fork-test.sh tells them apart.
 MONO_VERSION       := 9.4.0
-MONO_BUILD         := sg39
+MONO_BUILD         := sg40
 MONO_URL           := https://freesoft.page/addons/wine-mono-$(MONO_VERSION)-$(MONO_BUILD)-x86.tar.xz
-MONO_SHA256        := 2bd285ecd55dec0174fec51812689030bb77fb126c8c7268306e4196af326c10
+MONO_SHA256        := 5ea078867155c251a3b1fcadead25895f5f77b4b8a8fd82b2fcede1e15b5b053
 GECKO_VERSION      := 2.47.4
 GECKO_X86_SHA256   := 2cfc8d5c948602e21eff8a78613e1826f2d033df9672cace87fed56e8310afb6
 GECKO_X64_SHA256   := fd88fc7e537d058d7a8abf0c1ebc90c574892a466de86706a26d254710a82814
@@ -612,6 +612,10 @@ wpf-flow-test: $(MONO_ROOT)/.done
 # WPF programs at the display scale (wpf-0006): aware of the system DPI.
 wpf-dpi-test: $(MONO_ROOT)/.done
 	SG_MONO_DIR=$(MONO_ROOT)/usr/share/wine/mono sh test/wpf-dpi-test.sh
+
+# WPF printing (wpf-0009): PrintVisual/PrintDocument/XpsDocumentWriter through the printer's GDI driver.
+wpf-print-test: $(MONO_ROOT)/.done
+	SG_MONO_DIR=$(MONO_ROOT)/usr/share/wine/mono sh test/wpf-print-test.sh
 
 # --- Linux programs' look ------------------------------------------------------
 

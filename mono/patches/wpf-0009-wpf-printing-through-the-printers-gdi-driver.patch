@@ -1,0 +1,2093 @@
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/MS.Internal.PrintWin32Thunk/SafeMemoryHandle.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/MS.Internal.PrintWin32Thunk/SafeMemoryHandle.cs
+@@ -3,63 +3,89 @@
+ 
+ namespace MS.Internal.PrintWin32Thunk {
+ 
++/* native memory ReachFramework's print ticket provider hands to prntvpt
++   (DEVMODEs, an empty HGLOBAL for CreateStreamOnHGlobal): Create/TryCreate
++   own an allocation of byteCount bytes, Wrap/Null only name a pointer
++   (sg40; every member threw NotImplementedException, so no print ticket
++   could become a DEVMODE and WPF could not print) */
+ internal class SafeMemoryHandle : SafeHandle
+ {
++	int size;
++
+ 	public override bool IsInvalid
+ 	{
+-		get
+-		{
+-			throw new NotImplementedException();
+-		}
++		get { return handle == IntPtr.Zero; }
+ 	}
+ 
+ 	public static SafeMemoryHandle Null
+ 	{
+-		get
+-		{
+-			throw new NotImplementedException();
+-		}
++		get { return new SafeMemoryHandle(IntPtr.Zero, 0, false); }
+ 	}
+ 
+ 	public virtual int Size
+ 	{
+-		get
+-		{
+-			throw new NotImplementedException();
+-		}
++		get { return size; }
+ 	}
+ 
+ 	public SafeMemoryHandle(IntPtr Win32Pointer)
+-		: base((IntPtr)0, ownsHandle: false)
++		: base(IntPtr.Zero, ownsHandle: true)
+ 	{
++		SetHandle(Win32Pointer);
++	}
++
++	SafeMemoryHandle(IntPtr pointer, int byteCount, bool owns)
++		: base(IntPtr.Zero, owns)
++	{
++		SetHandle(pointer);
++		size = byteCount;
+ 	}
+ 
+ 	public void CopyFromArray(byte[] source, int startIndex, int length)
+ 	{
++		if (source == null) throw new ArgumentNullException("source");
++		if (length < 0 || startIndex < 0 || startIndex + length > source.Length || (size > 0 && length > size))
++			throw new ArgumentOutOfRangeException("length");
++		Marshal.Copy(source, startIndex, handle, length);
+ 	}
+ 
+ 	public void CopyToArray(byte[] destination, int startIndex, int length)
+ 	{
++		if (destination == null) throw new ArgumentNullException("destination");
++		if (length < 0 || startIndex < 0 || startIndex + length > destination.Length || (size > 0 && length > size))
++			throw new ArgumentOutOfRangeException("length");
++		Marshal.Copy(handle, destination, startIndex, length);
+ 	}
+ 
+ 	public static SafeMemoryHandle Create(int byteCount)
+ 	{
+-		throw new NotImplementedException();
++		if (byteCount < 0) throw new ArgumentOutOfRangeException("byteCount");
++		return new SafeMemoryHandle(Marshal.AllocHGlobal(Math.Max(byteCount, 1)), byteCount, true);
+ 	}
+ 
+ 	protected override bool ReleaseHandle()
+ 	{
+-		throw new NotImplementedException();
++		if (handle != IntPtr.Zero) Marshal.FreeHGlobal(handle);
++		handle = IntPtr.Zero;
++		return true;
+ 	}
+ 
+ 	public static bool TryCreate(int byteCount, ref SafeMemoryHandle result)
+ 	{
+-		throw new NotImplementedException();
++		try
++		{
++			result = Create(byteCount);
++			return true;
++		}
++		catch (OutOfMemoryException)
++		{
++			result = null;
++			return false;
++		}
+ 	}
+ 
+ 	public static SafeMemoryHandle Wrap(IntPtr Win32Pointer)
+ 	{
+-		throw new NotImplementedException();
++		return new SafeMemoryHandle(Win32Pointer, 0, false);
+ 	}
+ }
+ }
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/sources.list
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/sources.list
+@@ -60,3 +60,4 @@
+ System.Windows.Xps/XpsDocumentWriter.cs
+ System.Windows.Xps/XpsWriterException.cs
+ System.Printing/SgSpooler.cs
++System.Printing/SgGdiDevice.cs
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintDocumentImageableArea.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintDocumentImageableArea.cs
+@@ -2,55 +2,22 @@
+ 
+ namespace System.Printing {
+ 
++/* the paper and its printable area a print dialog's writer prints on
++   (PrintQueue.CreateXpsDocumentWriter(ref PrintDocumentImageableArea);
++   sg40), in 1/96 inch */
+ public class PrintDocumentImageableArea
+ {
+-	public double ExtentHeight
+-	{
+-		get
+-		{
+-			throw new NotImplementedException();
+-		}
+-	}
++	public double ExtentHeight { get; internal set; }
+ 
+-	public double ExtentWidth
+-	{
+-		get
+-		{
+-			throw new NotImplementedException();
+-		}
+-	}
++	public double ExtentWidth { get; internal set; }
+ 
+-	public double MediaSizeHeight
+-	{
+-		get
+-		{
+-			throw new NotImplementedException();
+-		}
+-	}
++	public double MediaSizeHeight { get; internal set; }
+ 
+-	public double MediaSizeWidth
+-	{
+-		get
+-		{
+-			throw new NotImplementedException();
+-		}
+-	}
++	public double MediaSizeWidth { get; internal set; }
+ 
+-	public double OriginHeight
+-	{
+-		get
+-		{
+-			throw new NotImplementedException();
+-		}
+-	}
++	public double OriginHeight { get; internal set; }
+ 
+-	public double OriginWidth
+-	{
+-		get
+-		{
+-			throw new NotImplementedException();
+-		}
+-	}
++	public double OriginWidth { get; internal set; }
+ 
+ 	internal PrintDocumentImageableArea()
+ 	{
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintJobSettings.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintJobSettings.cs
+@@ -2,30 +2,29 @@
+ 
+ namespace System.Printing {
+ 
++/* The settings of the next job a queue's writer prints (sg40): what
++   PrintDialog sets (the job's description, its name in the queue) and the
++   ticket it prints with, as System.Printing's PrintJobSettings. */
+ public class PrintJobSettings
+ {
++	PrintTicket sg_ticket;
++	string sg_description;
++
+ 	public PrintTicket CurrentPrintTicket
+ 	{
+-		get
+-		{
+-			throw new NotImplementedException();
+-		}
+-		set
+-		{
+-			throw new NotImplementedException();
+-		}
++		get { return sg_ticket; }
++		set { sg_ticket = value; }
+ 	}
+ 
+ 	public string Description
+ 	{
+-		get
+-		{
+-			throw new NotImplementedException();
+-		}
+-		set
+-		{
+-			throw new NotImplementedException();
+-		}
++		get { return sg_description; }
++		set { sg_description = value; }
++	}
++
++	internal PrintJobSettings(PrintTicket ticket)
++	{
++		sg_ticket = ticket;
+ 	}
+ 
+ 	internal PrintJobSettings()
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintQueue.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/PrintQueue.cs
+@@ -40,7 +40,8 @@
+ 	{
+ 		get
+ 		{
+-			throw new NotImplementedException();
++			if (sg_jobSettings == null) sg_jobSettings = new PrintJobSettings(UserPrintTicket);
++			return sg_jobSettings;
+ 		}
+ 	}
+ 
+@@ -115,17 +116,20 @@
+ 		}
+ 	}
+ 
++	/* the WPF print dialog marks the queue it hands out so (no code access
++	   security here; kept for programs that read it back -- sg40: the
++	   setter threw, so a print dialog's OK never gave a queue) */
+ 	public bool InPartialTrust
+ 	{
+ 		[return: MarshalAs(UnmanagedType.U1)]
+ 		get
+ 		{
+-			return false;
++			return sg_inPartialTrust;
+ 		}
+ 		[param: MarshalAs(UnmanagedType.U1)]
+ 		set
+ 		{
+-			throw new NotImplementedException();
++			sg_inPartialTrust = value;
+ 		}
+ 	}
+ 
+@@ -707,34 +711,202 @@
+ 	{
+ 	}
+ 
++	/* Stained Glass OS (sg40): the writer prints through the printer's GDI
++	   driver, as System.Printing does for a printer that is not an XPS
++	   device -- ReachFramework's NGC serialization manager flattens each page
++	   and draws it on the ILegacyDevice GetLegacyDevice gives (SgGdiDevice). */
++	public static XpsDocumentWriter CreateXpsDocumentWriter(PrintQueue printQueue)
++	{
++		return new XpsDocumentWriter(printQueue);
++	}
++
+ 	public static XpsDocumentWriter CreateXpsDocumentWriter(ref double width, ref double height)
+ 	{
+-		throw new NotImplementedException();
++		XpsDocumentWriter writer = null;
++		PrintTicket ticket = null;
++		PrintQueue queue = null;
++		ShowPrintDialog(null, false, ref writer, ref ticket, ref queue, ref width, ref height, out _, out _);
++		return writer;
+ 	}
+ 
+ 	public static XpsDocumentWriter CreateXpsDocumentWriter(ref PrintDocumentImageableArea documentImageableArea)
+ 	{
+-		throw new NotImplementedException();
++		return CreateXpsDocumentWriter(null, ref documentImageableArea);
+ 	}
+ 
+ 	public static XpsDocumentWriter CreateXpsDocumentWriter(ref PrintDocumentImageableArea documentImageableArea, ref PageRangeSelection pageRangeSelection, ref PageRange pageRange)
+ 	{
+-		throw new NotImplementedException();
++		return CreateXpsDocumentWriter(null, ref documentImageableArea, ref pageRangeSelection, ref pageRange);
+ 	}
+ 
+-	public static XpsDocumentWriter CreateXpsDocumentWriter(PrintQueue printQueue)
++	public static XpsDocumentWriter CreateXpsDocumentWriter(string jobDescription, ref PrintDocumentImageableArea documentImageableArea)
+ 	{
+-		throw new NotImplementedException();
++		XpsDocumentWriter writer = null;
++		PrintTicket ticket = null;
++		PrintQueue queue = null;
++		double width = 0, height = 0;
++		if (ShowPrintDialog(jobDescription, false, ref writer, ref ticket, ref queue, ref width, ref height, out _, out _))
++			documentImageableArea = CalculateImageableArea(ticket, queue, width, height);
++		return writer;
+ 	}
+ 
+-	public static XpsDocumentWriter CreateXpsDocumentWriter(string jobDescription, ref PrintDocumentImageableArea documentImageableArea)
++	public static XpsDocumentWriter CreateXpsDocumentWriter(string jobDescription, ref PrintDocumentImageableArea documentImageableArea, ref PageRangeSelection pageRangeSelection, ref PageRange pageRange)
+ 	{
+-		throw new NotImplementedException();
++		XpsDocumentWriter writer = null;
++		PrintTicket ticket = null;
++		PrintQueue queue = null;
++		double width = 0, height = 0;
++		PageRangeSelection selection;
++		PageRange range;
++		if (ShowPrintDialog(jobDescription, true, ref writer, ref ticket, ref queue, ref width, ref height, out selection, out range))
++		{
++			documentImageableArea = CalculateImageableArea(ticket, queue, width, height);
++			pageRangeSelection = selection;
++			pageRange = range;
++		}
++		return writer;
+ 	}
+ 
+-	public static XpsDocumentWriter CreateXpsDocumentWriter(string jobDescription, ref PrintDocumentImageableArea documentImageableArea, ref PageRangeSelection pageRangeSelection, ref PageRange pageRange)
++	static PrintDocumentImageableArea CalculateImageableArea(PrintTicket ticket, PrintQueue queue, double width, double height)
+ 	{
+-		throw new NotImplementedException();
++		var area = new PrintDocumentImageableArea();
++		area.MediaSizeWidth = width;
++		area.MediaSizeHeight = height;
++		PrintCapabilities caps = null;
++		try { caps = queue.GetPrintCapabilities(ticket); } catch (PrintQueueException) { }
++		if (caps != null && caps.PageImageableArea != null)
++		{
++			area.OriginWidth = caps.PageImageableArea.OriginWidth;
++			area.OriginHeight = caps.PageImageableArea.OriginHeight;
++			area.ExtentWidth = caps.PageImageableArea.ExtentWidth;
++			area.ExtentHeight = caps.PageImageableArea.ExtentHeight;
++		}
++		else
++		{
++			area.ExtentWidth = area.MediaSizeWidth;
++			area.ExtentHeight = area.MediaSizeHeight;
++		}
++		return area;
++	}
++
++	/* the WPF print dialog; OK makes a writer for the queue chosen, which
++	   hands the dialog's ticket over once, for the document (sequence) */
++	static bool ShowPrintDialog(string jobDescription, bool pageRangeEnabled, ref XpsDocumentWriter writer,
++		ref PrintTicket ticket, ref PrintQueue queue, ref double width, ref double height,
++		out PageRangeSelection pageRangeSelection, out PageRange pageRange)
++	{
++		var dialog = new PrintDialog();
++		pageRangeSelection = PageRangeSelection.AllPages;
++		pageRange = new PageRange();
++		if (pageRangeEnabled) dialog.UserPageRangeEnabled = true;
++		bool? result = dialog.ShowDialog();
++		if (result != true) return false;
++		ticket = dialog.PrintTicket;
++		queue = dialog.PrintQueue;
++		if (queue == null) return false;
++		if (jobDescription != null) queue.CurrentJobSettings.Description = jobDescription;
++		writer = new XpsDocumentWriter(queue);
++		var handOver = new DialogTicketHandOver(ticket);
++		writer.WritingPrintTicketRequired += handOver.SetPrintTicket;
++		width = dialog.PrintableAreaWidth;
++		height = dialog.PrintableAreaHeight;
++		if (pageRangeEnabled)
++		{
++			pageRangeSelection = dialog.PageRangeSelection;
++			pageRange = dialog.PageRange;
++		}
++		return true;
++	}
++
++	sealed class DialogTicketHandOver
++	{
++		readonly PrintTicket ticket;
++		bool handedOver;
++
++		public DialogTicketHandOver(PrintTicket ticket) { this.ticket = ticket; }
++
++		public void SetPrintTicket(object sender, System.Windows.Documents.Serialization.WritingPrintTicketRequiredEventArgs args)
++		{
++			if (handedOver) return;
++			if (args.CurrentPrintTicketLevel == System.Windows.Xps.Serialization.PrintTicketLevel.FixedDocumentSequencePrintTicket ||
++			    args.CurrentPrintTicketLevel == System.Windows.Xps.Serialization.PrintTicketLevel.FixedDocumentPrintTicket)
++			{
++				args.CurrentPrintTicket = ticket;
++				handedOver = true;
++			}
++		}
++	}
++
++	/* what XpsDocumentWriter and ReachFramework reach (System.Printing's own
++	   internals): a printer here is never an XPS device nor MXDW, so every
++	   writer is an NGC (GDI) one */
++	internal System.Windows.Xps.Serialization.PackageSerializationManager CreateSerializationManager(bool isBatchMode, bool mustSetJobIdentifier, PrintTicket printTicket)
++	{
++		sg_cancelled = false;
++		return new System.Windows.Xps.Serialization.NgcSerializationManager(this, isBatchMode);
++	}
++
++	internal System.Windows.Xps.Serialization.PackageSerializationManager CreateSerializationManager(bool isBatchMode)
++	{
++		return CreateSerializationManager(isBatchMode, false, null);
++	}
++
++	internal System.Windows.Xps.Serialization.PackageSerializationManager CreateAsyncSerializationManager(bool isBatchMode, bool mustSetJobIdentifier, PrintTicket printTicket)
++	{
++		sg_cancelled = false;
++		if (mustSetJobIdentifier) throw new NotSupportedException();
++		return new System.Windows.Xps.Serialization.NgcSerializationManagerAsync(this, isBatchMode);
++	}
++
++	internal System.Windows.Xps.Serialization.PackageSerializationManager CreateAsyncSerializationManager(bool isBatchMode)
++	{
++		return CreateAsyncSerializationManager(isBatchMode, false, null);
++	}
++
++	internal void DisposeSerializationManager()
++	{
++		DisposeSerializationManager(false);
++	}
++
++	internal void DisposeSerializationManager(bool abort)
++	{
++		/* the NGC manager ended its GDI document itself; no XPS stream here */
++	}
++
++	internal void EnsureJobId(System.Windows.Xps.Serialization.PackageSerializationManager manager)
++	{
++	}
++
++	internal bool IsXpsOMPrintingSupported()
++	{
++		return false;
++	}
++
++	internal static bool IsMxdwLegacyDriver(PrintQueue printQueue)
++	{
++		return false;
++	}
++
++	internal System.Windows.Xps.Serialization.RCW.IXpsOMPackageWriter XpsOMPackageWriter
++	{
++		set { }
++	}
++
++	internal ILegacyDevice GetLegacyDevice()
++	{
++		return new SgGdiDevice();
++	}
++
++	internal static uint GetDpiX(ILegacyDevice legacyDevice)
++	{
++		var device = legacyDevice as SgGdiDevice;
++		return device != null ? (uint)device.DpiX : 96;
++	}
++
++	internal static uint GetDpiY(ILegacyDevice legacyDevice)
++	{
++		var device = legacyDevice as SgGdiDevice;
++		return device != null ? (uint)device.DpiY : 96;
+ 	}
+ 
+ 	public PrintSystemJobInfo GetJob(int jobId)
+@@ -777,24 +949,35 @@
+ 	{
+ 	}
+ 
++	/* the printer's driver merges and validates (prntvpt's
++	   PTMergeAndValidatePrintTicket through ReachFramework's manager), as
++	   System.Printing's; the NGC writer merges each page's ticket so (sg40) */
+ 	public System.Printing.ValidationResult MergeAndValidatePrintTicket(PrintTicket basePrintTicket, PrintTicket deltaPrintTicket)
+ 	{
+-		throw new NotImplementedException();
++		return MergeAndValidatePrintTicket(basePrintTicket, deltaPrintTicket, PrintTicketScope.JobScope);
+ 	}
+ 
+ 	public System.Printing.ValidationResult MergeAndValidatePrintTicket(PrintTicket basePrintTicket, PrintTicket deltaPrintTicket, PrintTicketScope scope)
+ 	{
+-		throw new NotImplementedException();
++		if (sg_ticketManager == null)
++			sg_ticketManager = new System.Printing.PrintTicketManager(FullName, ClientPrintSchemaVersion);
++		return sg_ticketManager.MergeAndValidatePrintTicket(basePrintTicket, deltaPrintTicket, scope);
+ 	}
+ 
+ 	public virtual void Pause()
+ 	{
+-		throw new NotImplementedException();
++		int error = SgSpooler.ControlPrinter(FullName, 1);
++		if (error != 0)
++			throw new PrintQueueException(unchecked((int)(0x80070000 | (uint)error)), "PrintSystemException.PrintQueue.Pause", Name);
++		Refresh();
+ 	}
+ 
+ 	public virtual void Purge()
+ 	{
+-		throw new NotImplementedException();
++		int error = SgSpooler.ControlPrinter(FullName, 3);
++		if (error != 0)
++			throw new PrintQueueException(unchecked((int)(0x80070000 | (uint)error)), "PrintSystemException.PrintQueue.Purge", Name);
++		Refresh();
+ 	}
+ 
+ 	public override void Refresh()
+@@ -810,6 +993,9 @@
+ 	string sg_name;
+ 	SgPrinterInfo sg_info;
+ 	PrintTicket sg_defaultPrintTicket, sg_userPrintTicket;
++	PrintJobSettings sg_jobSettings;
++	bool sg_inPartialTrust;
++	System.Printing.PrintTicketManager sg_ticketManager;
+ 	bool sg_cancelled;
+ 
+ 	SgPrinterInfo Info
+@@ -838,7 +1024,10 @@
+ 
+ 	public virtual void Resume()
+ 	{
+-		throw new NotImplementedException();
++		int error = SgSpooler.ControlPrinter(FullName, 2);
++		if (error != 0)
++			throw new PrintQueueException(unchecked((int)(0x80070000 | (uint)error)), "PrintSystemException.PrintQueue.Resume", Name);
++		Refresh();
+ 	}
+ }
+ }
+--- /dev/null
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/SgGdiDevice.cs
+@@ -0,0 +1,274 @@
++using System;
++using System.ComponentModel;
++using System.Runtime.InteropServices;
++using System.Windows;
++using System.Windows.Media;
++using System.Windows.Media.Imaging;
++
++namespace System.Printing {
++
++/* Stained Glass OS (sg40): the GDI device ReachFramework's NGC serialization
++   manager prints a WPF page on (System.Printing's GDIExporter, the
++   ILegacyDevice of PrintQueue.GetLegacyDevice). A document is a GDI print
++   job on the printer's DC (CreateDC with the ticket's DEVMODE, StartDoc,
++   ResetDC per page ticket), as GDIExporter's. Where GDIExporter turns each
++   flattened primitive into GDI paths, brushes and font glyphs, this one
++   draws the page's primitives with WPF itself and sends the page to the
++   printer as an image at the printer's resolution (at most RasterDpi), band
++   by band, white bands left out. Same pages, same coordinates (WPF's 1/96
++   inch from the paper's corner; GDI's from the printable area). */
++internal sealed class SgGdiDevice : ILegacyDevice
++{
++	const int RasterDpi = 300;
++	const int BandPixels = 4 << 20;
++
++	IntPtr hdc;
++	int dpiX = 96, dpiY = 96;
++	DrawingGroup page;
++	DrawingContext dc;
++
++	public int DpiX { get { return dpiX; } }
++	public int DpiY { get { return dpiY; } }
++
++	/* ---- the GDI job ---- */
++
++	public int StartDocument(string printerName, string jobName, string filename, byte[] deviceMode)
++	{
++		if (printerName == null) throw new ArgumentNullException("printerName");
++		CreateDeviceContext(printerName, jobName, deviceMode);
++		StartDocumentWithoutCreatingDC(printerName, jobName, filename);
++		return jobId;
++	}
++
++	int jobId;
++
++	public void StartDocumentWithoutCreatingDC(string printerName, string jobName, string filename)
++	{
++		var info = new DOCINFOW();
++		info.cbSize = Marshal.SizeOf(typeof(DOCINFOW));
++		info.lpszDocName = jobName ?? string.Empty;
++		info.lpszOutput = filename;
++		jobId = StartDocW(hdc, ref info);
++		if (jobId <= 0) ThrowLastError();
++	}
++
++	public void EndDocument()
++	{
++		if (hdc == IntPtr.Zero) return;
++		bool ok = EndDoc(hdc) > 0;
++		int error = Marshal.GetLastWin32Error();
++		DeleteDeviceContext();
++		if (!ok) Throw(error);
++	}
++
++	public void CreateDeviceContext(string printerName, string jobName, byte[] deviceMode)
++	{
++		if (printerName == null) throw new ArgumentNullException("printerName");
++		hdc = CreateDCW(null, printerName, null, deviceMode);
++		if (hdc == IntPtr.Zero) ThrowLastError();
++		dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
++		dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
++		if (dpiX <= 0) dpiX = 96;
++		if (dpiY <= 0) dpiY = 96;
++	}
++
++	public void DeleteDeviceContext()
++	{
++		if (hdc != IntPtr.Zero) DeleteDC(hdc);
++		hdc = IntPtr.Zero;
++	}
++
++	/* MXDW's escapes: no Microsoft XPS Document Writer here */
++	public string ExtEscGetName()
++	{
++		return null;
++	}
++
++	public bool ExtEscMXDWPassThru()
++	{
++		return false;
++	}
++
++	public void StartPage(byte[] deviceMode, int rasterizationDPI)
++	{
++		if (hdc == IntPtr.Zero) return;
++		if (deviceMode != null) ResetDCW(hdc, deviceMode);
++		if (StartPage(hdc) <= 0) ThrowLastError();
++		page = new DrawingGroup();
++		dc = page.Open();
++	}
++
++	public void EndPage()
++	{
++		if (hdc == IntPtr.Zero) return;
++		if (dc != null)
++		{
++			dc.Close();
++			dc = null;
++			SendPage(page);
++			page = null;
++		}
++		if (EndPage(hdc) <= 0) ThrowLastError();
++	}
++
++	/* ---- the page's primitives, as the flattener gives them ---- */
++
++	public void PushClip(Geometry clipGeometry)
++	{
++		if (dc != null) dc.PushClip(clipGeometry);
++	}
++
++	public void PopClip()
++	{
++		if (dc != null) dc.Pop();
++	}
++
++	public void PushTransform(Matrix transform)
++	{
++		if (dc != null) dc.PushTransform(new MatrixTransform(transform));
++	}
++
++	public void PopTransform()
++	{
++		if (dc != null) dc.Pop();
++	}
++
++	public void DrawGeometry(Brush brush, Pen pen, Brush strokeBrush, Geometry geometry)
++	{
++		if (dc == null || geometry == null) return;
++		if (pen != null && strokeBrush != null && pen.Brush != strokeBrush)
++		{
++			pen = pen.CloneCurrentValue();
++			pen.Brush = strokeBrush;
++		}
++		dc.DrawGeometry(brush, pen, geometry);
++	}
++
++	public void DrawImage(BitmapSource source, byte[] buffer, Rect rect)
++	{
++		if (dc != null && source != null) dc.DrawImage(source, rect);
++	}
++
++	public void DrawGlyphRun(Brush brush, GlyphRun glyphRun)
++	{
++		if (dc != null && glyphRun != null) dc.DrawGlyphRun(brush, glyphRun);
++	}
++
++	public void Comment(string message)
++	{
++	}
++
++	/* ---- the page to the printer ---- */
++
++	void SendPage(DrawingGroup drawing)
++	{
++#if SG_MUTANT_GDI_NO_PAGE
++		return;
++#endif
++		int devWidth = GetDeviceCaps(hdc, HORZRES), devHeight = GetDeviceCaps(hdc, VERTRES);
++		int offsetX = GetDeviceCaps(hdc, PHYSICALOFFSETX), offsetY = GetDeviceCaps(hdc, PHYSICALOFFSETY);
++		if (devWidth <= 0 || devHeight <= 0) return;
++		double rx = Math.Min(dpiX, RasterDpi), ry = Math.Min(dpiY, RasterDpi);
++		int width = (int)Math.Ceiling(devWidth * rx / dpiX), height = (int)Math.Ceiling(devHeight * ry / dpiY);
++		int band = Math.Max(1, Math.Min(height, BandPixels / width));
++		var pixels = new int[width * band];
++		var header = new BITMAPINFOHEADER();
++		header.biSize = Marshal.SizeOf(typeof(BITMAPINFOHEADER));
++		header.biWidth = width;
++		header.biPlanes = 1;
++		header.biBitCount = 32;
++		for (int top = 0; top < height; top += band)
++		{
++			int rows = Math.Min(band, height - top);
++			var visual = new DrawingVisual();
++			using (var ctx = visual.RenderOpen())
++			{
++				ctx.DrawRectangle(Brushes.White, null, new Rect(0, 0, width, rows));
++				var m = Matrix.Identity;
++				m.Scale(rx / 96.0, ry / 96.0);
++				m.Translate(-offsetX * rx / dpiX, -offsetY * ry / dpiY - top);
++				ctx.PushTransform(new MatrixTransform(m));
++				ctx.DrawDrawing(drawing);
++				ctx.Pop();
++			}
++			var bitmap = new RenderTargetBitmap(width, rows, 96, 96, PixelFormats.Pbgra32);
++			bitmap.Render(visual);
++			bitmap.CopyPixels(pixels, width * 4, 0);
++			bool blank = true;
++			for (int i = 0, n = width * rows; i < n; i++)
++				if (pixels[i] != -1) { blank = false; break; }
++			if (blank) continue;
++			int devTop = (int)Math.Round(top * dpiY / ry);
++			int devRows = (int)Math.Round((top + rows) * dpiY / ry) - devTop;
++			header.biHeight = -rows;
++			StretchDIBits(hdc, 0, devTop, devWidth, devRows, 0, 0, width, rows, pixels, ref header, DIB_RGB_COLORS, SRCCOPY);
++		}
++	}
++
++	/* ---- errors, as GDIExporter's ThrowOnFailure ---- */
++
++	static void ThrowLastError()
++	{
++		Throw(Marshal.GetLastWin32Error());
++	}
++
++	static void Throw(int error)
++	{
++		int hr = error == 0 ? unchecked((int)0x80004005) : unchecked((int)(0x80070000 | (uint)(error & 0xffff)));
++		if (error == ERROR_CANCELLED || error == ERROR_PRINT_CANCELLED)
++			throw new PrintingCanceledException(hr, "PrintSystemException.PrintingCancelled.Generic");
++		throw new PrintSystemException(hr, "PrintSystemException.PrintingCancelled.Generic");
++	}
++
++	const int ERROR_CANCELLED = 1223, ERROR_PRINT_CANCELLED = 63;
++	const int HORZRES = 8, VERTRES = 10, LOGPIXELSX = 88, LOGPIXELSY = 90;
++	const int PHYSICALOFFSETX = 112, PHYSICALOFFSETY = 113;
++	const int DIB_RGB_COLORS = 0, SRCCOPY = 0x00CC0020;
++
++	[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
++	struct DOCINFOW
++	{
++		public int cbSize;
++		public string lpszDocName;
++		public string lpszOutput;
++		public string lpszDatatype;
++		public int fwType;
++	}
++
++	[StructLayout(LayoutKind.Sequential)]
++	struct BITMAPINFOHEADER
++	{
++		public int biSize, biWidth, biHeight;
++		public short biPlanes, biBitCount;
++		public int biCompression, biSizeImage, biXPelsPerMeter, biYPelsPerMeter, biClrUsed, biClrImportant;
++	}
++
++	[DllImport("gdi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
++	static extern IntPtr CreateDCW(string driver, string device, string output, byte[] devmode);
++
++	[DllImport("gdi32.dll", SetLastError = true)]
++	static extern bool DeleteDC(IntPtr hdc);
++
++	[DllImport("gdi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
++	static extern int StartDocW(IntPtr hdc, ref DOCINFOW info);
++
++	[DllImport("gdi32.dll", SetLastError = true)]
++	static extern int EndDoc(IntPtr hdc);
++
++	[DllImport("gdi32.dll", SetLastError = true)]
++	static extern int StartPage(IntPtr hdc);
++
++	[DllImport("gdi32.dll", SetLastError = true)]
++	static extern int EndPage(IntPtr hdc);
++
++	[DllImport("gdi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
++	static extern IntPtr ResetDCW(IntPtr hdc, byte[] devmode);
++
++	[DllImport("gdi32.dll")]
++	static extern int GetDeviceCaps(IntPtr hdc, int index);
++
++	[DllImport("gdi32.dll")]
++	static extern int StretchDIBits(IntPtr hdc, int xDest, int yDest, int wDest, int hDest, int xSrc, int ySrc,
++		int wSrc, int hSrc, int[] bits, ref BITMAPINFOHEADER info, int usage, int rop);
++}
++}
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/SgSpooler.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Printing/SgSpooler.cs
+@@ -49,6 +49,32 @@
+ 	[DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
+ 	static extern bool GetDefaultPrinterW(StringBuilder buffer, ref int size);
+ 
++	[StructLayout(LayoutKind.Sequential)]
++	struct PRINTER_DEFAULTSW
++	{
++		public IntPtr pDatatype, pDevMode;
++		public int DesiredAccess;
++	}
++
++	[DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "OpenPrinterW")]
++	static extern bool OpenPrinterAccessW(string name, out IntPtr handle, ref PRINTER_DEFAULTSW defaults);
++
++	[DllImport("winspool.drv", SetLastError = true)]
++	static extern bool SetPrinterW(IntPtr handle, int level, IntPtr info, int command);
++
++	/* SetPrinter's PRINTER_CONTROL_PAUSE (1), _RESUME (2), _PURGE (3) with
++	   administer access, as System.Printing's Pause/Resume/Purge (sg40);
++	   0 or the Win32 error */
++	public static int ControlPrinter(string name, int command)
++	{
++		var defaults = new PRINTER_DEFAULTSW { DesiredAccess = 0x4 /* PRINTER_ACCESS_ADMINISTER */ };
++		IntPtr handle;
++		if (!OpenPrinterAccessW(name, out handle, ref defaults)) return Marshal.GetLastWin32Error();
++		int error = SetPrinterW(handle, 0, IntPtr.Zero, command) ? 0 : Marshal.GetLastWin32Error();
++		ClosePrinter(handle);
++		return error;
++	}
++
+ 	/* PRINTER_INFO_2W: 13 pointers (one of them pDevMode, one pSecurityDescriptor), then 8 DWORDs. */
+ 	static SgPrinterInfo Read(IntPtr p)
+ 	{
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Windows.Xps/VisualsToXpsDocument.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Windows.Xps/VisualsToXpsDocument.cs
+@@ -1,64 +1,269 @@
+ using System;
++using System.Collections;
+ using System.Printing;
+ using System.Windows.Documents.Serialization;
+ using System.Windows.Media;
++using System.Windows.Xps.Packaging;
++using System.Windows.Xps.Serialization;
+ 
+ namespace System.Windows.Xps {
+ 
++/* Stained Glass OS (sg40): the batch writer (XpsDocumentWriter's
++   CreateVisualsCollator) as System.Printing's: each Visual written is a
++   page of one document, the tickets given at creation or per visual are
++   the document sequence's, document's and pages'. */
+ public class VisualsToXpsDocument : SerializerWriterCollator
+ {
++	enum VisualsCollaterState { kUninit, kSync, kAsync, kDone, kCancelled }
++
++	XpsDocumentWriter parentWriter;
++	PrintQueue destinationPrintQueue;
++	XpsDocument destinationDocument;
++	PackageSerializationManager _manager;
++	VisualsCollaterState currentState = VisualsCollaterState.kUninit;
++	object _currentUserState;
++	bool isPrintTicketEventHandlerSet, isCompletionEventHandlerSet;
++	int _numberOfVisualsCollated;
++	PrintTicket _documentSequencePrintTicket, _documentPrintTicket;
++	Hashtable _printTicketsTable;
++	ArrayList _printTicketSequences;
++	PrintSystemDispatcherObject accessVerifier;
++
+ 	internal VisualsToXpsDocument()
+ 	{
++		InitializeSequences();
+ 	}
+ 
+-	public override void BeginBatchWrite()
++	internal VisualsToXpsDocument(XpsDocumentWriter writer, PrintQueue printQueue)
+ 	{
+-		throw new NotImplementedException();
++		parentWriter = writer;
++		destinationPrintQueue = printQueue;
++		InitializeSequences();
+ 	}
+ 
+-	public override void Cancel()
++	internal VisualsToXpsDocument(XpsDocumentWriter writer, PrintQueue printQueue,
++		PrintTicket documentSequencePrintTicket, PrintTicket documentPrintTicket)
++		: this(writer, printQueue)
+ 	{
+-		throw new NotImplementedException();
++		_documentSequencePrintTicket = documentSequencePrintTicket;
++		_documentPrintTicket = documentPrintTicket;
+ 	}
+ 
+-	public override void CancelAsync()
++	internal VisualsToXpsDocument(XpsDocumentWriter writer, XpsDocument document)
++	{
++		parentWriter = writer;
++		destinationDocument = document;
++		InitializeSequences();
++	}
++
++	internal VisualsToXpsDocument(XpsDocumentWriter writer, XpsDocument document,
++		PrintTicket documentSequencePrintTicket, PrintTicket documentPrintTicket)
++		: this(writer, document)
+ 	{
+-		throw new NotImplementedException();
++		_documentSequencePrintTicket = documentSequencePrintTicket;
++		_documentPrintTicket = documentPrintTicket;
++	}
++
++	public override void BeginBatchWrite()
++	{
++		VerifyAccess();
+ 	}
+ 
+ 	public override void EndBatchWrite()
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		parentWriter.EndBatchMode();
++		currentState = VisualsCollaterState.kDone;
++		if (_manager == null)
++		{
++			XpsWriterException.ThrowException("XpsWriter.WriteNotCalledEndBatchWrite");
++			return;
++		}
++		if (_manager is XpsSerializationManagerAsync) ((XpsSerializationManagerAsync)_manager).Commit();
++		else if (_manager is XpsSerializationManager) ((XpsSerializationManager)_manager).Commit();
++		else if (_manager is NgcSerializationManagerAsync) ((NgcSerializationManagerAsync)_manager).Commit();
++		else if (_manager is NgcSerializationManager) ((NgcSerializationManager)_manager).Commit();
++		if (destinationPrintQueue != null) destinationPrintQueue.DisposeSerializationManager();
++		else destinationDocument.DisposeSerializationManager();
+ 	}
+ 
+ 	public override void Write(Visual visual)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		WriteVisual(false, null, PrintTicketLevel.None, visual);
+ 	}
+ 
+ 	public override void Write(Visual visual, PrintTicket printTicket)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		WriteVisual(false, printTicket, PrintTicketLevel.FixedPagePrintTicket, visual);
+ 	}
+ 
+ 	public override void WriteAsync(Visual visual)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		WriteVisual(true, null, PrintTicketLevel.None, visual);
+ 	}
+ 
+-	public override void WriteAsync(Visual visual, object userSuppliedState)
++	public override void WriteAsync(Visual visual, PrintTicket printTicket)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		WriteVisual(true, printTicket, PrintTicketLevel.FixedPagePrintTicket, visual);
+ 	}
+ 
+-	public override void WriteAsync(Visual visual, PrintTicket printTicket)
++	public override void WriteAsync(Visual visual, object userSuppliedState)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		_currentUserState = userSuppliedState;
++		WriteAsync(visual);
+ 	}
+ 
+ 	public override void WriteAsync(Visual visual, PrintTicket printTicket, object userSuppliedState)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		_currentUserState = userSuppliedState;
++		WriteAsync(visual, printTicket);
++	}
++
++	public override void CancelAsync()
++	{
++		VerifyAccess();
++		switch (currentState)
++		{
++		case VisualsCollaterState.kDone:
++		case VisualsCollaterState.kCancelled:
++			XpsWriterException.ThrowException("XPSWriter.BatchDoneWriting");
++			break;
++		case VisualsCollaterState.kSync:
++			XpsWriterException.ThrowException("XPSWriter.BatchSync");
++			break;
++		case VisualsCollaterState.kAsync:
++			XpsDocumentWriter.CancelManagerAsync(_manager);
++			currentState = VisualsCollaterState.kCancelled;
++			break;
++		}
++	}
++
++	public override void Cancel()
++	{
++		VerifyAccess();
++		switch (currentState)
++		{
++		case VisualsCollaterState.kDone:
++		case VisualsCollaterState.kCancelled:
++			XpsWriterException.ThrowException("XPSWriter.BatchDoneWriting");
++			break;
++		case VisualsCollaterState.kAsync:
++			XpsWriterException.ThrowException("XPSWriter.BatchSync");
++			break;
++		case VisualsCollaterState.kSync:
++			if (_manager is NgcSerializationManager) ((NgcSerializationManager)_manager).Cancel();
++			currentState = VisualsCollaterState.kCancelled;
++			break;
++		}
++	}
++
++	bool WriteVisual(bool asyncMode, PrintTicket printTicket, PrintTicketLevel printTicketLevel, Visual visual)
++	{
++		bool proceed = false;
++		_numberOfVisualsCollated++;
++		if (currentState == VisualsCollaterState.kUninit)
++		{
++			if (asyncMode)
++			{
++				_manager = destinationPrintQueue != null
++					? destinationPrintQueue.CreateAsyncSerializationManager(true, false, null)
++					: destinationDocument.CreateAsyncSerializationManager(true);
++				if (!isCompletionEventHandlerSet)
++				{
++					parentWriter.SetCompletionEventHandler(_manager, _currentUserState);
++					isCompletionEventHandlerSet = true;
++				}
++				currentState = VisualsCollaterState.kAsync;
++			}
++			else
++			{
++				_manager = destinationPrintQueue != null
++					? destinationPrintQueue.CreateSerializationManager(true, false, null)
++					: destinationDocument.CreateSerializationManager(true);
++				currentState = VisualsCollaterState.kSync;
++			}
++			if (!isPrintTicketEventHandlerSet)
++			{
++				XpsDocumentWriter.AddPrintTicketHandler(_manager, ForwardUserPrintTicket);
++				isPrintTicketEventHandlerSet = true;
++			}
++			parentWriter.SetProgressChangedEventHandler(_manager, _currentUserState);
++		}
++		if (printTicketLevel == PrintTicketLevel.FixedPagePrintTicket)
++			_printTicketsTable.Add(_numberOfVisualsCollated, printTicket);
++		switch (currentState)
++		{
++		case VisualsCollaterState.kDone:
++		case VisualsCollaterState.kCancelled:
++			XpsWriterException.ThrowException("XPSWriter.BatchDoneWriting");
++			break;
++		case VisualsCollaterState.kAsync:
++			if (!asyncMode) XpsWriterException.ThrowException("XPSWriter.BatchAsync");
++			_manager.SaveAsXaml(visual);
++			proceed = true;
++			break;
++		case VisualsCollaterState.kSync:
++			if (asyncMode) XpsWriterException.ThrowException("XPSWriter.BatchSync");
++			try
++			{
++				_manager.SaveAsXaml(visual);
++			}
++			catch (PrintingCanceledException exception)
++			{
++				parentWriter.OnWritingCanceled(this, exception);
++			}
++			proceed = true;
++			break;
++		}
++		return proceed;
++	}
++
++	void ForwardUserPrintTicket(object sender, XpsSerializationPrintTicketRequiredEventArgs args)
++	{
++		int level = (int)args.PrintTicketLevel;
++		var forwardArgs = new WritingPrintTicketRequiredEventArgs(args.PrintTicketLevel, (int)_printTicketSequences[level]);
++		forwardArgs.CurrentPrintTicket = null;
++		switch (args.PrintTicketLevel)
++		{
++		case PrintTicketLevel.FixedDocumentSequencePrintTicket:
++			_printTicketSequences[(int)PrintTicketLevel.FixedDocumentPrintTicket] = 1;
++			_printTicketSequences[(int)PrintTicketLevel.FixedPagePrintTicket] = 1;
++			if (_documentSequencePrintTicket != null) forwardArgs.CurrentPrintTicket = _documentSequencePrintTicket;
++			break;
++		case PrintTicketLevel.FixedDocumentPrintTicket:
++			_printTicketSequences[(int)PrintTicketLevel.FixedPagePrintTicket] = 1;
++			if (_documentPrintTicket != null) forwardArgs.CurrentPrintTicket = _documentPrintTicket;
++			break;
++		case PrintTicketLevel.FixedPagePrintTicket:
++		{
++			int page = (int)_printTicketSequences[level];
++			if (_printTicketsTable.ContainsKey(page)) forwardArgs.CurrentPrintTicket = (PrintTicket)_printTicketsTable[page];
++			break;
++		}
++		}
++		if (forwardArgs.CurrentPrintTicket == null) parentWriter.OnWritingPrintTicketRequired(this, forwardArgs);
++		args.PrintTicket = forwardArgs.CurrentPrintTicket;
++		_printTicketSequences[level] = (int)_printTicketSequences[level] + 1;
++	}
++
++	void InitializeSequences()
++	{
++		_printTicketsTable = new Hashtable(11);
++		_printTicketSequences = new ArrayList();
++		accessVerifier = new PrintSystemDispatcherObject();
++		for (int i = 0; i <= (int)PrintTicketLevel.FixedPagePrintTicket; i++) _printTicketSequences.Add(1);
++	}
++
++	void VerifyAccess()
++	{
++		if (accessVerifier == null) accessVerifier = new PrintSystemDispatcherObject();
++		accessVerifier.VerifyThreadLocality();
+ 	}
+ }
+ }
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Windows.Xps/XpsDocumentWriter.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Windows.Xps/XpsDocumentWriter.cs
+@@ -1,260 +1,727 @@
+ using System;
++using System.Collections;
++using System.IO;
+ using System.Printing;
+ using System.Windows.Documents;
+ using System.Windows.Documents.Serialization;
+ using System.Windows.Media;
++using System.Windows.Xps.Packaging;
++using System.Windows.Xps.Serialization;
+ 
+ namespace System.Windows.Xps {
+ 
++/* Stained Glass OS (sg40): XpsDocumentWriter as System.Printing's
++   (XPSDocumentWriter.cpp, MIT), in C#. It writes visuals, paginated and
++   fixed documents to an XpsDocument (ReachFramework's XPS serialization
++   managers) or to a PrintQueue -- a printer here is never an XPS device, so
++   a queue gets ReachFramework's NGC manager, which flattens each page and
++   prints it through the printer's GDI driver (PrintQueue.GetLegacyDevice).
++   The print ticket asked for at each level, progress, completion and
++   cancellation are forwarded as on the .NET Framework; MXDW and XPS OM
++   printing (Windows' own XPS print path) are not here. */
+ public class XpsDocumentWriter : SerializerWriter
+ {
++	enum DocumentWriterState { kRegularMode, kBatchMode, kDone, kCancelled }
++
++	PrintQueue destinationPrintQueue;
++	XpsDocument destinationDocument;
++	PackageSerializationManager _manager;
++	DocumentWriterState currentState = DocumentWriterState.kRegularMode;
++	PrintTicketLevel currentWriteLevel = PrintTicketLevel.None;
++	PrintTicket currentUserPrintTicket;
++	object _currentUserState;
++	XpsDocument _sourceXpsDocument;
++	IXpsFixedDocumentSequenceReader _sourceXpsFixedDocumentSequenceReader;
++	bool _isDocumentCloned;
++	ArrayList _printTicketSequences;
++	ArrayList _writingProgressSequences;
++	PrintSystemDispatcherObject accessVerifier;
++
++	WritingPrintTicketRequiredEventHandler _writingPrintTicketRequired;
++	WritingProgressChangedEventHandler _writingProgressChanged;
++	WritingCompletedEventHandler _writingCompleted;
++	WritingCancelledEventHandler _writingCancelled;
++	int _writingCancelledEventHandlersCount;
++
+ 	public override event WritingCancelledEventHandler WritingCancelled
+ 	{
+-		add
+-		{
+-		}
+-		remove
+-		{
+-		}
++		add { _writingCancelled += value; _writingCancelledEventHandlersCount++; }
++		remove { _writingCancelled -= value; _writingCancelledEventHandlersCount--; }
+ 	}
+ 
+ 	public override event WritingCompletedEventHandler WritingCompleted
+ 	{
+-		add
+-		{
+-		}
+-		remove
+-		{
+-		}
++		add { _writingCompleted += value; }
++		remove { _writingCompleted -= value; }
+ 	}
+ 
+ 	public override event WritingPrintTicketRequiredEventHandler WritingPrintTicketRequired
+ 	{
+-		add
+-		{
+-		}
+-		remove
+-		{
+-		}
++		add { _writingPrintTicketRequired += value; }
++		remove { _writingPrintTicketRequired -= value; }
+ 	}
+ 
+ 	public override event WritingProgressChangedEventHandler WritingProgressChanged
+ 	{
+-		add
+-		{
+-		}
+-		remove
+-		{
+-		}
++		add { _writingProgressChanged += value; }
++		remove { _writingProgressChanged -= value; }
+ 	}
+ 
+-	internal XpsDocumentWriter()
++	/* C++/CLI's raise methods of the events, public on the .NET Framework */
++	public virtual void raise_WritingCancelled(object sender, WritingCancelledEventArgs args)
+ 	{
++		var h = _writingCancelled;
++		if (h != null) h(sender, args);
+ 	}
+ 
+-	public override void CancelAsync()
++	public virtual void raise_WritingCompleted(object sender, WritingCompletedEventArgs e)
+ 	{
+-		throw new NotImplementedException();
++		var h = _writingCompleted;
++		if (h != null) h(sender, e);
+ 	}
+ 
+-	public override SerializerWriterCollator CreateVisualsCollator()
++	public virtual void raise_WritingPrintTicketRequired(object sender, WritingPrintTicketRequiredEventArgs e)
+ 	{
+-		throw new NotImplementedException();
++		var h = _writingPrintTicketRequired;
++		if (h != null) h(sender, e);
+ 	}
+ 
+-	public override SerializerWriterCollator CreateVisualsCollator(PrintTicket documentSequencePrintTicket, PrintTicket documentPrintTicket)
++	public virtual void raise_WritingProgressChanged(object sender, WritingProgressChangedEventArgs e)
+ 	{
+-		throw new NotImplementedException();
++		var h = _writingProgressChanged;
++		if (h != null) h(sender, e);
+ 	}
+ 
+-	public virtual void raise_WritingCancelled(object sender, WritingCancelledEventArgs args)
++	internal XpsDocumentWriter()
+ 	{
+-		throw new NotImplementedException();
++		InitializeSequences();
+ 	}
+ 
+-	public virtual void raise_WritingCompleted(object sender, WritingCompletedEventArgs e)
++	internal XpsDocumentWriter(PrintQueue printQueue)
+ 	{
+-		throw new NotImplementedException();
++		if (printQueue == null) throw new ArgumentNullException("printQueue");
++		destinationPrintQueue = printQueue;
++		InitializeSequences();
+ 	}
+ 
+-	public virtual void raise_WritingPrintTicketRequired(object sender, WritingPrintTicketRequiredEventArgs e)
++	internal XpsDocumentWriter(XpsDocument document)
+ 	{
+-		throw new NotImplementedException();
++		if (document == null) throw new ArgumentNullException("document");
++		destinationDocument = document;
++		InitializeSequences();
+ 	}
+ 
+-	public virtual void raise_WritingProgressChanged(object sender, WritingProgressChangedEventArgs e)
++	internal void EndBatchMode()
+ 	{
+-		throw new NotImplementedException();
++		currentState = DocumentWriterState.kDone;
+ 	}
+ 
++	internal PrintTicket CurrentUserPrintTicket
++	{
++		set { currentUserPrintTicket = value; }
++	}
++
++	internal PrintTicketLevel CurrentWriteLevel
++	{
++		set { currentWriteLevel = value; }
++	}
++
++	/* ---- synchronous writes ---- */
++
+ 	public void Write(string documentPath)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		Write(documentPath, XpsDocumentNotificationLevel.ReceiveNotificationEnabled);
+ 	}
+ 
+ 	public void Write(string documentPath, XpsDocumentNotificationLevel notificationLevel)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		switch (notificationLevel)
++		{
++		case XpsDocumentNotificationLevel.ReceiveNotificationEnabled:
++			_isDocumentCloned = true;
++			try
++			{
++				_sourceXpsDocument = new XpsDocument(documentPath, FileAccess.Read);
++				FixedDocumentSequence sequence = _sourceXpsDocument.GetFixedDocumentSequence();
++				if (sequence == null) XpsWriterException.ThrowException("XpsWriter.InvalidXps");
++				_sourceXpsFixedDocumentSequenceReader = _sourceXpsDocument.FixedDocumentSequenceReader;
++				Write(sequence);
++			}
++			finally
++			{
++				if (_sourceXpsDocument != null) _sourceXpsDocument.Close();
++			}
++			break;
++		default:
++		{
++			/* the .NET Framework hands the file to the spooler as it is
++			   (AddJob, an XPS spool file); a GDI printer here cannot take
++			   XPS, so the document is printed page by page as above */
++			var source = new XpsDocument(documentPath, FileAccess.Read);
++			try
++			{
++				FixedDocumentSequence sequence = source.GetFixedDocumentSequence();
++				if (sequence == null) XpsWriterException.ThrowException("XpsWriter.InvalidXps");
++				if (destinationPrintQueue == null) throw new NotSupportedException();
++				Write(sequence);
++			}
++			finally
++			{
++				source.Close();
++			}
++			break;
++		}
++		}
+ 	}
+ 
+ 	public override void Write(DocumentPaginator documentPaginator)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		if (BeginWrite(false, false, true, null, PrintTicketLevel.None))
++			SaveAsXaml(documentPaginator, true);
+ 	}
+ 
+ 	public override void Write(DocumentPaginator documentPaginator, PrintTicket printTicket)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		if (BeginWrite(false, false, printTicket != null, printTicket, PrintTicketLevel.FixedDocumentPrintTicket))
++			SaveAsXaml(documentPaginator, true);
+ 	}
+ 
+-	public override void Write(FixedDocument fixedDocument)
++	public override void Write(Visual visual)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		if (BeginWrite(false, false, true, null, PrintTicketLevel.None))
++			SaveAsXaml(visual, true);
+ 	}
+ 
+-	public override void Write(FixedDocument fixedDocument, PrintTicket printTicket)
++	public override void Write(Visual visual, PrintTicket printTicket)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		if (BeginWrite(false, false, printTicket != null, printTicket, PrintTicketLevel.FixedPagePrintTicket))
++			SaveAsXaml(visual, true);
+ 	}
+ 
+ 	public override void Write(FixedDocumentSequence fixedDocumentSequence)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		if (BeginWrite(false, false, true, null, PrintTicketLevel.None))
++			SaveAsXaml(fixedDocumentSequence, true);
+ 	}
+ 
+ 	public override void Write(FixedDocumentSequence fixedDocumentSequence, PrintTicket printTicket)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		if (BeginWrite(false, false, printTicket != null, printTicket, PrintTicketLevel.FixedDocumentSequencePrintTicket))
++			SaveAsXaml(fixedDocumentSequence, true);
+ 	}
+ 
+-	public override void Write(FixedPage fixedPage)
++	public override void Write(FixedDocument fixedDocument)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		if (BeginWrite(false, false, true, null, PrintTicketLevel.None))
++			SaveAsXaml(fixedDocument, true);
+ 	}
+ 
+-	public override void Write(FixedPage fixedPage, PrintTicket printTicket)
++	public override void Write(FixedDocument fixedDocument, PrintTicket printTicket)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		if (BeginWrite(false, false, printTicket != null, printTicket, PrintTicketLevel.FixedDocumentPrintTicket))
++			SaveAsXaml(fixedDocument, true);
+ 	}
+ 
+-	public override void Write(Visual visual)
++	public override void Write(FixedPage fixedPage)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		if (BeginWrite(false, false, true, null, PrintTicketLevel.None))
++			SaveAsXaml(fixedPage, true);
+ 	}
+ 
+-	public override void Write(Visual visual, PrintTicket printTicket)
++	public override void Write(FixedPage fixedPage, PrintTicket printTicket)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		if (BeginWrite(false, false, printTicket != null, printTicket, PrintTicketLevel.FixedPagePrintTicket))
++			SaveAsXaml(fixedPage, true);
+ 	}
+ 
++	/* ---- asynchronous writes: the manager works through the dispatcher
++	   and raises WritingCompleted ---- */
++
+ 	public void WriteAsync(string documentPath)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		WriteAsync(documentPath, XpsDocumentNotificationLevel.ReceiveNotificationEnabled);
+ 	}
+ 
+ 	public void WriteAsync(string documentPath, XpsDocumentNotificationLevel notificationLevel)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		if (notificationLevel == XpsDocumentNotificationLevel.ReceiveNotificationEnabled)
++		{
++			_isDocumentCloned = true;
++			_sourceXpsDocument = new XpsDocument(documentPath, FileAccess.Read);
++			FixedDocumentSequence sequence = _sourceXpsDocument.GetFixedDocumentSequence();
++			_sourceXpsFixedDocumentSequenceReader = _sourceXpsDocument.FixedDocumentSequenceReader;
++			if (_sourceXpsFixedDocumentSequenceReader == null) XpsWriterException.ThrowException("XpsWriter.InvalidXps");
++			WriteAsync(sequence);
++		}
++		else
++		{
++			Write(documentPath, notificationLevel);
++		}
++	}
++
++	void WriteAsyncObject(object o, PrintTicket printTicket, PrintTicketLevel level, bool explicitTicket)
++	{
++		if (BeginWrite(false, true, explicitTicket ? printTicket != null : true, printTicket, level))
++		{
++			_manager.SaveAsXaml(o);
++			EndWrite(false);
++		}
+ 	}
+ 
+ 	public override void WriteAsync(DocumentPaginator documentPaginator)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		WriteAsyncObject(documentPaginator, null, PrintTicketLevel.None, false);
+ 	}
+ 
+ 	public override void WriteAsync(DocumentPaginator documentPaginator, object userSuppliedState)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		_currentUserState = userSuppliedState;
++		WriteAsync(documentPaginator);
+ 	}
+ 
+ 	public override void WriteAsync(DocumentPaginator documentPaginator, PrintTicket printTicket)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		WriteAsyncObject(documentPaginator, printTicket, PrintTicketLevel.FixedDocumentPrintTicket, true);
+ 	}
+ 
+ 	public override void WriteAsync(DocumentPaginator documentPaginator, PrintTicket printTicket, object userSuppliedState)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		_currentUserState = userSuppliedState;
++		WriteAsync(documentPaginator, printTicket);
+ 	}
+ 
+ 	public override void WriteAsync(FixedDocument fixedDocument)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		WriteAsyncObject(fixedDocument, null, PrintTicketLevel.None, false);
+ 	}
+ 
+ 	public override void WriteAsync(FixedDocument fixedDocument, object userSuppliedState)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		_currentUserState = userSuppliedState;
++		WriteAsync(fixedDocument);
+ 	}
+ 
+ 	public override void WriteAsync(FixedDocument fixedDocument, PrintTicket printTicket)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		WriteAsyncObject(fixedDocument, printTicket, PrintTicketLevel.FixedDocumentPrintTicket, true);
+ 	}
+ 
+ 	public override void WriteAsync(FixedDocument fixedDocument, PrintTicket printTicket, object userSuppliedState)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		_currentUserState = userSuppliedState;
++		WriteAsync(fixedDocument, printTicket);
+ 	}
+ 
+ 	public override void WriteAsync(FixedDocumentSequence fixedDocumentSequence)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		WriteAsyncObject(fixedDocumentSequence, null, PrintTicketLevel.None, false);
+ 	}
+ 
+ 	public override void WriteAsync(FixedDocumentSequence fixedDocumentSequence, object userSuppliedState)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		_currentUserState = userSuppliedState;
++		WriteAsync(fixedDocumentSequence);
+ 	}
+ 
+ 	public override void WriteAsync(FixedDocumentSequence fixedDocumentSequence, PrintTicket printTicket)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		WriteAsyncObject(fixedDocumentSequence, printTicket, PrintTicketLevel.FixedDocumentSequencePrintTicket, true);
+ 	}
+ 
+ 	public override void WriteAsync(FixedDocumentSequence fixedDocumentSequence, PrintTicket printTicket, object userSuppliedState)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		_currentUserState = userSuppliedState;
++		WriteAsync(fixedDocumentSequence, printTicket);
+ 	}
+ 
+ 	public override void WriteAsync(FixedPage fixedPage)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		WriteAsyncObject(fixedPage, null, PrintTicketLevel.None, false);
+ 	}
+ 
+ 	public override void WriteAsync(FixedPage fixedPage, object userSuppliedState)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		_currentUserState = userSuppliedState;
++		WriteAsync(fixedPage);
+ 	}
+ 
+ 	public override void WriteAsync(FixedPage fixedPage, PrintTicket printTicket)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		WriteAsyncObject(fixedPage, printTicket, PrintTicketLevel.FixedPagePrintTicket, true);
+ 	}
+ 
+ 	public override void WriteAsync(FixedPage fixedPage, PrintTicket printTicket, object userSuppliedState)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		_currentUserState = userSuppliedState;
++		WriteAsync(fixedPage, printTicket);
+ 	}
+ 
+ 	public override void WriteAsync(Visual visual)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		WriteAsyncObject(visual, null, PrintTicketLevel.None, false);
+ 	}
+ 
+ 	public override void WriteAsync(Visual visual, object userSuppliedState)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		_currentUserState = userSuppliedState;
++		WriteAsync(visual);
+ 	}
+ 
+ 	public override void WriteAsync(Visual visual, PrintTicket printTicket)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		WriteAsyncObject(visual, printTicket, PrintTicketLevel.FixedPagePrintTicket, true);
+ 	}
+ 
+ 	public override void WriteAsync(Visual visual, PrintTicket printTicket, object userSuppliedState)
+ 	{
+-		throw new NotImplementedException();
++		VerifyAccess();
++		_currentUserState = userSuppliedState;
++		WriteAsync(visual, printTicket);
++	}
++
++	public override void CancelAsync()
++	{
++		VerifyAccess();
++		switch (currentState)
++		{
++		case DocumentWriterState.kBatchMode:
++			XpsWriterException.ThrowException("XPSWriter.BatchMode");
++			break;
++		case DocumentWriterState.kRegularMode:
++			XpsWriterException.ThrowException("XPSWriter.WriteNotCalled");
++			break;
++		case DocumentWriterState.kDone:
++			CancelManagerAsync(_manager);
++			currentState = DocumentWriterState.kCancelled;
++			break;
++		case DocumentWriterState.kCancelled:
++			XpsWriterException.ThrowException("XPSWriter.Cancelled");
++			break;
++		}
++	}
++
++	internal static void CancelManagerAsync(PackageSerializationManager manager)
++	{
++		var xps = manager as XpsSerializationManagerAsync;
++		if (xps != null) { xps.CancelAsync(); return; }
++		var ngc = manager as NgcSerializationManagerAsync;
++		if (ngc != null) ngc.CancelAsync();
++	}
++
++	public override SerializerWriterCollator CreateVisualsCollator()
++	{
++		VerifyAccess();
++		VisualsToXpsDocument collator = null;
++		switch (currentState)
++		{
++		case DocumentWriterState.kBatchMode:
++			XpsWriterException.ThrowException("XPSWriter.BatchMode");
++			break;
++		case DocumentWriterState.kDone:
++			XpsWriterException.ThrowException("XPSWriter.DoneWriting");
++			break;
++		case DocumentWriterState.kRegularMode:
++			currentState = DocumentWriterState.kBatchMode;
++			collator = destinationPrintQueue != null ? new VisualsToXpsDocument(this, destinationPrintQueue)
++			                                         : new VisualsToXpsDocument(this, destinationDocument);
++			break;
++		}
++		return collator;
++	}
++
++	public override SerializerWriterCollator CreateVisualsCollator(PrintTicket documentSequencePrintTicket, PrintTicket documentPrintTicket)
++	{
++		VerifyAccess();
++		VisualsToXpsDocument collator = null;
++		switch (currentState)
++		{
++		case DocumentWriterState.kBatchMode:
++			XpsWriterException.ThrowException("XPSWriter.BatchMode");
++			break;
++		case DocumentWriterState.kDone:
++			XpsWriterException.ThrowException("XPSWriter.DoneWriting");
++			break;
++		case DocumentWriterState.kRegularMode:
++			currentState = DocumentWriterState.kBatchMode;
++			collator = destinationPrintQueue != null
++				? new VisualsToXpsDocument(this, destinationPrintQueue, documentSequencePrintTicket, documentPrintTicket)
++				: new VisualsToXpsDocument(this, destinationDocument, documentSequencePrintTicket, documentPrintTicket);
++			break;
++		}
++		return collator;
++	}
++
++	/* ---- the event plumbing ---- */
++
++	void ForwardUserPrintTicket(object sender, XpsSerializationPrintTicketRequiredEventArgs args)
++	{
++		if (currentWriteLevel == args.PrintTicketLevel)
++		{
++			args.PrintTicket = currentUserPrintTicket;
++			return;
++		}
++		int level = (int)args.PrintTicketLevel;
++		var forwardArgs = new WritingPrintTicketRequiredEventArgs(args.PrintTicketLevel, (int)_printTicketSequences[level]);
++		switch (args.PrintTicketLevel)
++		{
++		case PrintTicketLevel.FixedDocumentSequencePrintTicket:
++			_printTicketSequences[(int)PrintTicketLevel.FixedDocumentPrintTicket] = 1;
++			_printTicketSequences[(int)PrintTicketLevel.FixedPagePrintTicket] = 1;
++			break;
++		case PrintTicketLevel.FixedDocumentPrintTicket:
++			_printTicketSequences[(int)PrintTicketLevel.FixedPagePrintTicket] = 1;
++			break;
++		}
++		_printTicketSequences[level] = (int)_printTicketSequences[level] + 1;
++		raise_WritingPrintTicketRequired(this, forwardArgs);
++		args.PrintTicket = forwardArgs.CurrentPrintTicket;
++	}
++
++	/* writing an XPS file: each level's ticket is the one the file has */
++	void CloneSourcePrintTicket(object sender, XpsSerializationPrintTicketRequiredEventArgs args)
++	{
++		PrintTicket cloned = null;
++		int level = (int)args.PrintTicketLevel;
++		switch (args.PrintTicketLevel)
++		{
++		case PrintTicketLevel.FixedDocumentSequencePrintTicket:
++			_printTicketSequences[(int)PrintTicketLevel.FixedDocumentPrintTicket] = 1;
++			_printTicketSequences[(int)PrintTicketLevel.FixedPagePrintTicket] = 1;
++			cloned = _sourceXpsFixedDocumentSequenceReader.PrintTicket;
++			break;
++		case PrintTicketLevel.FixedDocumentPrintTicket:
++			_printTicketSequences[(int)PrintTicketLevel.FixedPagePrintTicket] = 1;
++			cloned = _sourceXpsFixedDocumentSequenceReader.FixedDocuments[(int)_printTicketSequences[level] - 1].PrintTicket;
++			break;
++		case PrintTicketLevel.FixedPagePrintTicket:
++			cloned = _sourceXpsFixedDocumentSequenceReader
++				.FixedDocuments[(int)_printTicketSequences[(int)PrintTicketLevel.FixedDocumentPrintTicket] - 2]
++				.FixedPages[(int)_printTicketSequences[level] - 1].PrintTicket;
++			break;
++		}
++		_printTicketSequences[level] = (int)_printTicketSequences[level] + 1;
++		args.PrintTicket = cloned;
++	}
++
++	void ForwardWriteCompletedEvent(object sender, XpsSerializationCompletedEventArgs args)
++	{
++		bool cancelled = args.Cancelled;
++		if (!cancelled && args.Error != null && args.Error is PrintingCanceledException)
++			cancelled = true;
++		Exception exception = args.Error;
++		if (destinationPrintQueue != null)
++		{
++			try
++			{
++				destinationPrintQueue.DisposeSerializationManager(cancelled || args.Error != null);
++			}
++			catch (PrintingCanceledException e)
++			{
++				cancelled = true;
++				exception = e;
++			}
++			catch (PrintJobException e)
++			{
++				cancelled = false;
++				exception = e;
++			}
++		}
++		else
++		{
++			destinationDocument.DisposeSerializationManager();
++		}
++		if (_isDocumentCloned && _sourceXpsDocument != null)
++			_sourceXpsDocument.Close();
++		raise_WritingCompleted(this, new WritingCompletedEventArgs(cancelled, _currentUserState, exception));
++	}
++
++	void ForwardProgressChangedEvent(object sender, XpsSerializationProgressChangedEventArgs args)
++	{
++		int level = (int)args.WritingLevel;
++		var forwardArgs = new WritingProgressChangedEventArgs((WritingProgressChangeLevel)args.WritingLevel,
++			(int)_writingProgressSequences[level], args.ProgressPercentage, _currentUserState);
++		switch (args.WritingLevel)
++		{
++		case XpsWritingProgressChangeLevel.FixedDocumentSequenceWritingProgress:
++			_writingProgressSequences[(int)XpsWritingProgressChangeLevel.FixedDocumentWritingProgress] = 1;
++			_writingProgressSequences[(int)XpsWritingProgressChangeLevel.FixedPageWritingProgress] = 1;
++			break;
++		case XpsWritingProgressChangeLevel.FixedDocumentWritingProgress:
++			_writingProgressSequences[(int)XpsWritingProgressChangeLevel.FixedPageWritingProgress] = 1;
++			break;
++		}
++		_writingProgressSequences[level] = (int)_writingProgressSequences[level] + 1;
++		raise_WritingProgressChanged(this, forwardArgs);
++	}
++
++	internal static void AddPrintTicketHandler(PackageSerializationManager manager, XpsSerializationPrintTicketRequiredEventHandler handler)
++	{
++		if (manager is XpsSerializationManagerAsync) ((XpsSerializationManagerAsync)manager).XpsSerializationPrintTicketRequired += handler;
++		else if (manager is XpsSerializationManager) ((XpsSerializationManager)manager).XpsSerializationPrintTicketRequired += handler;
++		else if (manager is NgcSerializationManager) ((NgcSerializationManager)manager).XpsSerializationPrintTicketRequired += handler;
++		else if (manager is NgcSerializationManagerAsync) ((NgcSerializationManagerAsync)manager).XpsSerializationPrintTicketRequired += handler;
++	}
++
++	internal void SetCompletionEventHandler(PackageSerializationManager manager, object userState)
++	{
++		if (userState != null) _currentUserState = userState;
++		var handler = new XpsSerializationCompletedEventHandler(ForwardWriteCompletedEvent);
++		if (manager is XpsSerializationManagerAsync) ((XpsSerializationManagerAsync)manager).XpsSerializationCompleted += handler;
++		else if (manager is NgcSerializationManagerAsync) ((NgcSerializationManagerAsync)manager).XpsSerializationCompleted += handler;
++	}
++
++	internal void SetProgressChangedEventHandler(PackageSerializationManager manager, object userState)
++	{
++		if (userState != null) _currentUserState = userState;
++		var handler = new XpsSerializationProgressChangedEventHandler(ForwardProgressChangedEvent);
++		if (manager is XpsSerializationManagerAsync) ((XpsSerializationManagerAsync)manager).XpsSerializationProgressChanged += handler;
++		else if (manager is XpsSerializationManager) ((XpsSerializationManager)manager).XpsSerializationProgressChanged += handler;
++		else if (manager is NgcSerializationManager) ((NgcSerializationManager)manager).XpsSerializationProgressChanged += handler;
++		else if (manager is NgcSerializationManagerAsync) ((NgcSerializationManagerAsync)manager).XpsSerializationProgressChanged += handler;
++	}
++
++	void InitializeSequences()
++	{
++		_printTicketSequences = new ArrayList();
++		for (int i = 0; i <= (int)PrintTicketLevel.FixedPagePrintTicket; i++) _printTicketSequences.Add(1);
++		_writingProgressSequences = new ArrayList();
++		for (int i = 0; i <= (int)XpsWritingProgressChangeLevel.FixedPageWritingProgress; i++) _writingProgressSequences.Add(1);
++	}
++
++	bool BeginWrite(bool batchMode, bool asyncMode, bool setPrintTicketHandler, PrintTicket printTicket, PrintTicketLevel printTicketLevel)
++	{
++		switch (currentState)
++		{
++		case DocumentWriterState.kBatchMode:
++			XpsWriterException.ThrowException("XPSWriter.BatchMode");
++			return false;
++		case DocumentWriterState.kCancelled:
++		case DocumentWriterState.kDone:
++			XpsWriterException.ThrowException("XPSWriter.DoneWriting");
++			return false;
++		}
++		try
++		{
++			if (!asyncMode)
++			{
++				_manager = destinationPrintQueue != null
++					? destinationPrintQueue.CreateSerializationManager(batchMode, false, printTicket)
++					: destinationDocument.CreateSerializationManager(batchMode);
++			}
++			else
++			{
++				_manager = destinationPrintQueue != null
++					? destinationPrintQueue.CreateAsyncSerializationManager(batchMode, false, printTicket)
++					: destinationDocument.CreateAsyncSerializationManager(batchMode);
++				SetCompletionEventHandler(_manager, null);
++			}
++		}
++		catch (PrintingCanceledException exception)
++		{
++			OnWritingCanceled(this, exception);
++			return false;
++		}
++		currentWriteLevel = printTicketLevel;
++		currentUserPrintTicket = printTicket;
++		if (setPrintTicketHandler)
++		{
++			AddPrintTicketHandler(_manager, _isDocumentCloned
++				? new XpsSerializationPrintTicketRequiredEventHandler(CloneSourcePrintTicket)
++				: new XpsSerializationPrintTicketRequiredEventHandler(ForwardUserPrintTicket));
++		}
++		SetProgressChangedEventHandler(_manager, null);
++		return true;
++	}
++
++	void EndWrite(bool disposeManager)
++	{
++		EndWrite(disposeManager, false);
++	}
++
++	void EndWrite(bool disposeManager, bool abort)
++	{
++		try
++		{
++			if (disposeManager)
++			{
++				if (destinationPrintQueue != null) destinationPrintQueue.DisposeSerializationManager(abort);
++				else destinationDocument.DisposeSerializationManager();
++			}
++			currentState = DocumentWriterState.kDone;
++		}
++		catch (PrintingCanceledException exception)
++		{
++			OnWritingCanceled(this, exception);
++		}
++	}
++
++	internal void OnWritingPrintTicketRequired(object sender, WritingPrintTicketRequiredEventArgs args)
++	{
++		raise_WritingPrintTicketRequired(sender, args);
++	}
++
++	void SaveAsXaml(object serializedObject, bool isSync)
++	{
++		bool abort = false;
++		try
++		{
++			_manager.SaveAsXaml(serializedObject);
++		}
++		catch (PrintingCanceledException exception)
++		{
++			abort = true;
++			OnWritingCanceled(this, exception);
++		}
++		finally
++		{
++			EndWrite(isSync, abort);
++		}
++	}
++
++	internal bool OnWritingCanceled(object sender, Exception exception)
++	{
++		if (_writingCancelledEventHandlersCount > 0)
++			raise_WritingCancelled(sender, new WritingCancelledEventArgs(exception));
++		return _writingCancelledEventHandlersCount > 0;
++	}
++
++	void VerifyAccess()
++	{
++		if (accessVerifier == null) accessVerifier = new PrintSystemDispatcherObject();
++		accessVerifier.VerifyThreadLocality();
+ 	}
+ }
+ }
+--- a/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Windows.Xps/XpsWriterException.cs
++++ b/src/Microsoft.DotNet.Wpf/src/System.Printing/System.Windows.Xps/XpsWriterException.cs
+@@ -1,5 +1,8 @@
+ using System;
++using System.Globalization;
++using System.Resources;
+ using System.Runtime.Serialization;
++using System.Threading;
+ 
+ namespace System.Windows.Xps {
+ 
+@@ -8,22 +11,36 @@
+ {
+ 	public XpsWriterException()
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+-	protected XpsWriterException(SerializationInfo info, StreamingContext context)
++	protected XpsWriterException(SerializationInfo info, StreamingContext context) : base(info, context)
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+-	public XpsWriterException(string message)
++	public XpsWriterException(string message) : base(message)
+ 	{
+-		throw new NotImplementedException();
+ 	}
+ 
+-	public XpsWriterException(string message, Exception innerException)
++	public XpsWriterException(string message, Exception innerException) : base(message, innerException)
+ 	{
+-		throw new NotImplementedException();
++	}
++
++	static ResourceManager sg_resources;
++
++	/* the message System.Printing's resources give the id (sg40) */
++	internal static void ThrowException(string id)
++	{
++		string message = null;
++		try
++		{
++			if (sg_resources == null)
++				sg_resources = new ResourceManager("System.Printing", typeof(XpsWriterException).Assembly);
++			message = sg_resources.GetString(id, Thread.CurrentThread.CurrentUICulture);
++		}
++		catch (MissingManifestResourceException)
++		{
++		}
++		throw new XpsWriterException(message ?? id);
+ 	}
+ }
+ }
+--- a/src/Microsoft.DotNet.Wpf/src/PresentationCore/MS/internal/FontFace/FontDriver.cs
++++ b/src/Microsoft.DotNet.Wpf/src/PresentationCore/MS/internal/FontFace/FontDriver.cs
+@@ -279,11 +279,66 @@
+                     glyphs.CopyTo(glyphArray, 0);
+                 }
+ 
+-				throw new NotImplementedException();
+-                //return TrueTypeSubsetter.ComputeSubset(fontData, fileSize, SourceUri, _directoryOffset, glyphArray);
++                // Stained Glass OS (sg40): no native TrueType subsetter here, so the
++                // whole face is embedded, as for CFF fonts above -- an XPS
++                // document (XpsDocumentWriter to a file) carries the font it was
++                // written with; a face of a collection (TTC) becomes a font file
++                // of its own, as the subsetter's output is.
++#if SG_MUTANT_NO_WHOLE_FACE
++                throw new NotImplementedException();
++#else
++                return WholeFace((byte*)fontData, fileSize, _directoryOffset);
++#endif
+             }
+         }
+ 
++        private static unsafe byte[] WholeFace(byte* data, int fileSize, int directoryOffset)
++        {
++            if (directoryOffset == 0)
++            {
++                byte[] fontCopy = new byte[fileSize];
++                Marshal.Copy((IntPtr)data, fontCopy, 0, fileSize);
++                return fontCopy;
++            }
++            int numTables = U16(data, directoryOffset + 4);
++            int headerSize = 12 + 16 * numTables;
++            int total = headerSize;
++            for (int i = 0; i < numTables; i++)
++            {
++                int length = U32(data, directoryOffset + 12 + 16 * i + 12);
++                if (length < 0 || length > fileSize) throw new FileFormatException();
++                total += (length + 3) & ~3;
++            }
++            byte[] face = new byte[total];
++            Marshal.Copy((IntPtr)(data + directoryOffset), face, 0, 12);
++            int at = headerSize;
++            for (int i = 0; i < numTables; i++)
++            {
++                int entry = directoryOffset + 12 + 16 * i;
++                int offset = U32(data, entry + 8), length = U32(data, entry + 12);
++                if (offset < 0 || offset > fileSize - length) throw new FileFormatException();
++                Marshal.Copy((IntPtr)(data + entry), face, 12 + 16 * i, 8);
++                face[12 + 16 * i + 8] = (byte)(at >> 24);
++                face[12 + 16 * i + 9] = (byte)(at >> 16);
++                face[12 + 16 * i + 10] = (byte)(at >> 8);
++                face[12 + 16 * i + 11] = (byte)at;
++                Marshal.Copy((IntPtr)(data + entry + 12), face, 12 + 16 * i + 12, 4);
++                Marshal.Copy((IntPtr)(data + offset), face, at, length);
++                at += (length + 3) & ~3;
++            }
++            return face;
++        }
++
++        private static unsafe int U16(byte* data, int o)
++        {
++            return (data[o] << 8) | data[o + 1];
++        }
++
++        private static unsafe int U32(byte* data, int o)
++        {
++            return (data[o] << 24) | (data[o + 1] << 16) | (data[o + 2] << 8) | data[o + 3];
++        }
++
+             
+         #endregion Public methods and properties   
+         
+--- a/src/Microsoft.DotNet.Wpf/src/PresentationCore/MS/internal/FontCache/FontSource.cs
++++ b/src/Microsoft.DotNet.Wpf/src/PresentationCore/MS/internal/FontCache/FontSource.cs
+@@ -407,8 +407,14 @@
+             {
+                 base.Dispose(disposing);
+ 
+-                Debug.Assert(_memoryHandle.IsAllocated);
+-                _memoryHandle.Free();
++                // Stained Glass OS (sg40): freed once -- a stream disposed and
++                // then finalized freed the handle twice, and the finalizer's
++                // InvalidOperationException ended the program (an XPS file's
++                // embedded font, read back)
++#if !SG_MUTANT_PINNED_FREE_TWICE
++                if (_memoryHandle.IsAllocated)
++#endif
++                    _memoryHandle.Free();
+             }
+ 
+             private GCHandle    _memoryHandle;
