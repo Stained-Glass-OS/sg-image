@@ -559,8 +559,11 @@ intl='HKCU\Control Panel\International'
 r="$(q "$intl" LocaleName) $(q "$intl" sShortDate) $(q "$intl\Geo" Nation)"
 [ "$r" = "en-GB dd/MM/yyyy 242" ] && echo "PASS  the owner's region from the first-run setup: en-GB formats (dd/MM/yyyy), country 242" || { echo "FAIL  the owner's region: '$r'"; exit 1; }
 cs='HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore'
-r="$(q 'HKCU\Keyboard Layout\Preload' 1) $(q 'HKCU\Keyboard Layout\Preload' 2) $(q "$cs\location" Value) $(q "$cs\microphone" Value)"
-[ "$r" = "00000409 00000407 Allow Allow" ] && echo "PASS  the owner's keyboard layouts (US, German) and privacy switches (location, microphone) from the first-run setup" || { echo "FAIL  the owner's layouts/privacy: '$r'"; exit 1; }
+# As Windows writes them: the en-GB language's input methods, the US keyboard
+# substituted for its plain id and the German one for d0010809 (sg-session 300)
+kl='HKCU\Keyboard Layout'
+r="$(q "$kl\Preload" 1) $(q "$kl\Preload" 2) $(q "$kl\Substitutes" 00000809) $(q "$kl\Substitutes" d0010809) $(q "$cs\location" Value) $(q "$cs\microphone" Value)"
+[ "$r" = "00000809 d0010809 00000409 00000407 Allow Allow" ] && echo "PASS  the owner's keyboard layouts (US, German, as the en-GB language's input methods) and privacy switches (location, microphone) from the first-run setup" || { echo "FAIL  the owner's layouts/privacy: '$r'"; exit 1; }
 ok=0; for p in $(pgrep -u "$O" -x sg-compositor); do tr '\0' '\n' < /proc/$p/environ | grep -qx 'XKB_DEFAULT_LAYOUT=us,de' && ok=1; done
 [ "$ok" = 1 ] && echo "PASS  the owner's session runs with both keyboard layouts" || { echo "FAIL  the session's compositor has no XKB_DEFAULT_LAYOUT=us,de"; exit 1; }
 EOS
