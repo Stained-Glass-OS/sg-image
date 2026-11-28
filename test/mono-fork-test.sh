@@ -85,6 +85,9 @@
 #     through its IDispatch (methods, properties, named arguments, [DISPID=n],
 #     the object's own errors), and C# "dynamic" on COM objects (Mesen's
 #     WScript.Shell CreateShortcut; mono-0031, corefx-0004);
+#   - (sg39) a class whose fields or virtual method signatures name the types
+#     of an assembly that is not there loads, as on the CLR (Playnite 10's
+#     PowerShellRuntime without System.Management.Automation; mono-0036);
 #   - (sg38) our managed TextFormatter draws a line holding an embedded
 #     object with no ink and answers GetDistanceFromCharacterHit (ILSpy 5's
 #     AvalonEdit text view crashed; wpf-0008);
@@ -2576,5 +2579,88 @@ else
     [ "$(v distance)" = ok ] \
         && pass "TextLine.GetDistanceFromCharacterHit: leading/trailing edges, embedded object, line end, round trip" \
         || fail "GetDistanceFromCharacterHit: '$(v distance)' (sg37: NotImplementedException)"
+fi
+# (sg39) a type naming another assembly's types that is not there loads as on the .NET Framework
+# (mono-0036): an instance field of a reference type (class, array, generic class instance) from
+# it is a reference whatever the type -- Mono failed the whole class ("Could not load type of
+# field") --, and an interface implementation or override whose signature names such a type is
+# matched by its metadata ("Could not resolve the signature of a virtual method"); interface calls
+# on such a class work. A missing value type still fails its class (its size is needed), as on
+# the CLR. Playnite 10 died at start on its PowerShellRuntime (System.Management.Automation types).
+# sg38: TypeLoadException for all of them. Mutants: -d:SG_MUTANT_FIELD_TYPE_EAGER (class.c),
+# -d:SG_MUTANT_VTABLE_SIG_EAGER (class-setup-vtable.c, object.c).
+mkdir -p "$C/sg39"
+cat > "$C/sg39/Missing.cs" <<'CS'
+namespace Missing { public class Thing { public int X; } public struct Val { public int Y; } }
+CS
+cat > "$C/sg39/lazyfield.cs" <<'CS'
+// A class with an instance field whose type lives in an assembly that is not there: its static
+// members work on the .NET Framework (a reference field needs no layout of its type; the CLR
+// loads the type only when code using the field is compiled). Playnite 10 died at start:
+// Mono refused PowerShellRuntime (field of System.Management.Automation's type) at IsInstalled.
+using System;
+public class Holder {
+  Missing.Thing thing;                       // reference type from the missing assembly
+  public static int Count = 42;
+  public static string Hello() { return "hi"; }
+  public static bool Installed { get { return false; } }
+  public Holder() { }
+  public object Get() { return thing; }
+}
+// interface implementation and an override whose signatures name the missing assembly's types
+// (Playnite's PowerShellRuntime : IPowerShellRuntime with CommandInfo GetFunction(string))
+public interface IRuntime { Missing.Thing GetThing(string name); object Execute(string script); void Take(Missing.Thing[] t, System.Collections.Generic.List<Missing.Thing> l); }
+public class Runtime : IRuntime {
+  public static bool IsInstalled { get { return false; } }
+  public Missing.Thing GetThing(string name) { return null; }
+  public object Execute(string script) { return "ran " + script; }
+  public void Take(Missing.Thing[] t, System.Collections.Generic.List<Missing.Thing> l) { }
+}
+public class BaseR { public virtual object Make(Missing.Thing t) { return "base"; } public virtual string Name() { return "base"; } }
+public class DerivedR : BaseR { public override object Make(Missing.Thing t) { return "derived"; } public override string Name() { return "derived"; } }
+public class ValHolder {
+  Missing.Val v;                             // value type from the missing assembly: no layout
+  public static int Count = 7;
+  public int Get() { return v.Y; }
+}
+class P {
+  static void StaticUse() { Console.WriteLine("static=" + Holder.Hello() + Holder.Count + Holder.Installed); }
+  static void CtorUse() { var h = new Holder(); Console.WriteLine("ctor=" + (h != null ? "ok" : "null")); }
+  static void IfaceUse() { IRuntime r = new Runtime(); Console.WriteLine("iface=" + Runtime.IsInstalled + "," + r.Execute("x")); }
+  static void OverrideUse() { BaseR b = new DerivedR(); Console.WriteLine("override=" + b.Name()); }
+  static void ValUse() { Console.WriteLine("valuetype=" + ValHolder.Count); }
+  static void Main() {
+    try { StaticUse(); }
+    catch (Exception e) { Console.WriteLine("static=" + e.GetType().Name + ":" + e.Message); }
+    try { CtorUse(); }
+    catch (Exception e) { Console.WriteLine("ctor=" + e.GetType().Name); }
+    try { IfaceUse(); }
+    catch (Exception e) { Console.WriteLine("iface=" + e.GetType().Name); }
+    try { OverrideUse(); }
+    catch (Exception e) { Console.WriteLine("override=" + e.GetType().Name); }
+    try { ValUse(); }
+    catch (Exception e) { Console.WriteLine("valuetype=" + e.GetType().Name); }
+    try { UseField(); }
+    catch (Exception e) { Console.WriteLine("field=" + e.GetType().Name); }
+  }
+  static void UseField() { var h = new Holder(); Console.WriteLine("field=" + (h.Get() == null ? "null" : "x")); }
+}
+CS
+(cd "$C/sg39" && timeout 300 "$WINE" "$mcs" -t:library -out:Missing.dll Missing.cs >"$T/mcs39a.out" 2>&1 &&
+    timeout 300 "$WINE" "$mcs" -r:Missing.dll -out:lazyfield.exe lazyfield.cs >"$T/mcs39.out" 2>&1)
+if [ ! -f "$C/sg39/lazyfield.exe" ]; then
+    fail "the sg39 probe did not compile: $(cat "$T/mcs39a.out" "$T/mcs39.out")"
+else
+    rm -f "$C/sg39/Missing.dll"
+    out=$(cd "$C/sg39" && timeout -s KILL 120 "$WINE" lazyfield.exe 2>&1 | tr -d '\r')
+    [ "$(v static)" = hi42False ] && [ "$(v ctor)" = ok ] && [ "$(v field)" = null ] \
+        && pass "a class with a field of a missing assembly's reference type loads (statics, new, the field reads null)" \
+        || fail "missing-assembly field: static '$(v static)' ctor '$(v ctor)' field '$(v field)' (sg38: TypeLoadException)"
+    [ "$(v iface)" = "False,ran x" ] && [ "$(v override)" = derived ] \
+        && pass "interface implementations and overrides naming a missing assembly's types are matched (Playnite)" \
+        || fail "missing-assembly signatures: iface '$(v iface)' override '$(v override)' (sg38: TypeLoadException)"
+    [ "$(v valuetype)" = TypeLoadException ] \
+        && pass "a field of a missing value type still fails its class, as on the CLR" \
+        || fail "missing value type field: '$(v valuetype)'"
 fi
 exit $RC

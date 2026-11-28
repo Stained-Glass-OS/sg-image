@@ -727,3 +727,22 @@ wpf-0008-text-lines-with-empty-embedded-objects-and-distance-from-character-hit.
       a tab, then placing its caret; with sg38 it decompiles and browses.
     Gate: test/mono-fork-test.sh (sg38 section, headless into a DrawingGroup); sg37 fails both
       checks. Mutants SG_MUTANT_TF_EMPTY_EMBEDDED_OFFSET, SG_MUTANT_TF_NO_DISTANCE_FROM_HIT.
+
+mono-0036-types-of-an-assembly-that-is-not-there-load-as-on-the-clr.patch (sg39)
+    mono/metadata class.c, class-setup-vtable.c, object.c: a class naming the types of an
+      assembly that is not there loads as on the .NET Framework, where the CLR loads such a type
+      only when code using it is compiled. An instance or static field of a reference type
+      (class, array, generic class instance) whose type cannot be loaded is typed System.Object
+      instead of failing the class ("Could not load type of field"); a missing value type still
+      fails it (its size is needed, as on the CLR). An interface implementation or override whose
+      signature names such a type is matched by comparing the two metadata signatures (element
+      types; classes by namespace, name and enclosing class) instead of failing the class ("Could
+      not resolve the signature of a virtual method"), and such an interface method's IMT slot is
+      hashed by its class and name. Code that names the missing type still fails when compiled.
+    Why: Playnite 10.65 (WPF, .NET Framework 4.6.2) died right after "Application started": its
+      PowerShellRuntime holds System.Management.Automation types (Windows PowerShell 5.1's, not in
+      Wine Mono; wine.inf registers PowerShell\3 as Windows 10 has it) and Mono refused the class
+      at a static property and at the call to RunAppScript. With sg39 its library window opens.
+    Gate: test/mono-fork-test.sh (sg39 section: a probe compiled against an assembly then
+      deleted); sg38 fails the field and signature checks. Mutants SG_MUTANT_FIELD_TYPE_EAGER
+      (class.c), SG_MUTANT_VTABLE_SIG_EAGER (class-setup-vtable.c, object.c).

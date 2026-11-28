@@ -1,0 +1,374 @@
+diff --git a/mono/metadata/class.c b/mono/metadata/class.c
+--- a/mono/metadata/class.c
++++ b/mono/metadata/class.c
+@@ -6449,7 +6449,34 @@
+ 		/* FIELD signature == 0x06 */
+ 		g_assert (*sig == 0x06);
+ 
++		const char *ftype_sig = sig + 1;
+ 		ftype = mono_metadata_parse_type_checked (image, container, cols [MONO_FIELD_FLAGS], FALSE, sig + 1, &sig, error);
++#ifndef SG_MUTANT_FIELD_TYPE_EAGER
++		/*
++		 * Stained Glass OS: a field of a reference type (a class, an array, an instance of a
++		 * generic class) whose type cannot be loaded -- its assembly is not there -- does not
++		 * fail its class, as on the .NET Framework: a reference is a pointer whatever its type,
++		 * and the CLR loads the type only when code using the field is compiled. The field is
++		 * typed System.Object; code naming the missing type still fails when it is compiled.
++		 * Mono refused the whole class: Playnite died at start touching a static property of
++		 * a class holding a System.Management.Automation field. A value type's size is needed
++		 * for the layout, so a missing value type still fails the class, as on the CLR.
++		 */
++		if (!ftype) {
++			const char *p = ftype_sig;
++			while (*p == MONO_TYPE_CMOD_REQD || *p == MONO_TYPE_CMOD_OPT) {
++				p++;
++				mono_metadata_decode_value (p, &p);
++			}
++			if (*p == MONO_TYPE_CLASS || *p == MONO_TYPE_SZARRAY || *p == MONO_TYPE_ARRAY ||
++			    (*p == MONO_TYPE_GENERICINST && p [1] == MONO_TYPE_CLASS)) {
++				mono_error_cleanup (error);
++				error_init (error);
++				ftype = mono_metadata_type_dup (image, m_class_get_byval_arg (mono_defaults.object_class));
++				ftype->attrs = cols [MONO_FIELD_FLAGS];
++			}
++		}
++#endif
+ 		if (!ftype) {
+ 			char *full_name = mono_type_get_full_name (klass);
+ 			mono_class_set_type_load_failure (klass, "Could not load type of field '%s:%s' (%d) due to: %s", full_name, field->name, field_idx, mono_error_get_message (error));
+diff --git a/mono/metadata/class-setup-vtable.c b/mono/metadata/class-setup-vtable.c
+--- a/mono/metadata/class-setup-vtable.c
++++ b/mono/metadata/class-setup-vtable.c
+@@ -446,10 +446,212 @@
+ 	return disabled == 1;
+ }
+ 
++
++/*
++ * Stained Glass OS: whether two virtual methods have the same signature when one of them names
++ * a type that cannot be loaded (its assembly is not there). The CLR matches overrides and
++ * interface implementations by their metadata signatures and loads the types only when code
++ * using them is compiled; Mono needed every type and failed the whole class ("Could not resolve
++ * the signature of a virtual method"): Playnite died at start, its PowerShellRuntime naming
++ * System.Management.Automation's types. Here the two signatures are compared as metadata: the
++ * same element types, classes by namespace, name and enclosing class.
++ */
++static char *
++sg_typedeforref_name (MonoImage *image, guint32 coded)
++{
++	guint32 rid = coded >> 2, cols [MONO_TYPEREF_SIZE];
++	switch (coded & 3) {
++	case 0: { /* TypeDef */
++		guint32 tcols [MONO_TYPEDEF_SIZE], enclosing;
++		if (!rid || rid > mono_table_info_get_rows (&image->tables [MONO_TABLE_TYPEDEF]))
++			return NULL;
++		mono_metadata_decode_row (&image->tables [MONO_TABLE_TYPEDEF], rid - 1, tcols, MONO_TYPEDEF_SIZE);
++		enclosing = mono_metadata_nested_in_typedef (image, MONO_TOKEN_TYPE_DEF | rid);
++		if (enclosing) {
++			char *outer = sg_typedeforref_name (image, (mono_metadata_token_index (enclosing) << 2) | 0);
++			char *r = outer ? g_strdup_printf ("%s/%s", outer, mono_metadata_string_heap (image, tcols [MONO_TYPEDEF_NAME])) : NULL;
++			g_free (outer);
++			return r;
++		}
++		return g_strdup_printf ("%s.%s", mono_metadata_string_heap (image, tcols [MONO_TYPEDEF_NAMESPACE]),
++					mono_metadata_string_heap (image, tcols [MONO_TYPEDEF_NAME]));
++	}
++	case 1: { /* TypeRef */
++		guint32 scope;
++		if (!rid || rid > mono_table_info_get_rows (&image->tables [MONO_TABLE_TYPEREF]))
++			return NULL;
++		mono_metadata_decode_row (&image->tables [MONO_TABLE_TYPEREF], rid - 1, cols, MONO_TYPEREF_SIZE);
++		scope = cols [MONO_TYPEREF_SCOPE];
++		if ((scope & MONO_RESOLUTION_SCOPE_MASK) == MONO_RESOLUTION_SCOPE_TYPEREF) {
++			char *outer = sg_typedeforref_name (image, ((scope >> MONO_RESOLUTION_SCOPE_BITS) << 2) | 1);
++			char *r = outer ? g_strdup_printf ("%s/%s", outer, mono_metadata_string_heap (image, cols [MONO_TYPEREF_NAME])) : NULL;
++			g_free (outer);
++			return r;
++		}
++		return g_strdup_printf ("%s.%s", mono_metadata_string_heap (image, cols [MONO_TYPEREF_NAMESPACE]),
++					mono_metadata_string_heap (image, cols [MONO_TYPEREF_NAME]));
++	}
++	default:
++		return NULL;
++	}
++}
++
++static gboolean sg_sig_type_equal (MonoImage *ia, const char *a, const char **enda, MonoImage *ib, const char *b, const char **endb, int depth);
++
++static gboolean
++sg_sig_typedeforref_equal (MonoImage *ia, guint32 ca, MonoImage *ib, guint32 cb, int depth)
++{
++	if ((ca & 3) == 2 || (cb & 3) == 2) { /* TypeSpec: compare its signatures */
++		const char *pa, *pb;
++		guint32 ra = ca >> 2, rb = cb >> 2, cols [MONO_TYPESPEC_SIZE];
++		if ((ca & 3) != 2 || (cb & 3) != 2 || !ra || !rb ||
++		    ra > mono_table_info_get_rows (&ia->tables [MONO_TABLE_TYPESPEC]) || rb > mono_table_info_get_rows (&ib->tables [MONO_TABLE_TYPESPEC]))
++			return FALSE;
++		mono_metadata_decode_row (&ia->tables [MONO_TABLE_TYPESPEC], ra - 1, cols, MONO_TYPESPEC_SIZE);
++		pa = mono_metadata_blob_heap (ia, cols [MONO_TYPESPEC_SIGNATURE]);
++		mono_metadata_decode_blob_size (pa, &pa);
++		mono_metadata_decode_row (&ib->tables [MONO_TABLE_TYPESPEC], rb - 1, cols, MONO_TYPESPEC_SIZE);
++		pb = mono_metadata_blob_heap (ib, cols [MONO_TYPESPEC_SIGNATURE]);
++		mono_metadata_decode_blob_size (pb, &pb);
++		return sg_sig_type_equal (ia, pa, &pa, ib, pb, &pb, depth + 1);
++	}
++	if (ia == ib && ca == cb)
++		return TRUE;
++	char *na = sg_typedeforref_name (ia, ca), *nb = sg_typedeforref_name (ib, cb);
++	gboolean eq = na && nb && !strcmp (na, nb);
++	g_free (na);
++	g_free (nb);
++	return eq;
++}
++
++static gboolean
++sg_sig_type_equal (MonoImage *ia, const char *a, const char **enda, MonoImage *ib, const char *b, const char **endb, int depth)
++{
++	guint32 i, n, m;
++	if (depth > 32)
++		return FALSE;
++	/* custom modifiers are not compared */
++	while (*a == MONO_TYPE_CMOD_REQD || *a == MONO_TYPE_CMOD_OPT) { a++; mono_metadata_decode_value (a, &a); }
++	while (*b == MONO_TYPE_CMOD_REQD || *b == MONO_TYPE_CMOD_OPT) { b++; mono_metadata_decode_value (b, &b); }
++	if (*a != *b)
++		return FALSE;
++	guint8 et = (guint8)*a;
++	a++; b++;
++	switch (et) {
++	case MONO_TYPE_VOID: case MONO_TYPE_BOOLEAN: case MONO_TYPE_CHAR: case MONO_TYPE_I1: case MONO_TYPE_U1:
++	case MONO_TYPE_I2: case MONO_TYPE_U2: case MONO_TYPE_I4: case MONO_TYPE_U4: case MONO_TYPE_I8: case MONO_TYPE_U8:
++	case MONO_TYPE_R4: case MONO_TYPE_R8: case MONO_TYPE_STRING: case MONO_TYPE_TYPEDBYREF: case MONO_TYPE_I:
++	case MONO_TYPE_U: case MONO_TYPE_OBJECT:
++		break;
++	case MONO_TYPE_PTR: case MONO_TYPE_BYREF: case MONO_TYPE_SZARRAY: case MONO_TYPE_PINNED:
++		if (!sg_sig_type_equal (ia, a, &a, ib, b, &b, depth + 1))
++			return FALSE;
++		break;
++	case MONO_TYPE_VALUETYPE: case MONO_TYPE_CLASS:
++		n = mono_metadata_decode_value (a, &a);
++		m = mono_metadata_decode_value (b, &b);
++		if (!sg_sig_typedeforref_equal (ia, n, ib, m, depth))
++			return FALSE;
++		break;
++	case MONO_TYPE_VAR: case MONO_TYPE_MVAR:
++		if (mono_metadata_decode_value (a, &a) != mono_metadata_decode_value (b, &b))
++			return FALSE;
++		break;
++	case MONO_TYPE_ARRAY:
++		if (!sg_sig_type_equal (ia, a, &a, ib, b, &b, depth + 1))
++			return FALSE;
++		if (mono_metadata_decode_value (a, &a) != mono_metadata_decode_value (b, &b)) /* rank */
++			return FALSE;
++		n = mono_metadata_decode_value (a, &a);
++		if (n != mono_metadata_decode_value (b, &b))
++			return FALSE;
++		for (i = 0; i < n; i++)
++			if (mono_metadata_decode_value (a, &a) != mono_metadata_decode_value (b, &b))
++				return FALSE;
++		n = mono_metadata_decode_value (a, &a);
++		if (n != mono_metadata_decode_value (b, &b))
++			return FALSE;
++		for (i = 0; i < n; i++)
++			if (mono_metadata_decode_signed_value (a, &a) != mono_metadata_decode_signed_value (b, &b))
++				return FALSE;
++		break;
++	case MONO_TYPE_GENERICINST:
++		if (!sg_sig_type_equal (ia, a, &a, ib, b, &b, depth + 1))
++			return FALSE;
++		n = mono_metadata_decode_value (a, &a);
++		if (n != mono_metadata_decode_value (b, &b))
++			return FALSE;
++		for (i = 0; i < n; i++)
++			if (!sg_sig_type_equal (ia, a, &a, ib, b, &b, depth + 1))
++				return FALSE;
++		break;
++	default: /* function pointers and anything else: not compared */
++		return FALSE;
++	}
++	*enda = a;
++	*endb = b;
++	return TRUE;
++}
++
++static gboolean
++sg_method_metadata_signature_equal (MonoMethod *ma, MonoMethod *mb)
++{
++	MonoImage *ia = m_class_get_image (ma->klass), *ib = m_class_get_image (mb->klass);
++	guint32 cols [MONO_METHOD_SIZE], i, n;
++	const char *a, *b;
++
++	if (ma->is_inflated || mb->is_inflated || image_is_dynamic (ia) || image_is_dynamic (ib) ||
++	    mono_metadata_token_table (ma->token) != MONO_TABLE_METHOD || mono_metadata_token_table (mb->token) != MONO_TABLE_METHOD)
++		return FALSE;
++	mono_metadata_decode_row (&ia->tables [MONO_TABLE_METHOD], mono_metadata_token_index (ma->token) - 1, cols, MONO_METHOD_SIZE);
++	a = mono_metadata_blob_heap (ia, cols [MONO_METHOD_SIGNATURE]);
++	mono_metadata_decode_blob_size (a, &a);
++	mono_metadata_decode_row (&ib->tables [MONO_TABLE_METHOD], mono_metadata_token_index (mb->token) - 1, cols, MONO_METHOD_SIZE);
++	b = mono_metadata_blob_heap (ib, cols [MONO_METHOD_SIGNATURE]);
++	mono_metadata_decode_blob_size (b, &b);
++
++	if (*a != *b) /* calling convention, HASTHIS, GENERIC */
++		return FALSE;
++	if (*a++ & 0x10) { /* generic: number of type parameters */
++		b++;
++		if (mono_metadata_decode_value (a, &a) != mono_metadata_decode_value (b, &b))
++			return FALSE;
++	} else {
++		b++;
++	}
++	n = mono_metadata_decode_value (a, &a);
++	if (n != mono_metadata_decode_value (b, &b))
++		return FALSE;
++	for (i = 0; i <= n; i++) /* the return type, then each parameter */
++		if (!sg_sig_type_equal (ia, a, &a, ib, b, &b, 0))
++			return FALSE;
++	return TRUE;
++}
++
++/* the two methods' signatures are equal; *unresolved: a type of one of them could not be loaded */
++static gboolean
++sg_virtual_signature_equal (MonoMethod *ma, MonoMethod *mb, gboolean *unresolved)
++{
++	ERROR_DECL (ea);
++	ERROR_DECL (eb);
++	MonoMethodSignature *sa = mono_method_signature_checked (ma, ea);
++	MonoMethodSignature *sb = mono_method_signature_checked (mb, eb);
++	*unresolved = FALSE;
++	if (sa && sb)
++		return mono_metadata_signature_equal (sa, sb);
++	mono_error_cleanup (ea);
++	mono_error_cleanup (eb);
++	*unresolved = TRUE;
++#ifdef SG_MUTANT_VTABLE_SIG_EAGER
++	return FALSE;
++#else
++	return sg_method_metadata_signature_equal (ma, mb);
++#endif
++}
++
+ static gboolean
+ check_interface_method_override (MonoClass *klass, MonoMethod *im, MonoMethod *cm, gboolean require_newslot, gboolean interface_is_explicitly_implemented_by_class, gboolean slot_is_empty)
+ {
+-	MonoMethodSignature *cmsig, *imsig;
+ 	if (strcmp (im->name, cm->name) == 0) {
+ 		if (! (cm->flags & METHOD_ATTRIBUTE_PUBLIC)) {
+ 			TRACE_INTERFACE_VTABLE (printf ("[PUBLIC CHECK FAILED]"));
+@@ -469,14 +671,14 @@
+ 				TRACE_INTERFACE_VTABLE (printf ("[FULL SLOT REFUSED]"));
+ 			}
+ 		}
+-		cmsig = mono_method_signature_internal (cm);
+-		imsig = mono_method_signature_internal (im);
+-		if (!cmsig || !imsig) {
+-			mono_class_set_type_load_failure (klass, "Could not resolve the signature of a virtual method");
+-			return FALSE;
+-		}
+-
+-		if (! mono_metadata_signature_equal (cmsig, imsig)) {
++		gboolean unresolved;
++		if (!sg_virtual_signature_equal (cm, im, &unresolved)) {
++#ifdef SG_MUTANT_VTABLE_SIG_EAGER
++			if (unresolved) {
++				mono_class_set_type_load_failure (klass, "Could not resolve the signature of a virtual method");
++				return FALSE;
++			}
++#endif
+ 			TRACE_INTERFACE_VTABLE (printf ("[SIGNATURE CHECK FAILED  "));
+ 			TRACE_INTERFACE_VTABLE (print_method_signatures (im, cm));
+ 			TRACE_INTERFACE_VTABLE (printf ("]"));
+@@ -511,14 +713,14 @@
+ 			TRACE_INTERFACE_VTABLE (printf ("[RANK CHECK FAILED]"));
+ 			return FALSE;
+ 		}
+-		cmsig = mono_method_signature_internal (cm);
+-		imsig = mono_method_signature_internal (im);
+-		if (!cmsig || !imsig) {
+-			mono_class_set_type_load_failure (klass, "Could not resolve the signature of a virtual method");
+-			return FALSE;
+-		}
+-
+-		if (! mono_metadata_signature_equal (cmsig, imsig)) {
++		gboolean unresolved;
++		if (!sg_virtual_signature_equal (cm, im, &unresolved)) {
++#ifdef SG_MUTANT_VTABLE_SIG_EAGER
++			if (unresolved) {
++				mono_class_set_type_load_failure (klass, "Could not resolve the signature of a virtual method");
++				return FALSE;
++			}
++#endif
+ 			TRACE_INTERFACE_VTABLE (printf ("[(INJECTED) SIGNATURE CHECK FAILED  "));
+ 			TRACE_INTERFACE_VTABLE (print_method_signatures (im, cm));
+ 			TRACE_INTERFACE_VTABLE (printf ("]"));
+@@ -1892,16 +2094,12 @@
+ 
+ 				k_iter = NULL;
+ 				while ((m1 = mono_class_get_virtual_methods (k, &k_iter))) {
+-					MonoMethodSignature *cmsig, *m1sig;
+-
+-					cmsig = mono_method_signature_internal (cm);
+-					m1sig = mono_method_signature_internal (m1);
+-
+-					if (!cmsig || !m1sig) /* FIXME proper error message, use signature_checked? */
+-						goto fail;
++					gboolean unresolved = FALSE;
+ 
+-					if (!strcmp(cm->name, m1->name) && 
+-					    mono_metadata_signature_equal (cmsig, m1sig)) {
++					/* Stained Glass OS: the names first, and a signature naming a type that
++					 * cannot be loaded compared as metadata (sg_virtual_signature_equal) */
++					if (!strcmp(cm->name, m1->name) &&
++					    sg_virtual_signature_equal (cm, m1, &unresolved)) {
+ 
+ 						if (mono_security_core_clr_enabled ())
+ 							mono_security_core_clr_check_override (klass, cm, m1);
+@@ -2004,9 +2202,10 @@
+ 
+ 			/* Historically, mono didn't do a signature equivalence check for explicit overrides, but we need one for covariant returns */
+ 			/* If the previous impl in the slot had the covariant signature bit set, or if the signature of the proposed impl doesn't match the signature of the previous impl, check for covariance */
++			gboolean sg_unresolved;
+ 			if (prev_impl != NULL &&
+ 			    (mono_method_get_is_covariant_override_impl (prev_impl) ||
+-			     !mono_metadata_signature_equal (mono_method_signature_internal (impl), mono_method_signature_internal (prev_impl)))) {
++			     (!sg_virtual_signature_equal (impl, prev_impl, &sg_unresolved) && !sg_unresolved))) {
+ 				mono_method_set_is_covariant_override_impl (impl);
+ 			}
+ 
+diff --git a/mono/metadata/object.c b/mono/metadata/object.c
+--- a/mono/metadata/object.c
++++ b/mono/metadata/object.c
+@@ -1315,8 +1315,20 @@
+ 	if (method->is_inflated)
+ 		method = ((MonoMethodInflated*)method)->declaring;
+ 
++#ifndef SG_MUTANT_VTABLE_SIG_EAGER
++	/* Stained Glass OS: an interface method whose signature names a type that cannot be
++	 * loaded (see sg_virtual_signature_equal) is hashed by its class and name alone -- the
++	 * same every time, so its slot is found again; calls to it cannot be compiled anyway */
++	{
++		ERROR_DECL (sig_error);
++		sig = mono_method_signature_checked (method, sig_error);
++		mono_error_cleanup (sig_error);
++	}
++	hashes_count = sig ? sig->param_count + 4 : 3;
++#else
+ 	sig = mono_method_signature_internal (method);
+ 	hashes_count = sig->param_count + 4;
++#endif
+ 	hashes_start = (guint32 *)g_malloc (hashes_count * sizeof (guint32));
+ 	hashes = hashes_start;
+ 
+@@ -1329,9 +1341,11 @@
+ 	hashes [0] = mono_metadata_str_hash (m_class_get_name (method->klass));
+ 	hashes [1] = mono_metadata_str_hash (m_class_get_name_space (method->klass));
+ 	hashes [2] = mono_metadata_str_hash (method->name);
+-	hashes [3] = mono_metadata_type_hash (sig->ret);
+-	for (i = 0; i < sig->param_count; i++) {
+-		hashes [4 + i] = mono_metadata_type_hash (sig->params [i]);
++	if (sig) {
++		hashes [3] = mono_metadata_type_hash (sig->ret);
++		for (i = 0; i < sig->param_count; i++) {
++			hashes [4 + i] = mono_metadata_type_hash (sig->params [i]);
++		}
+ 	}
+ 
+ 	/* Setup internal state */
